@@ -87,8 +87,8 @@ class RuntimeInfo(BaseModel):
     api_docs_enabled: bool = Field(alias="apiDocsEnabled")
     host_key_pinned: bool = Field(alias="hostKeyPinned")
     telemetry_retention_days: int = Field(alias="telemetryRetentionDays")
-    telemetry_collection: Literal["refresh-driven"] = Field(
-        default="refresh-driven", alias="telemetryCollection"
+    telemetry_collection: Literal["live-tiered"] = Field(
+        default="live-tiered", alias="telemetryCollection"
     )
     data_dir: str = Field(alias="dataDir")
     backup_dir: str = Field(alias="backupDir")
@@ -277,6 +277,7 @@ EvidenceLevel = Literal[
 IdentitySource = Literal[
     "cdp",
     "lldp",
+    "local-host",
     "interface-description",
     "mac-oui",
     "user-intent",
@@ -309,6 +310,7 @@ EvidenceClass = Literal["observed", "expected", "historical", "inferred", "unkno
 EvidenceSource = Literal[
     "cdp",
     "lldp",
+    "local-host",
     "mac-table",
     "arp",
     "interface-telemetry",
@@ -518,6 +520,53 @@ class CdpNeighbor(BaseModel):
     platform: Optional[str] = None
     capabilities: List[str] = Field(default_factory=list)
     ip: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
+
+
+class LldpNeighbor(BaseModel):
+    remote_name: str = Field(alias="remoteName")
+    local_interface: str = Field(default="", alias="localInterface")
+    remote_interface: Optional[str] = Field(default=None, alias="remoteInterface")
+    system_description: Optional[str] = Field(default=None, alias="systemDescription")
+    capabilities: List[str] = Field(default_factory=list)
+    ip: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
+
+
+class LldpDiscoveryStatus(BaseModel):
+    state: Literal["enabled", "disabled", "unsupported", "unknown"] = "unknown"
+    supported: bool = False
+    enabled: Optional[bool] = None
+    neighbors: List[LldpNeighbor] = Field(default_factory=list)
+    detail: str
+
+
+class LocalEndpointStatus(BaseModel):
+    state: Literal["confirmed", "ambiguous", "not-observed", "unavailable"]
+    interface: Optional[str] = None
+    label: str = "This SwitchOps PC"
+    ip: Optional[str] = None
+    detail: str
+
+
+class SnmpInspectionStatus(BaseModel):
+    configured: bool = False
+    versions: List[Literal["v1/v2c", "v3"]] = Field(default_factory=list)
+    read_only_communities: int = Field(default=0, alias="readOnlyCommunities")
+    read_write_communities: int = Field(default=0, alias="readWriteCommunities")
+    v3_users: int = Field(default=0, alias="v3Users")
+    trap_hosts: int = Field(default=0, alias="trapHosts")
+    detail: str
+
+    model_config = {"populate_by_name": True}
+
+
+class DiscoveryStatus(BaseModel):
+    lldp: LldpDiscoveryStatus
+    local_endpoint: LocalEndpointStatus = Field(alias="localEndpoint")
+    snmp: SnmpInspectionStatus
 
     model_config = {"populate_by_name": True}
 
@@ -868,6 +917,7 @@ class DashboardResponse(BaseModel):
     events: NetworkEventsResponse
     topology: TopologyModel
     reconciliation: ReconciliationSummary
+    discovery: DiscoveryStatus
     configuration_history: ConfigurationHistoryResponse = Field(alias="configurationHistory")
     section_errors: Dict[str, str] = Field(default_factory=dict, alias="sectionErrors")
 

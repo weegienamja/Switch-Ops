@@ -83,6 +83,10 @@ def test_dashboard_endpoint_mock_uses_complete_contract():
     assert body["sectionErrors"] == {}
     assert len(body["interfaces"]["interfaces"]) == 10
     assert body["macTable"]["entries"]
+    assert body["discovery"]["lldp"]["state"] == "disabled"
+    assert body["discovery"]["localEndpoint"]["state"] == "unavailable"
+    assert body["discovery"]["snmp"]["configured"] is False
+    assert "community" not in r.text.lower()
 
 
 def test_dashboard_keeps_partial_data_when_ios_command_is_unsupported(monkeypatch):

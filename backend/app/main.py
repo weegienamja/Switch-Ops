@@ -29,6 +29,7 @@ from .intent_store import get_intent_store
 from .config import get_settings
 from .credential_store import SwitchCredentials, get_credential_store
 from .device_session import JobPriority, get_device_session, run_on_device
+from .discovery import correlate_local_endpoint, inspect_lldp, inspect_snmp_config
 from .live_state import (
     LiveCollector,
     TierConfig,
@@ -55,6 +56,7 @@ from .models import (
     CredentialSetupRequest,
     DashboardResponse,
     DeploymentPlan,
+    DiscoveryStatus,
     EnvironmentStatus,
     GuideCatalogResponse,
     GuideRunRequest,
@@ -258,6 +260,8 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         "memory": "show_memory_statistics",
         "macTable": "show_mac_address_table",
         "neighbors": "show_cdp_neighbors_detail",
+        "lldpSummary": "show_lldp_neighbors",
+        "lldpDetail": "show_lldp_neighbors_detail",
         "arp": "show_ip_arp",
         "logs": "show_logging",
     }
@@ -266,7 +270,7 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
     for section, symbol in commands.items():
         try:
             output = run_and_audit(client, symbol=symbol)
-            if _UNSUPPORTED_IOS_OUTPUT.search(output):
+            if _UNSUPPORTED_IOS_OUTPUT.search(output) and not section.startswith("lldp"):
                 section_errors[section] = "unsupported_by_ios"
                 output = ""
             outputs[section] = output
@@ -321,6 +325,12 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
     cdp_neighbors = _parse_section(
         "neighbors", parse_cdp, outputs["neighbors"], [], section_errors
     )
+    lldp_status = inspect_lldp(
+        running_config=outputs["config"],
+        summary_output=outputs["lldpSummary"],
+        detail_output=outputs["lldpDetail"],
+    )
+    lldp_neighbors = lldp_status.neighbors
     # ARP ties an IP to a hardware address. Combined with the MAC table it can
     # place the default gateway on a port. An empty or stale table proves
     # nothing and is not an error.
@@ -339,6 +349,18 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         or settings.switch_host
         or "Unknown"
     )
+    local_endpoint = correlate_local_endpoint(
+        management_ip=management_ip,
+        mac_entries=mac_entries,
+        arp_entries=arp_entries,
+        interfaces=interfaces,
+        adapters=[] if settings.mock_mode else None,
+    )
+    discovery = DiscoveryStatus(
+        lldp=lldp_status,
+        localEndpoint=local_endpoint,
+        snmp=inspect_snmp_config(outputs["config"]),
+    )
     topology = build_topology(
         hostname=hostname,
         model=model,
@@ -347,6 +369,8 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         mac_entries=mac_entries,
         poe_ports=poe.ports,
         cdp_neighbors=cdp_neighbors,
+        lldp_neighbors=lldp_neighbors,
+        local_endpoint=local_endpoint,
         observed_at=observed_at,
         source_namespace="mock" if settings.mock_mode else "physical",
     )
@@ -444,6 +468,8 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
             interfaces=interfaces,
             mac_entries=mac_entries,
             cdp_neighbors=cdp_neighbors,
+            lldp_neighbors=lldp_neighbors,
+            local_endpoint=local_endpoint,
             arp_entries=arp_entries,
             default_gateway=gateway_value,
             observed_at=observed_at,
@@ -527,6 +553,7 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         ),
         topology=topology,
         reconciliation=reconciliation,
+        discovery=discovery,
         configurationHistory=configuration_history,
         sectionErrors=section_errors,
     )

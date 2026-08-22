@@ -34,6 +34,7 @@ from typing import Any, Callable, Optional
 from .device_session import DeviceSessionManager, JobPriority, get_device_session
 from .models import InterfaceStatus, PoePort
 from .parsers.interfaces import parse_interface_status
+from .discovery import inspect_lldp
 from .parsers.poe import parse_poe
 from .switch_client import SwitchClient
 from .tools.read_only import run_and_audit
@@ -188,6 +189,13 @@ class LiveState:
         # Set when a change transaction is running, so the UI can explain why
         # polling paused rather than looking frozen.
         self.operation_in_progress: Optional[str] = None
+        self.lldp: dict[str, Any] = {
+            "state": "unknown",
+            "supported": False,
+            "enabled": None,
+            "neighbors": [],
+            "detail": "LLDP has not been collected yet.",
+        }
 
     # -- updates ----------------------------------------------------------
 
@@ -248,6 +256,10 @@ class LiveState:
         with self._lock:
             setattr(self.freshness, tier, at.isoformat())
 
+    def apply_lldp(self, status: Any) -> None:
+        with self._lock:
+            self.lldp = status.model_dump(by_alias=True)
+
     # -- reads ------------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
@@ -258,6 +270,7 @@ class LiveState:
                 "poe": {"usedW": self.poe_used_w, "availableW": self.poe_available_w},
                 "freshness": asdict(self.freshness),
                 "operationInProgress": self.operation_in_progress,
+                "discovery": {"lldp": dict(self.lldp)},
             }
 
 
@@ -398,8 +411,16 @@ class LiveCollector:
         def run(client: SwitchClient) -> None:
             for symbol in ("show_mac_address_table", "show_ip_arp", "show_cdp_neighbors_detail"):
                 run_and_audit(client, symbol=symbol, actor="live-slow")
+            lldp_output = run_and_audit(
+                client, symbol="show_lldp_neighbors_detail", actor="live-slow"
+            )
+            lldp = inspect_lldp(
+                running_config=None, summary_output="", detail_output=lldp_output
+            )
+            self.state.apply_lldp(lldp)
             at = datetime.now(timezone.utc)
             self.state.mark_fresh("slow", at)
+            self.state.hub.publish("discovery_state", {"lldp": self.state.lldp})
             self.state.hub.publish("freshness", asdict(self.state.freshness))
 
         self._submit("live-slow", run, JobPriority.SLOW)

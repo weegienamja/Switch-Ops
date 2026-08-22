@@ -61,6 +61,8 @@ _SAMPLE_FILES = {
     "show_vlan_brief": "show_vlan_brief.txt",
     "show_spanning_tree": "show_spanning_tree.txt",
     "show_cdp_neighbors_detail": "show_cdp_neighbors_detail.txt",
+    "show_lldp_neighbors": "show_lldp_neighbors.txt",
+    "show_lldp_neighbors_detail": "show_lldp_neighbors_detail.txt",
 }
 
 MockScenario = Literal["baseline", "ap_attached"]

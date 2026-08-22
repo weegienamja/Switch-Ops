@@ -33,6 +33,8 @@ from .models import (
     IdentitySource,
     InterfaceRole,
     InterfaceStatus,
+    LldpNeighbor,
+    LocalEndpointStatus,
     MacTableEntry,
     NetworkDevice,
     NetworkInterface,
@@ -204,6 +206,17 @@ def _category_from_cdp(neighbor: CdpNeighbor) -> tuple[DeviceType, str | None, s
     return category, vendor, model
 
 
+def _category_from_lldp(neighbor: LldpNeighbor) -> tuple[DeviceType, str | None, str | None]:
+    advertised = f"{neighbor.remote_name} {neighbor.system_description or ''}".strip()
+    category, vendor, model, _stage, _evidence = classify_device(advertised)
+    lowered = advertised.lower()
+    if "meraki" in lowered:
+        vendor = "Cisco Meraki"
+    elif "cisco" in lowered and not vendor:
+        vendor = "Cisco"
+    return category, vendor, model or neighbor.system_description
+
+
 def _poe_active(poe: PoePort | None) -> bool:
     return bool(poe and poe.oper.strip().lower() not in {"", "off", "n/a", "faulty", "deny"})
 
@@ -255,6 +268,79 @@ def _endpoint_from_cdp(
         expectedName=interface.name.strip() or None,
         expectedType=None,
         learnedMacCount=learned_count,
+        role=role,
+    )
+
+
+def _endpoint_from_lldp(
+    *,
+    neighbor: LldpNeighbor,
+    interface: InterfaceStatus,
+    poe: PoePort | None,
+    learned_count: int,
+    role: InterfaceRole,
+    observed_at: datetime,
+    switch_id: str,
+) -> NetworkDevice:
+    category, vendor, model = _category_from_lldp(neighbor)
+    evidence = [f"{neighbor.remote_name} announced itself through LLDP on {interface.port}"]
+    if neighbor.system_description:
+        evidence.append("system description reported by the neighbour")
+    if learned_count > 1:
+        evidence.append(f"{learned_count} addresses are reachable through this link")
+    return NetworkDevice(
+        id=f"lldp-{switch_id}-{_slug(interface.port)}-{_slug(neighbor.remote_name)}",
+        type=category,
+        vendor=vendor,
+        model=model,
+        name=neighbor.remote_name,
+        ip=neighbor.ip,
+        source="observed",
+        confidence="high",
+        classificationStage="model" if model else "vendor" if vendor else "category" if category != "unknown" else "unknown",
+        online=True,
+        connectedInterface=interface.port,
+        visualCategory=category,
+        capabilities=[DeviceCapability(name="poe-powered", available=_poe_active(poe), source="show power inline")] if poe else [],
+        lastSeen=observed_at,
+        evidence=evidence,
+        evidenceLevel="direct",
+        identitySource="lldp",
+        expectedName=interface.name.strip() or None,
+        expectedType=None,
+        learnedMacCount=learned_count,
+        role=role,
+    )
+
+
+def _endpoint_from_local_host(
+    *,
+    local_endpoint: LocalEndpointStatus,
+    interface: InterfaceStatus,
+    poe: PoePort | None,
+    role: InterfaceRole,
+    observed_at: datetime,
+    switch_id: str,
+) -> NetworkDevice:
+    return NetworkDevice(
+        id=f"local-host-{switch_id}-{_slug(interface.port)}",
+        type="desktop",
+        name=local_endpoint.label,
+        ip=local_endpoint.ip,
+        source="observed",
+        confidence="high",
+        classificationStage="category",
+        online=True,
+        connectedInterface=interface.port,
+        visualCategory="desktop",
+        capabilities=[DeviceCapability(name="poe-powered", available=_poe_active(poe), source="show power inline")] if poe else [],
+        lastSeen=observed_at,
+        evidence=[local_endpoint.detail, "interface reports an active access link"],
+        evidenceLevel="observed-on-port",
+        identitySource="local-host",
+        expectedName=interface.name.strip() or None,
+        expectedType=None,
+        learnedMacCount=1,
         role=role,
     )
 
@@ -357,6 +443,8 @@ def build_topology(
     mac_entries: Iterable[MacTableEntry],
     poe_ports: Iterable[PoePort],
     cdp_neighbors: Iterable[CdpNeighbor] = (),
+    lldp_neighbors: Iterable[LldpNeighbor] = (),
+    local_endpoint: LocalEndpointStatus | None = None,
     observed_at: datetime | None = None,
     source_namespace: str = "physical",
 ) -> TopologyModel:
@@ -400,6 +488,12 @@ def build_topology(
             continue
         cdp_by_port.setdefault(neighbor.local_interface, []).append(neighbor)
 
+    lldp_by_port: dict[str, list[LldpNeighbor]] = {}
+    for neighbor in lldp_neighbors:
+        if not neighbor.local_interface:
+            continue
+        lldp_by_port.setdefault(neighbor.local_interface, []).append(neighbor)
+
     normalized_interfaces: list[NetworkInterface] = []
     links: list[NetworkLink] = []
     for interface in interfaces:
@@ -410,6 +504,12 @@ def build_topology(
         learned = macs_by_port.get(interface.port, [])
         learned_count = len(learned)
         neighbors = cdp_by_port.get(interface.port, [])
+        lldp_neighbors_on_port = lldp_by_port.get(interface.port, [])
+        local_match = bool(
+            local_endpoint
+            and local_endpoint.state == "confirmed"
+            and local_endpoint.interface == interface.port
+        )
 
         normalized_interfaces.append(
             NetworkInterface(
@@ -456,6 +556,38 @@ def build_topology(
                 link_evidence.append(
                     f"{len(neighbors)} CDP neighbours are visible through this interface"
                 )
+        elif lldp_neighbors_on_port and oper_state == "up":
+            endpoint = _endpoint_from_lldp(
+                neighbor=lldp_neighbors_on_port[0],
+                interface=interface,
+                poe=poe,
+                learned_count=learned_count,
+                role=role,
+                observed_at=observed_at,
+                switch_id=switch_id,
+            )
+            link_status = "up"
+            link_confidence = "high"
+            link_evidence_level = "direct"
+            link_evidence = ["LLDP neighbour announced on this interface", "interface operational state"]
+            if len(lldp_neighbors_on_port) > 1:
+                link_evidence.append(
+                    f"{len(lldp_neighbors_on_port)} LLDP neighbours are visible through this interface"
+                )
+        elif local_match and oper_state == "up":
+            assert local_endpoint is not None
+            endpoint = _endpoint_from_local_host(
+                local_endpoint=local_endpoint,
+                interface=interface,
+                poe=poe,
+                role=role,
+                observed_at=observed_at,
+                switch_id=switch_id,
+            )
+            link_status = "up"
+            link_confidence = "high"
+            link_evidence_level = "observed-on-port"
+            link_evidence = ["unique local-host and MAC-table correlation", "interface operational state"]
         elif learned and oper_state == "up":
             # Something is attached: link up and addresses are being learned.
             # Exactly one node, regardless of how many addresses appeared.

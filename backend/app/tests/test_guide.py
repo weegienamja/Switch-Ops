@@ -66,3 +66,10 @@ def test_empty_cdp_result_is_valid_and_not_fabricated():
     result = run_guide_operation(MockSwitchClient(SAMPLES), operation_id="neighbors")
     assert result.result == {"neighbors": []}
     assert "0 neighbour(s)" in result.explanation
+
+
+def test_lldp_guide_is_read_only_and_reports_disabled_mock_state():
+    result = run_guide_operation(MockSwitchClient(SAMPLES), operation_id="lldp_neighbors")
+    assert result.operation.commands == ["show lldp neighbors", "show lldp neighbors detail"]
+    assert result.result["state"] == "disabled"
+    assert result.result["neighbors"] == []

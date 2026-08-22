@@ -11,6 +11,7 @@ from .command_registry import (
     resolve_read_command,
 )
 from .errors import CommandNotAllowedError
+from .discovery import inspect_lldp
 from .models import GuideOperation, GuideRunResult
 from .parsers.cdp import parse_cdp
 from .parsers.cpu import parse_cpu
@@ -134,6 +135,14 @@ GUIDE_DEFINITIONS: tuple[GuideDefinition, ...] = (
         "Show CDP neighbours",
         "Shows devices that advertise themselves through CDP. An empty result is valid.",
         ("show_cdp_neighbors_detail",),
+    ),
+    GuideDefinition(
+        "lldp_neighbors",
+        "NETWORKING",
+        "Discover LLDP neighbours",
+        "Show LLDP neighbours",
+        "Checks LLDP support and lists direct neighbours without enabling or configuring LLDP.",
+        ("show_lldp_neighbors", "show_lldp_neighbors_detail"),
     ),
     GuideDefinition(
         "temperature",
@@ -358,6 +367,14 @@ def run_guide_operation(
         neighbors = _cdp_summary(outputs["show_cdp_neighbors_detail"])
         result = {"neighbors": neighbors}
         explanation = f"CDP reported {len(neighbors)} neighbour(s). An empty result can simply mean no adjacent device is advertising CDP."
+    elif operation_id == "lldp_neighbors":
+        status = inspect_lldp(
+            running_config=None,
+            summary_output=outputs["show_lldp_neighbors"],
+            detail_output=outputs["show_lldp_neighbors_detail"],
+        )
+        result = status.model_dump(by_alias=True)
+        explanation = status.detail
     elif operation_id == "temperature":
         environment = parse_environment(outputs["show_env_all"])
         result = environment.model_dump(by_alias=True, exclude={"raw"})

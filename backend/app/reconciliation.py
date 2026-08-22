@@ -38,6 +38,8 @@ from .models import (
     ExternalSighting,
     InterfaceReconciliation,
     InterfaceStatus,
+    LldpNeighbor,
+    LocalEndpointStatus,
     MacTableEntry,
     NetworkEvent,
     ReconciliationStatus,
@@ -131,6 +133,8 @@ class CiscoIosEvidenceProvider:
         interfaces: Sequence[InterfaceStatus],
         mac_entries: Sequence[MacTableEntry],
         cdp_neighbors: Sequence[CdpNeighbor] = (),
+        lldp_neighbors: Sequence[LldpNeighbor] = (),
+        local_endpoint: LocalEndpointStatus | None = None,
         arp_entries: Sequence[ArpEntry] = (),
         default_gateway: Optional[str] = None,
         observed_at: Optional[datetime] = None,
@@ -140,6 +144,11 @@ class CiscoIosEvidenceProvider:
         for neighbor in cdp_neighbors:
             if neighbor.local_interface:
                 self.cdp_by_port.setdefault(neighbor.local_interface, []).append(neighbor)
+        self.lldp_by_port: dict[str, list[LldpNeighbor]] = {}
+        for neighbor in lldp_neighbors:
+            if neighbor.local_interface:
+                self.lldp_by_port.setdefault(neighbor.local_interface, []).append(neighbor)
+        self.local_endpoint = local_endpoint
         self.macs_by_port: dict[str, list[MacTableEntry]] = {}
         for entry in mac_entries:
             if entry.port.upper() == "CPU" or entry.vlan.lower() == "all":
@@ -160,6 +169,7 @@ class CiscoIosEvidenceProvider:
 
         learned = self.macs_by_port.get(interface.port, [])
         neighbors = self.cdp_by_port.get(interface.port, [])
+        lldp_neighbors = self.lldp_by_port.get(interface.port, [])
 
         if neighbors:
             neighbor = neighbors[0]
@@ -180,6 +190,45 @@ class CiscoIosEvidenceProvider:
                 deviceType=category,
                 vendor=vendor,
                 model=model,
+            )
+
+        if lldp_neighbors:
+            neighbor = lldp_neighbors[0]
+            category, vendor, model = _identity_from_lldp(neighbor)
+            detail = f"{neighbor.remote_name} announced itself over LLDP on {interface.port}."
+            if neighbor.system_description:
+                detail += " It also reported a system description."
+            return TopologyAssertion(
+                subject=interface.port,
+                relationship="direct-neighbour",
+                objectLabel=neighbor.remote_name,
+                objectIdentified=True,
+                evidenceClass="observed",
+                source="lldp",
+                confidence="high",
+                detail=detail,
+                observedAt=self.observed_at,
+                deviceType=category,
+                vendor=vendor,
+                model=model,
+            )
+
+        if (
+            self.local_endpoint
+            and self.local_endpoint.state == "confirmed"
+            and self.local_endpoint.interface == interface.port
+        ):
+            return TopologyAssertion(
+                subject=interface.port,
+                relationship="attached-endpoint",
+                objectLabel=self.local_endpoint.label,
+                objectIdentified=True,
+                evidenceClass="observed",
+                source="local-host",
+                confidence="high",
+                detail=self.local_endpoint.detail,
+                observedAt=self.observed_at,
+                deviceType="desktop",
             )
 
         if learned:
@@ -510,6 +559,17 @@ def _identity_from_cdp(neighbor: CdpNeighbor) -> tuple[DeviceType, Optional[str]
     elif platform and not model:
         model = platform
     return category, vendor, model
+
+
+def _identity_from_lldp(neighbor: LldpNeighbor) -> tuple[DeviceType, Optional[str], Optional[str]]:
+    advertised = f"{neighbor.remote_name} {neighbor.system_description or ''}".strip()
+    category, vendor, model, _stage, _evidence = classify_device(advertised)
+    lowered = advertised.lower()
+    if "meraki" in lowered:
+        vendor = "Cisco Meraki"
+    elif "cisco" in lowered and not vendor:
+        vendor = "Cisco"
+    return category, vendor, model or neighbor.system_description
 
 
 def _matching_sighting(
