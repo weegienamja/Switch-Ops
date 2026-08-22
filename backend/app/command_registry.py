@@ -42,6 +42,10 @@ READ_ONLY_COMMANDS: Dict[str, str] = {
     "show_spanning_tree": "show spanning-tree",
     "show_etherchannel_summary": "show etherchannel summary",
     "show_cdp_neighbors_detail": "show cdp neighbors detail",
+    # ARP maps the configured default gateway to a hardware address, which the
+    # MAC table then maps to a physical port. That chain is the only evidence
+    # this switch has about *which way* the gateway lies.
+    "show_ip_arp": "show ip arp",
     "show_interfaces_trunk": "show interfaces trunk",
     "show_environment": "show environment",
     "show_environment_all": "show environment all",

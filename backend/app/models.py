@@ -271,16 +271,240 @@ EvidenceLevel = Literal[
     "unknown",
 ]
 
-# Where a device's *identity* (not its existence) came from.
+# Where a device's *identity* (not its existence) came from. Existence and
+# identity are separate claims: a link can be certain while the thing on the
+# end of it is only a label somebody typed into a description.
 IdentitySource = Literal[
     "cdp",
+    "lldp",
     "interface-description",
     "mac-oui",
+    "user-intent",
+    "meraki-api",
+    "historical",
     "switch-telemetry",
     "none",
 ]
 
 InterfaceRole = Literal["uplink", "access", "unknown"]
+
+
+# --- Topology reconciliation ------------------------------------------------
+#
+# SwitchOps holds several claims about the same interface at the same time and
+# reconciles them, rather than letting the newest or the prettiest overwrite
+# the others. The classes below are the vocabulary for that.
+
+# What *kind* of knowledge a claim is. This is the axis that stops configured
+# intent from being rendered as observed truth.
+#
+# observed    proven by current telemetry from a device
+# expected    believed to be intended (description, user intent, accepted plan)
+# historical  observed in an earlier snapshot, not now
+# inferred    supported by evidence but not directly proven
+# unknown     insufficient evidence
+EvidenceClass = Literal["observed", "expected", "historical", "inferred", "unknown"]
+
+# Which concrete source produced a claim.
+EvidenceSource = Literal[
+    "cdp",
+    "lldp",
+    "mac-table",
+    "arp",
+    "interface-telemetry",
+    "interface-description",
+    "user-intent",
+    "accepted-plan",
+    "prior-observation",
+    "mac-address-form",
+    "meraki-api",
+    "none",
+]
+
+# What the claim says about the relationship between an interface and whatever
+# is on the other side of it.
+RelationshipKind = Literal[
+    # the neighbour announced itself on the wire; proves direct attachment
+    "direct-neighbour",
+    # link is up and addresses are being learned, so something is attached -
+    # but it may itself be a switch, router or AP with more behind it
+    "attached-endpoint",
+    # reachable through this interface, possibly several hops away
+    "learned-behind",
+    # this switch's default gateway is reachable through this interface
+    "gateway-path",
+    # intent only; nothing observed
+    "expected-neighbour",
+]
+
+Confidence = Literal["low", "medium", "high"]
+
+
+class TopologyAssertion(BaseModel):
+    """One claim, by one source, about one interface, at one time.
+
+    Assertions are additive. Two sources are allowed to disagree; resolving
+    that disagreement is the reconciler's job, not the collector's.
+    """
+
+    subject: str  # the local interface, e.g. "Gi0/1"
+    relationship: RelationshipKind
+    # Human label for whatever is on the other end. When ``object_identified``
+    # is False this is a placeholder such as "Unidentified device" and must
+    # never be treated as a name.
+    object_label: str = Field(alias="objectLabel")
+    object_identified: bool = Field(default=False, alias="objectIdentified")
+    evidence_class: EvidenceClass = Field(alias="evidenceClass")
+    source: EvidenceSource
+    confidence: Confidence
+    detail: str
+    observed_at: Optional[datetime] = Field(default=None, alias="observedAt")
+    # Optional structured identity, only populated by identifying sources.
+    device_type: Optional[DeviceType] = Field(default=None, alias="deviceType")
+    vendor: Optional[str] = None
+    model: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
+
+
+class ExternalSighting(BaseModel):
+    """A device observed by some source *other* than this switch.
+
+    This is the seam a Meraki controller plugs into. When an expected device is
+    absent from its expected interface but another source can see it elsewhere,
+    the situation is location drift rather than a missing device. SwitchOps
+    never fabricates one of these; with no external provider configured the
+    set is simply empty.
+    """
+
+    label: str
+    observed_location: str = Field(alias="observedLocation")
+    source: EvidenceSource = "meraki-api"
+    confidence: Confidence = "medium"
+    observed_at: Optional[datetime] = Field(default=None, alias="observedAt")
+    detail: str = ""
+
+    model_config = {"populate_by_name": True}
+
+
+# The outcome of comparing observed / expected / historical for one interface.
+#
+# aligned                 expected and observed agree
+# drift                   both exist and disagree
+# expected-not-observed   intent exists, nothing is observed there now
+# unexpected              something is observed that no intent accounts for
+# uncertain               evidence cannot confirm or refute the expectation
+# not-applicable          no intent and nothing observed (idle spare port)
+ReconciliationStatus = Literal[
+    "aligned",
+    "drift",
+    "expected-not-observed",
+    "unexpected",
+    "uncertain",
+    "not-applicable",
+]
+
+# Drift is not one thing. Identity drift means the wrong device is here;
+# location drift means the right device is somewhere else, which needs an
+# evidence source beyond this switch to establish.
+DriftKind = Literal["identity", "location", "none"]
+
+
+class InterfaceReconciliation(BaseModel):
+    interface: str
+    status: ReconciliationStatus
+    drift_kind: DriftKind = Field(default="none", alias="driftKind")
+    headline: str
+    explanation: str
+    observed: Optional[TopologyAssertion] = None
+    expected: Optional[TopologyAssertion] = None
+    historical: Optional[TopologyAssertion] = None
+    inferred: List[TopologyAssertion] = Field(default_factory=list)
+    # Whether the *observation* differs from the previous observation. This is
+    # orthogonal to status: a link can be aligned and still have changed.
+    changed_since_previous: bool = Field(default=False, alias="changedSincePrevious")
+    change_summary: Optional[str] = Field(default=None, alias="changeSummary")
+    # Every assertion held about this interface, for the inspector.
+    assertions: List[TopologyAssertion] = Field(default_factory=list)
+    # True when the interface description no longer matches the active intent,
+    # i.e. the switch's own documentation is stale.
+    documentation_stale: bool = Field(default=False, alias="documentationStale")
+
+    model_config = {"populate_by_name": True}
+
+
+class ReconciliationSummary(BaseModel):
+    """Whole-device reconciliation. Deliberately separate from health."""
+
+    evaluated_at: datetime = Field(alias="evaluatedAt")
+    device_id: str = Field(alias="deviceId")
+    aligned: int = 0
+    drift: int = 0
+    expected_not_observed: int = Field(default=0, alias="expectedNotObserved")
+    unexpected: int = 0
+    uncertain: int = 0
+    changed: int = 0
+    # True when at least one interface needs a human decision. Never implies
+    # the network is unhealthy.
+    attention: bool = False
+    headline: str = "No topology intent recorded yet."
+    interfaces: List[InterfaceReconciliation] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
+# --- Expected topology (SwitchOps-local intent) -----------------------------
+
+# Ranked by authority. A user statement beats an accepted plan, which beats a
+# description somebody typed into the switch years ago.
+IntentSource = Literal["user-intent", "accepted-plan", "interface-description"]
+
+
+class ExpectedRelationship(BaseModel):
+    """What the operator says should be on an interface.
+
+    Stored locally by SwitchOps. Writing one of these never touches the switch.
+    """
+
+    device_id: str = Field(alias="deviceId")
+    interface: str
+    expected_name: str = Field(alias="expectedName")
+    expected_device_type: DeviceType = Field(default="unknown", alias="expectedDeviceType")
+    expected_vendor: Optional[str] = Field(default=None, alias="expectedVendor")
+    expected_model: Optional[str] = Field(default=None, alias="expectedModel")
+    source: IntentSource = "user-intent"
+    note: Optional[str] = None
+    created_at: Optional[datetime] = Field(default=None, alias="createdAt")
+    updated_at: Optional[datetime] = Field(default=None, alias="updatedAt")
+
+    model_config = {"populate_by_name": True}
+
+
+class ExpectedRelationshipRequest(BaseModel):
+    expected_name: str = Field(alias="expectedName", min_length=1, max_length=64)
+    expected_device_type: DeviceType = Field(default="unknown", alias="expectedDeviceType")
+    expected_vendor: Optional[str] = Field(default=None, alias="expectedVendor", max_length=64)
+    expected_model: Optional[str] = Field(default=None, alias="expectedModel", max_length=64)
+    note: Optional[str] = Field(default=None, max_length=200)
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("expected_name", "expected_vendor", "expected_model", "note")
+    @classmethod
+    def validate_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        if any(ord(char) < 32 for char in value):
+            raise ValueError("Value contains control characters.")
+        return value or None
+
+
+class ExpectedTopologyResponse(BaseModel):
+    device_id: str = Field(alias="deviceId")
+    relationships: List[ExpectedRelationship] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
 
 
 class CdpNeighbor(BaseModel):
@@ -504,6 +728,17 @@ class MacTableEntry(BaseModel):
     port: str
 
 
+class ArpEntry(BaseModel):
+    """One ``show ip arp`` row. Proves an IP/MAC association, nothing more."""
+
+    ip: str
+    mac: str
+    age_minutes: Optional[int] = Field(default=None, alias="ageMinutes")
+    interface: str = ""
+
+    model_config = {"populate_by_name": True}
+
+
 class MacTableResponse(BaseModel):
     entries: List[MacTableEntry]
 
@@ -624,6 +859,7 @@ class DashboardResponse(BaseModel):
     telemetry: TelemetrySnapshotSummary
     events: NetworkEventsResponse
     topology: TopologyModel
+    reconciliation: ReconciliationSummary
     configuration_history: ConfigurationHistoryResponse = Field(alias="configurationHistory")
     section_errors: Dict[str, str] = Field(default_factory=dict, alias="sectionErrors")
 

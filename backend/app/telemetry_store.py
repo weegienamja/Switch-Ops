@@ -358,29 +358,39 @@ class TelemetryStore:
                 metadata={"before": delta.poe_before, "after": delta.poe_after},
             ))
 
+        # MAC-table membership churns constantly as entries age out and return,
+        # especially behind an uplink. Reporting one event per address buried
+        # everything else, so the whole change on an interface is reported as a
+        # single event carrying the counts.
         previous_devices = set(json.loads(previous["learned_devices"] or "[]"))
         current_devices = set(learned_devices)
-        for device_key in sorted(current_devices - previous_devices):
+        appeared = sorted(current_devices - previous_devices)
+        departed = sorted(previous_devices - current_devices)
+        if appeared or departed:
+            parts: list[str] = []
+            if appeared:
+                parts.append(f"{len(appeared)} appeared")
+            if departed:
+                parts.append(f"{len(departed)} no longer present")
             events.append(cls._event(
                 observed_at=observed_at,
                 device_id=device_id,
                 interface=port,
-                event_type="device_appeared",
-                severity="HEALTHY",
-                title=f"New device learned on {port}",
-                detail="A MAC-table entry appeared on this interface. This is observation, not proof of the device type.",
-                metadata={"deviceKey": device_key},
-            ))
-        for device_key in sorted(previous_devices - current_devices):
-            events.append(cls._event(
-                observed_at=observed_at,
-                device_id=device_id,
-                interface=port,
-                event_type="device_disappeared",
-                severity="NOTICE",
-                title=f"Learned device no longer present on {port}",
-                detail="A previous MAC-table entry is no longer present. It may have aged out; SwitchOps does not claim the device disconnected.",
-                metadata={"deviceKey": device_key},
+                event_type="learned_addresses_changed",
+                severity="HEALTHY" if appeared and not departed else "NOTICE",
+                title=f"Learned addresses changed on {port} ({', '.join(parts)})",
+                detail=(
+                    f"The set of MAC-table entries on {port} changed: "
+                    f"{len(appeared)} appeared and {len(departed)} are no longer present. "
+                    "Entries age out on their own schedule, so a departure is not proof "
+                    "that a device disconnected, and an arrival proves only where traffic "
+                    "was learned - not what the device is."
+                ),
+                metadata={
+                    "appeared": len(appeared),
+                    "departed": len(departed),
+                    "total": len(current_devices),
+                },
             ))
         return events
 

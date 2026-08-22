@@ -125,7 +125,7 @@ def test_link_poe_and_device_transitions_create_distinct_events(tmp_path):
     )
 
     event_types = {event.event_type for event in store.recent_events()}
-    assert {"interface_link_up", "poe_state_changed", "device_appeared"} <= event_types
+    assert {"interface_link_up", "poe_state_changed", "learned_addresses_changed"} <= event_types
 
 
 def test_history_is_ordered_and_filtered_by_device(tmp_path):

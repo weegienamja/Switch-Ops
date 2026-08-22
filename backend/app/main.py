@@ -20,9 +20,10 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
 from .audit_store import get_audit_store
-from .command_registry import build_write_action
+from .command_registry import assert_interface_readable, build_write_action
 from .configuration_history import get_configuration_history_store
 from .connection_test import run_connection_test
+from .intent_store import get_intent_store
 from .config import get_settings
 from .credential_store import SwitchCredentials, get_credential_store
 from .errors import SwitchOpsError
@@ -39,6 +40,8 @@ from .models import (
     ConfigurationHistoryEntry,
     ConfigurationHistoryResponse,
     ConnectionTestResult,
+    ExpectedRelationshipRequest,
+    ExpectedTopologyResponse,
     CredentialSetupRequest,
     DashboardResponse,
     DeploymentPlan,
@@ -58,6 +61,7 @@ from .models import (
     NetworkEvent,
     PoeResponse,
     PortDescriptionRequest,
+    ReconciliationSummary,
     RuntimeInfo,
     SetupStatus,
     SwitchSummary,
@@ -65,6 +69,7 @@ from .models import (
     TelemetrySnapshotSummary,
     WriteActionResult,
 )
+from .parsers.arp import parse_arp
 from .parsers.cdp import parse_cdp
 from .parsers.config_parser import parse_running_config, redact_config
 from .parsers.cpu import parse_cpu
@@ -79,6 +84,14 @@ from .parsers.poe import parse_poe
 from .parsers.version import parse_version
 from .parsers.vlans import parse_vlans
 from .planner import build_access_point_plan
+from .reconciliation import (
+    CiscoIosEvidenceProvider,
+    HistoryProvider,
+    IntentProvider,
+    PreviousInterfaceState,
+    reconcile,
+    reconciliation_events,
+)
 from .switch_client import (
     SwitchClient,
     get_mock_scenario,
@@ -213,6 +226,7 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         "memory": "show_memory_statistics",
         "macTable": "show_mac_address_table",
         "neighbors": "show_cdp_neighbors_detail",
+        "arp": "show_ip_arp",
         "logs": "show_logging",
     }
     outputs: dict[str, str] = {}
@@ -275,6 +289,10 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
     cdp_neighbors = _parse_section(
         "neighbors", parse_cdp, outputs["neighbors"], [], section_errors
     )
+    # ARP ties an IP to a hardware address. Combined with the MAC table it can
+    # place the default gateway on a port. An empty or stale table proves
+    # nothing and is not an error.
+    arp_entries = _parse_section("arp", parse_arp, outputs["arp"], [], section_errors)
 
     observed_at = datetime.now(timezone.utc)
     credential_status = get_credential_store().status()
@@ -367,6 +385,60 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         section_errors["configurationHistory"] = "persistence_failed"
         logger.warning("Configuration history failed (%s)", type(exc).__name__)
         configuration_history = ConfigurationHistoryResponse(entries=[])
+    # --- topology reconciliation -------------------------------------------
+    #
+    # Deliberately computed from the same observation, but kept entirely
+    # separate from health: a network can be perfectly healthy and still not
+    # match what the operator believes is plugged in.
+    intent_store = get_intent_store()
+    gateway_value = str(config.get("gateway") or "")
+    try:
+        previous_identities = intent_store.previous_observations(topology.root_device_id)
+        previous_states = {}
+        for delta in telemetry.interface_deltas:
+            label, identified = previous_identities.get(delta.port, (None, False))
+            if delta.status_before is None and label is None:
+                continue
+            previous_states[delta.port] = PreviousInterfaceState(
+                connected=(delta.status_before or "").lower() == "connected",
+                identity=label if identified else None,
+                observed_at=telemetry.previous_observed_at,
+            )
+        ios_provider = CiscoIosEvidenceProvider(
+            interfaces=interfaces,
+            mac_entries=mac_entries,
+            cdp_neighbors=cdp_neighbors,
+            arp_entries=arp_entries,
+            default_gateway=gateway_value,
+            observed_at=observed_at,
+        )
+        reconciliation = reconcile(
+            device_id=topology.root_device_id,
+            interfaces=interfaces,
+            ios=ios_provider,
+            intent=IntentProvider(
+                interfaces=interfaces,
+                stored=intent_store.list_expected(topology.root_device_id),
+            ),
+            history=HistoryProvider(previous_states),
+            evaluated_at=observed_at,
+        )
+        for event in reconciliation_events(
+            device_id=topology.root_device_id,
+            summary=reconciliation,
+            store=intent_store,
+            observed_at=observed_at,
+        ):
+            telemetry_store.record_event(event)
+    except Exception as exc:
+        section_errors["reconciliation"] = "reconciliation_failed"
+        logger.warning("Reconciliation failed (%s)", type(exc).__name__)
+        reconciliation = ReconciliationSummary(
+            evaluatedAt=observed_at,
+            deviceId=topology.root_device_id,
+            headline="Reconciliation unavailable for this observation.",
+        )
+
     summary = build_summary(
         hostname=hostname,
         model=model,
@@ -418,6 +490,7 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
             )
         ),
         topology=topology,
+        reconciliation=reconciliation,
         configurationHistory=configuration_history,
         sectionErrors=section_errors,
     )
@@ -730,6 +803,69 @@ def post_access_point_plan(req: AccessPointPlanRequest):
     )
 
 
+@app.get(
+    "/api/topology/intent",
+    response_model=ExpectedTopologyResponse,
+    response_model_by_alias=True,
+)
+def get_topology_intent(deviceId: str = Query(min_length=1, max_length=200)):
+    """Expected topology recorded in SwitchOps. Local metadata only."""
+    return ExpectedTopologyResponse(
+        deviceId=deviceId,
+        relationships=get_intent_store().list_expected(deviceId),
+    )
+
+
+@app.put(
+    "/api/topology/intent/{port}",
+    response_model=ExpectedTopologyResponse,
+    response_model_by_alias=True,
+)
+def put_topology_intent(
+    port: str,
+    req: ExpectedRelationshipRequest,
+    deviceId: str = Query(min_length=1, max_length=200),
+):
+    """Record what should be on an interface.
+
+    This writes SwitchOps' own metadata. It sends nothing to the switch, and
+    the interface description on the device is left untouched on purpose - the
+    resulting disagreement is reported as stale documentation.
+    """
+    interface = _short_interface(assert_interface_readable(_decode_port(port)))
+    store = get_intent_store()
+    store.set_expected(
+        device_id=deviceId,
+        interface=interface,
+        expected_name=req.expected_name,
+        expected_device_type=req.expected_device_type,
+        expected_vendor=req.expected_vendor,
+        expected_model=req.expected_model,
+        source="user-intent",
+        note=req.note,
+    )
+    return ExpectedTopologyResponse(
+        deviceId=deviceId,
+        relationships=store.list_expected(deviceId),
+    )
+
+
+@app.delete(
+    "/api/topology/intent/{port}",
+    response_model=ExpectedTopologyResponse,
+    response_model_by_alias=True,
+)
+def delete_topology_intent(port: str, deviceId: str = Query(min_length=1, max_length=200)):
+    """Forget a recorded expectation; intent falls back to the description."""
+    interface = _short_interface(assert_interface_readable(_decode_port(port)))
+    store = get_intent_store()
+    store.clear_expected(device_id=deviceId, interface=interface)
+    return ExpectedTopologyResponse(
+        deviceId=deviceId,
+        relationships=store.list_expected(deviceId),
+    )
+
+
 @app.post("/api/switch/backup-config", response_model=BackupResult, response_model_by_alias=True)
 def post_backup_config():
     with switch_session() as c:
@@ -744,6 +880,11 @@ def _require_write_actions() -> None:
             status_code=403,
             detail="Write actions are disabled. Set ENABLE_WRITE_ACTIONS=true to enable.",
         )
+
+
+def _short_interface(canonical: str) -> str:
+    """``GigabitEthernet0/4`` -> ``Gi0/4`` to match observation keys."""
+    return canonical.replace("GigabitEthernet", "Gi")
 
 
 def _decode_port(port: str) -> str:
