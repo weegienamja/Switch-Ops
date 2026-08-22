@@ -12,9 +12,10 @@ SwitchOps is a **local-only** desktop dashboard for a single Cisco Catalyst WS-C
 2. **No secrets in source.** Never commit real passwords, enable secrets, or `.env` files. Sample data uses `__REPLACE_WITH_LOCAL_SECRET__`.
 3. **No public exposure.** The backend binds to `127.0.0.1`. CORS allows only `localhost` and `tauri://localhost`.
 4. **Protected interfaces are immutable.** `GigabitEthernet0/1`, `GigabitEthernet0/2`, and `Vlan1` are refused at the command registry — no exceptions, even with `ENABLE_WRITE_ACTIONS=true`.
-5. **Backup before write.** Any safe-write action runs `terminal length 0` + `show running-config`, saves a timestamped backup, then performs the change, then `write memory`, then verifies.
-6. **Redact secrets in logs.** Audit entries must never contain plaintext passwords or enable secrets.
-7. **No telnet. No HTTP. No HTTPS on the switch.** Do not weaken switch configuration.
+5. **Backup and verify every write.** Any controlled action captures exact bounded state, saves a timestamped running-config backup, executes one fixed operation, verifies the requested property, audits it, and rolls back on failure.
+6. **Never auto-save.** Normal operations change running configuration only. Startup save is a separate explicit action with UI confirmation; autonomous real-device tests must not save.
+7. **Redact secrets in logs.** Audit entries must never contain plaintext passwords, enable secrets, SNMP communities, or SNMP users.
+8. **No telnet. No HTTP. No HTTPS on the switch.** Do not weaken switch configuration.
 
 ## Agent responsibilities
 

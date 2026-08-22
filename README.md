@@ -16,7 +16,47 @@ SwitchOps is a Windows-first desktop application that:
 - Ships a controlled safe-write mode (disabled by default) for a tiny set of mapped actions on spare ports.
 - Never accepts arbitrary CLI from the UI or any future LLM/MCP integration.
 
-## SwitchOps v0.3.0 (current) - topology reconciliation
+## SwitchOps v0.4.0 (current) - live operations
+
+v0.4 turns the refresh-driven dashboard into a live, serialized operations
+console while retaining the v0.3 evidence and reconciliation model.
+
+- **One persistent Catalyst session.** A dedicated worker owns SSH for the
+  process lifetime. All telemetry, diagnostics, and transactions enter one
+  priority queue; reconnects use bounded backoff and host-key changes still
+  fail closed.
+- **Measured live tiers.** Port status runs every 5 seconds, rotating PoE /
+  errors / environment / load checks every 20 seconds, and MAC / ARP / CDP /
+  LLDP discovery every 60 seconds. Slow clients drop old SSE messages rather
+  than blocking collection, and transactions pause collectors.
+- **Typed SSE UI.** The Visual network, Catalyst front panel, PoE state, live
+  connection badge, per-tier freshness, operation progress, write lock, and
+  running-vs-startup state update without a full page observation.
+- **Verified controlled writes.** Only five fixed actions exist: admin up/down,
+  PoE auto/off, and a sanitized description on Gi0/3-Gi0/8. Each transaction
+  prechecks, backs up, executes, classifies IOS output, verifies the property,
+  audits, and rolls back on failure. Gi0/1, Gi0/2, and Vlan1 remain immutable.
+- **No automatic save.** Successful operations change running configuration
+  only. Saving startup configuration is a separate confirmed UI action; real
+  autonomous validation never invokes it.
+- **Progressive identity.** CDP and LLDP remain direct announcements,
+  descriptions remain intent, and an exact local-NIC/MAC-table correlation can
+  label this PC without exposing its MAC. Existing SNMP configuration is
+  summarized by counts and versions only; v0.4 does not use or configure SNMP.
+
+Real WS-C3560CG-8PC-S measurements drove the design. The original cold
+13-command observation took about 11.75 seconds; a persistent, prompt-anchored
+full observation takes about 1.93-1.98 seconds. `show interfaces status` fell
+from roughly 509 ms to 46 ms with byte-identical output. The live fast tier
+therefore costs about 0.9% device-session duty cycle at its 5-second default.
+
+Hardware acceptance was performed on the lab switch: the temporary LLDP
+experiment found no TEST-GATEWAY-01 advertisement and restored the original running
+configuration, startup was unchanged, and a reversible Gi0/6 admin test
+verified `disabled -> notconnect -> disabled`. The final running/startup
+fingerprints match and write capability is disabled again.
+
+## SwitchOps v0.3.0 - topology reconciliation
 
 The topology diagram is no longer the answer. It is one view of a comparison.
 
@@ -123,7 +163,8 @@ Version 0.2 turns the physical lab into a visual, historical, self-explaining sy
 - Change-only configuration history stores private local versions, fingerprints, known-good markers, and redacted diffs.
 - Access-point port planning validates current state and renders a dry-run proposal. Applying it is intentionally impossible in v0.2.
 
-No background poller was added. A dashboard refresh reuses its single sequential switch session; guide and planner actions run only when the user explicitly requests them.
+This was the v0.2 collection model. v0.4 replaces it with bounded tiered live
+collection while retaining the change-aware historical chart.
 
 ## Switch under management
 
@@ -276,7 +317,9 @@ node scripts/visual-check.mjs --url http://127.0.0.1:3100 --out .visual
 - The backend binds to `127.0.0.1` only.
 - Every command is allowlisted by name; there is **no raw CLI endpoint**.
 - Write actions are gated by `ENABLE_WRITE_ACTIONS=true` and a per-action allowlist.
+- Device control also starts process-locked and must be explicitly unlocked in the UI.
 - Protected interfaces (`Gi0/1`, `Gi0/2`, `Vlan1`) are refused at the registry level.
+- Writes update running configuration only; startup save is separate, explicit, and confirmed.
 - Every command is logged to SQLite and JSONL, with secrets redacted.
 - `scripts/verify-no-secrets.ps1` scans for committed secrets before pushing.
 
@@ -284,6 +327,8 @@ node scripts/visual-check.mjs --url http://127.0.0.1:3100 --out .visual
 
 ```
 GET  /health
+GET  /api/live/state
+GET  /api/live/stream                # typed server-sent events
 GET  /api/system/info               # non-secret runtime facts for Settings
 GET  /api/setup/status
 POST /api/setup/credentials
@@ -311,21 +356,26 @@ GET  /api/configuration/history
 POST /api/configuration/history/{entry_id}/known-good
 POST /api/plans/access-point  # dry-run only; no execution capability
 
-# disabled unless ENABLE_WRITE_ACTIONS=true
-POST /api/switch/ports/{port}/enable
-POST /api/switch/ports/{port}/disable
-POST /api/switch/ports/{port}/description
-POST /api/switch/ports/{port}/poe/enable
-POST /api/switch/save-config
+GET  /api/control/lock
+POST /api/control/lock
+GET  /api/operations/catalog
+GET  /api/config/state
+POST /api/config/state/refresh
+
+# disabled unless ENABLE_WRITE_ACTIONS=true and control is unlocked
+POST /api/control/unlock
+POST /api/interfaces/{port}/operations
+POST /api/config/save                  # explicit confirmed save only
 ```
 
 ## Roadmap
 
 - **v0.2** — historical telemetry, delta health, events, digital twin, Lab Guide, configuration history, and non-executable planning.
 - **v0.2.1** — correct topology evidence correlation, a visual lab canvas, honest observation history, beginner/change-control separation, redesigned Settings, and a read-only connection test.
-- **v0.3.0 (this release)** — topology reconciliation: observed / expected / historical / inferred held together and compared, health separated from drift, and SwitchOps-local expected topology.
-- **Next** — a second evidence provider, so reconciliation has more than one observation point to reason from.
-- **Future** — gated plan/apply/verify/rollback workflows only after explicit safety design and authorization. Never raw CLI.
+- **v0.3.0** — topology reconciliation: observed / expected / historical / inferred held together and compared, health separated from drift, and SwitchOps-local expected topology.
+- **v0.4.0 (this release)** — persistent SSH, tiered telemetry, SSE, integrated live operations, verified transactions, LLDP, local-PC correlation, and secret-free SNMP inspection.
+- **Next** — longer-duration reconnect and UI soak testing, plus richer use of LLDP when adjacent equipment advertises it.
+- **Future** — optional SNMPv3 only when it adds value over the persistent SSH architecture. Never raw CLI.
 
 ## Troubleshooting
 

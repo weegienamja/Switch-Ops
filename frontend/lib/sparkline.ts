@@ -1,5 +1,5 @@
 /**
- * Sparkline geometry for refresh-driven observations.
+ * Sparkline geometry for retained, irregularly timed observations.
  *
  * This is deliberately a pure module with no DOM: the chart's correctness is
  * arithmetic, and arithmetic can be tested without rendering anything.
@@ -139,7 +139,7 @@ export function medianInterval(points: CleanPoint[]): number {
  * How long a silence has to be before the line is broken.
  *
  * Derived from the record's own rhythm rather than a fixed constant, because
- * SwitchOps is refresh-driven: a busy afternoon and an idle night have very
+ * SwitchOps retains observations on a slow cadence: a busy afternoon and an idle night can have very
  * different natural intervals and both are legitimate.
  */
 export function gapThreshold(points: CleanPoint[], options: SparklineOptions): number {

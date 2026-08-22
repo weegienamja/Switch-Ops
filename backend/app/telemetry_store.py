@@ -1,6 +1,6 @@
 """Local SQLite telemetry and meaningful network-event history.
 
-Collection is intentionally refresh-driven. This module never starts a timer,
+Collection cadence is owned by the live tier scheduler. This module never starts a timer,
 opens an SSH connection, or runs a command; it only persists one already
 aggregated dashboard observation and compares it with the preceding sample.
 """

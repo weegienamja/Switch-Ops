@@ -1,6 +1,6 @@
 {
   "name": "switchops",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "SwitchOps — local desktop network operations dashboard for the SWITCHOPS-TEST-SW1 Cisco Catalyst.",
   "scripts": {
