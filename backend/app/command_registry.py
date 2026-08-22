@@ -64,28 +64,24 @@ SAFE_WRITE_ACTIONS: Dict[str, List[str]] = {
         "interface {iface}",
         "no shutdown",
         "end",
-        "write memory",
     ],
     "disable_port": [
         "configure terminal",
         "interface {iface}",
         "shutdown",
         "end",
-        "write memory",
     ],
     "set_port_description": [
         "configure terminal",
         "interface {iface}",
         "description {value}",
         "end",
-        "write memory",
     ],
     "enable_poe": [
         "configure terminal",
         "interface {iface}",
         "power inline auto",
         "end",
-        "write memory",
     ],
     "save_config": ["write memory"],
     "backup_config": ["terminal length 0", "show running-config"],
@@ -147,7 +143,8 @@ def normalize_interface(name: str) -> str:
         raise CommandNotAllowedError(f"Unsupported interface: {name!r}")
     if not re.fullmatch(r"\d+/\d+", suffix):
         raise CommandNotAllowedError(f"Malformed interface suffix: {name!r}")
-    return f"GigabitEthernet{suffix}"
+    slot, port = suffix.split("/", 1)
+    return f"GigabitEthernet{int(slot)}/{int(port)}"
 
 
 def assert_interface_writable(name: str) -> str:

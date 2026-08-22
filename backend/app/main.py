@@ -22,7 +22,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .audit_store import get_audit_store
-from .command_registry import assert_interface_readable, build_write_action
+from .command_registry import assert_interface_readable
 from .configuration_history import get_configuration_history_store
 from .connection_test import run_connection_test
 from .intent_store import get_intent_store
@@ -70,14 +70,25 @@ from .models import (
     NetworkEventsResponse,
     NetworkEvent,
     PoeResponse,
-    PortDescriptionRequest,
+    OperationRequest,
+    OperationResult,
     ReconciliationSummary,
     RuntimeInfo,
     SetupStatus,
     SwitchSummary,
     TelemetryHistoryResponse,
     TelemetrySnapshotSummary,
-    WriteActionResult,
+    ConfigSaveState,
+    WriteLockStatus,
+)
+from .operations import (
+    OPERATIONS,
+    assert_interface_operable,
+    config_fingerprints,
+    get_save_tracker,
+    get_write_lock,
+    run_operation,
+    save_running_config,
 )
 from .parsers.arp import parse_arp
 from .parsers.cdp import parse_cdp
@@ -111,7 +122,6 @@ from .telemetry_store import get_telemetry_store
 from .topology import build_topology
 from .tools.backup import backup_running_config
 from .tools.read_only import run_and_audit
-from .tools.safe_write import execute_safe_write
 
 
 logger = logging.getLogger("switchops")
@@ -122,16 +132,19 @@ configure_logging(settings.log_dir)
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     """Own the device worker and collectors for the process lifetime."""
+    get_write_lock().lock()
+    get_save_tracker().reset()
     _start_live_operations()
     try:
         yield
     finally:
         _stop_live_operations()
+        get_write_lock().lock()
 
 
 app = FastAPI(
     title="SwitchOps",
-    version="0.3.0",
+    version="0.4.0",
     description="Local-only network operations sidecar. Allowlisted commands only.",
     docs_url="/docs" if settings.enable_api_docs else None,
     redoc_url=None,
@@ -1108,16 +1121,6 @@ def post_backup_config():
     return on_device("backup_config", lambda c: backup_running_config(c))
 
 
-# --- safe-write endpoints (disabled unless enable_write_actions) ----------
-
-def _require_write_actions() -> None:
-    if not settings.enable_write_actions:
-        raise HTTPException(
-            status_code=403,
-            detail="Write actions are disabled. Set ENABLE_WRITE_ACTIONS=true to enable.",
-        )
-
-
 def _short_interface(canonical: str) -> str:
     """``GigabitEthernet0/4`` -> ``Gi0/4`` to match observation keys."""
     return canonical.replace("GigabitEthernet", "Gi")
@@ -1128,70 +1131,162 @@ def _decode_port(port: str) -> str:
     return port.replace("-", "/")
 
 
-def _prevalidate_write(action: str, interface: str | None = None, value: str | None = None) -> None:
-    """Reject unsafe input before opening any connection to the switch."""
-    build_write_action(action, interface=interface, value=value)
+# --- controlled operations ------------------------------------------------
 
 
-@app.post("/api/switch/ports/{port}/enable", response_model=WriteActionResult, response_model_by_alias=True)
-def post_port_enable(port: str):
-    _require_write_actions()
-    decoded = _decode_port(port)
-    _prevalidate_write("enable_port", interface=decoded)
-    return on_device(
-        "port_enable",
-        lambda c: execute_safe_write(c, action="enable_port", interface=decoded),
-        priority=JobPriority.TRANSACTION,
+@app.get("/api/control/lock", response_model=WriteLockStatus, response_model_by_alias=True)
+def get_control_lock():
+    return get_write_lock().status()
+
+
+@app.post("/api/control/unlock", response_model=WriteLockStatus, response_model_by_alias=True)
+def post_control_unlock():
+    lock = get_write_lock()
+    lock.unlock()
+    status = lock.status()
+    get_live_state().hub.publish("control_lock", status)
+    return status
+
+
+@app.post("/api/control/lock", response_model=WriteLockStatus, response_model_by_alias=True)
+def post_control_lock():
+    lock = get_write_lock()
+    lock.lock()
+    status = lock.status()
+    get_live_state().hub.publish("control_lock", status)
+    return status
+
+
+@app.get("/api/operations/catalog")
+def get_operations_catalog():
+    return {
+        "operations": [
+            {
+                "kind": spec.kind,
+                "label": spec.label,
+                "needsValue": spec.needs_value,
+                "reversible": spec.reversible,
+            }
+            for spec in OPERATIONS.values()
+        ],
+        "writableInterfaces": [f"Gi0/{number}" for number in range(3, 9)],
+        "protectedInterfaces": ["Gi0/1", "Gi0/2", "Vlan1"],
+        "arbitraryCli": False,
+        "automaticSave": False,
+    }
+
+
+@app.post(
+    "/api/interfaces/{port}/operations",
+    response_model=OperationResult,
+    response_model_by_alias=True,
+)
+def post_interface_operation(port: str, req: OperationRequest):
+    lock = get_write_lock()
+    lock.require_unlocked()
+    # Reject an unsafe path before a connection or queue job is attempted.
+    canonical = assert_interface_operable(_decode_port(port))
+    short = _short_interface(canonical)
+    live = get_live_state()
+    collector = get_collector()
+    marker = f"{req.kind}:{short}"
+    live.operation_in_progress = marker
+    if collector is not None:
+        collector.pause()
+    live.hub.publish(
+        "operation_progress",
+        {"kind": req.kind, "interface": short, "stages": [], "status": "running"},
     )
 
+    def progress(stages):
+        live.hub.publish(
+            "operation_progress",
+            {
+                "kind": req.kind,
+                "interface": short,
+                "stages": [stage.model_dump(mode="json") for stage in stages],
+                "status": "running",
+            },
+        )
 
-@app.post("/api/switch/ports/{port}/disable", response_model=WriteActionResult, response_model_by_alias=True)
-def post_port_disable(port: str):
-    _require_write_actions()
-    decoded = _decode_port(port)
-    _prevalidate_write("disable_port", interface=decoded)
-    return on_device(
-        "port_disable",
-        lambda c: execute_safe_write(c, action="disable_port", interface=decoded),
+    try:
+        result = on_device(
+            f"operation-{req.kind}",
+            lambda c: run_operation(
+                c,
+                kind=req.kind,
+                interface=canonical,
+                value=req.value,
+                actor="operator",
+                on_progress=progress,
+            ),
+            priority=JobPriority.TRANSACTION,
+        )
+        if result.requires_save:
+            get_save_tracker().record_change(result.at)
+        live.hub.publish(
+            "operation_complete", result.model_dump(by_alias=True, mode="json")
+        )
+        live.hub.publish(
+            "config_state",
+            get_save_tracker().state().model_dump(by_alias=True, mode="json"),
+        )
+        return result
+    finally:
+        live.operation_in_progress = None
+        if collector is not None:
+            collector.resume()
+            # The transaction has left the queue; enqueue one fresh status read
+            # instead of waiting for the next periodic tick.
+            collector.collect_fast()
+
+
+@app.get("/api/config/state", response_model=ConfigSaveState, response_model_by_alias=True)
+def get_config_state():
+    return get_save_tracker().state()
+
+
+@app.post(
+    "/api/config/state/refresh",
+    response_model=ConfigSaveState,
+    response_model_by_alias=True,
+)
+def post_config_state_refresh():
+    running, startup = on_device(
+        "config-fingerprints",
+        lambda c: config_fingerprints(c, actor="operator"),
+        priority=JobPriority.DIAGNOSTIC,
+    )
+    tracker = get_save_tracker()
+    tracker.record_fingerprints(running, startup)
+    state = tracker.state()
+    get_live_state().hub.publish(
+        "config_state", state.model_dump(by_alias=True, mode="json")
+    )
+    return state
+
+
+@app.post("/api/config/save")
+def post_config_save():
+    # Saving is a distinct, explicit write and therefore uses both gates too.
+    get_write_lock().require_unlocked()
+    success, detail = on_device(
+        "save-config",
+        lambda c: save_running_config(c, actor="operator"),
         priority=JobPriority.TRANSACTION,
     )
-
-
-@app.post("/api/switch/ports/{port}/description", response_model=WriteActionResult, response_model_by_alias=True)
-def post_port_description(port: str, req: PortDescriptionRequest):
-    _require_write_actions()
-    decoded = _decode_port(port)
-    _prevalidate_write("set_port_description", interface=decoded, value=req.description)
-    return on_device(
-        "port_description",
-        lambda c: execute_safe_write(
-            c, action="set_port_description", interface=decoded, value=req.description
-        ),
-        priority=JobPriority.TRANSACTION,
+    tracker = get_save_tracker()
+    if success:
+        tracker.record_save()
+    state = tracker.state()
+    get_live_state().hub.publish(
+        "config_state", state.model_dump(by_alias=True, mode="json")
     )
-
-
-@app.post("/api/switch/ports/{port}/poe/enable", response_model=WriteActionResult, response_model_by_alias=True)
-def post_port_poe_enable(port: str):
-    _require_write_actions()
-    decoded = _decode_port(port)
-    _prevalidate_write("enable_poe", interface=decoded)
-    return on_device(
-        "port_poe_enable",
-        lambda c: execute_safe_write(c, action="enable_poe", interface=decoded),
-        priority=JobPriority.TRANSACTION,
-    )
-
-
-@app.post("/api/switch/save-config", response_model=WriteActionResult, response_model_by_alias=True)
-def post_save_config():
-    _require_write_actions()
-    _prevalidate_write("save_config")
-    return on_device(
-        "save_config",
-        lambda c: execute_safe_write(c, action="save_config"),
-        priority=JobPriority.TRANSACTION,
-    )
+    return {
+        "success": success,
+        "detail": detail,
+        "state": state.model_dump(by_alias=True, mode="json"),
+    }
 
 
 # --- entry point ----------------------------------------------------------

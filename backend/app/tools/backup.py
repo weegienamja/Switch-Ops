@@ -18,6 +18,7 @@ def backup_running_config(
     *,
     hostname: str = "SWITCHOPS-TEST-SW1",
     actor: str = "system",
+    config_text: str | None = None,
 ) -> BackupResult:
     start = time.monotonic()
     # ensure paging disabled
@@ -25,7 +26,8 @@ def backup_running_config(
         client.run("terminal_length_0")
     except Exception:
         pass
-    config_text = client.run("show_running_config")
+    if config_text is None:
+        config_text = client.run("show_running_config")
     ts = datetime.now()
     safe_hostname = "".join(
         char if char.isalnum() or char in ("-", "_") else "_" for char in hostname

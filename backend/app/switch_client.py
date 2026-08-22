@@ -16,7 +16,9 @@ from typing import Literal, Optional, Protocol
 
 from .command_registry import (
     READ_ONLY_COMMANDS,
+    assert_interface_writable,
     resolve_read_command,
+    sanitize_description,
 )
 from .config import get_settings, SAMPLE_DIR
 from .credential_store import SwitchCredentials, get_credential_store
@@ -82,22 +84,25 @@ def set_mock_scenario(scenario: MockScenario) -> MockScenario:
 
 class SwitchClient(Protocol):
     def run(self, symbol: str) -> str: ...
+    def run_raw_action(self, commands: list[str]) -> str: ...
     def close(self) -> None: ...
     def is_alive(self) -> bool: ...
     def refresh_prompt(self) -> None: ...
 
 
 class MockSwitchClient:
-    """Returns canned IOS output for the configured set of read commands."""
+    """Stateful IOS simulator backed by the canned read-only fixtures."""
+
+    _WRITABLE_SHORT = {f"Gi0/{number}" for number in range(3, 9)}
 
     def __init__(self, sample_dir: Path = SAMPLE_DIR) -> None:
         self.sample_dir = sample_dir
+        self._admin_overrides: dict[str, bool] = {}
+        self._description_overrides: dict[str, str] = {}
+        self._poe_overrides: dict[str, str] = {}
+        self._startup_config = self._render_running_config()
 
-    def run(self, symbol: str) -> str:
-        if symbol not in READ_ONLY_COMMANDS:
-            raise CommandNotAllowedError(f"Unknown read-only command: {symbol!r}")
-        if symbol == "terminal_length_0":
-            return ""
+    def _fixture(self, symbol: str) -> str:
         filename = _SAMPLE_FILES.get(symbol)
         if not filename:
             return ""
@@ -108,8 +113,129 @@ class MockSwitchClient:
             return ""
         return path.read_text(encoding="utf-8")
 
+    def _render_status(self) -> str:
+        from .parsers.interfaces import parse_interface_status
+
+        rows = parse_interface_status(self._fixture("show_interfaces_status"))
+        rendered = ["Port      Name               Status       Vlan       Duplex  Speed Type"]
+        for row in rows:
+            canonical = (
+                assert_interface_writable(row.port) if row.port in self._WRITABLE_SHORT else None
+            )
+            if canonical in self._description_overrides:
+                row.name = self._description_overrides[canonical]
+            if canonical in self._admin_overrides:
+                row.status = (
+                    "disabled"
+                    if self._admin_overrides[canonical]
+                    else ("connected" if row.status == "connected" else "notconnect")
+                )
+            rendered.append(
+                f"{row.port:<10}{row.name:<19}{row.status:<13}{row.vlan:<11}"
+                f"{row.duplex:>7} {row.speed:>6} {row.type}"
+            )
+        return "\n".join(rendered)
+
+    def _render_poe(self) -> str:
+        from .parsers.poe import parse_poe
+
+        poe = parse_poe(self._fixture("show_power_inline"))
+        rendered = [
+            f"Available:{poe.available_watts:.1f}(w)  Used:{poe.used_watts:.1f}(w)  "
+            f"Remaining:{poe.remaining_watts:.1f}(w)",
+            "",
+            "Interface Admin  Oper       Power   Device              Class Max",
+            "                            (Watts)",
+            "--------- ------ ---------- ------- ------------------- ----- ----",
+        ]
+        for row in poe.ports:
+            canonical = row.interface.replace("Gi", "GigabitEthernet", 1)
+            admin = self._poe_overrides.get(canonical, row.admin)
+            oper = "off" if admin == "never" else row.oper
+            rendered.append(
+                f"{row.interface:<9} {admin:<6} {oper:<10} {row.power_watts:<7.1f} "
+                f"{row.device:<19} {row.poe_class:<5} {row.max_watts:.1f}"
+            )
+        return "\n".join(rendered)
+
+    def _render_running_config(self) -> str:
+        config = self._fixture("show_running_config")
+        changed = set(self._admin_overrides) | set(self._description_overrides) | set(self._poe_overrides)
+        for canonical in sorted(changed):
+            pattern = re.compile(
+                rf"(^interface\s+{re.escape(canonical)}\s*$\n)(?P<body>.*?)(?=^!\s*$)",
+                re.MULTILINE | re.DOTALL | re.IGNORECASE,
+            )
+
+            def replace_block(match: re.Match[str]) -> str:
+                kept: list[str] = []
+                for raw in match.group("body").splitlines():
+                    line = raw.strip().lower()
+                    if canonical in self._admin_overrides and line in {"shutdown", "no shutdown"}:
+                        continue
+                    if canonical in self._description_overrides and line.startswith("description "):
+                        continue
+                    if canonical in self._poe_overrides and line.startswith("power inline "):
+                        continue
+                    kept.append(raw)
+                description = self._description_overrides.get(canonical)
+                if description:
+                    kept.append(f" description {description}")
+                if self._admin_overrides.get(canonical) is True:
+                    kept.append(" shutdown")
+                if self._poe_overrides.get(canonical) == "never":
+                    kept.append(" power inline never")
+                body = "\n".join(line for line in kept if line)
+                return match.group(1) + (body + "\n" if body else "")
+
+            config, count = pattern.subn(replace_block, config, count=1)
+            if count != 1:
+                raise CommandNotAllowedError(f"Mock interface block missing for {canonical}.")
+        return config
+
+    def run(self, symbol: str) -> str:
+        if symbol not in READ_ONLY_COMMANDS:
+            raise CommandNotAllowedError(f"Unknown read-only command: {symbol!r}")
+        if symbol == "terminal_length_0":
+            return ""
+        if symbol == "show_interfaces_status":
+            return self._render_status()
+        if symbol == "show_power_inline":
+            return self._render_poe()
+        if symbol == "show_running_config":
+            return self._render_running_config()
+        if symbol == "show_startup_config":
+            return self._startup_config
+        return self._fixture(symbol)
+
+    def run_raw_action(self, commands: list[str]) -> str:
+        if commands == ["write memory"]:
+            self._startup_config = self._render_running_config()
+            return "Building configuration...\n[OK]"
+        if len(commands) != 4 or commands[0] != "configure terminal" or commands[-1] != "end":
+            return "% Invalid input detected at '^' marker."
+        interface_line, action = commands[1], commands[2]
+        if not interface_line.startswith("interface "):
+            return "% Invalid input detected at '^' marker."
+        canonical = assert_interface_writable(interface_line[len("interface ") :])
+        if action == "shutdown":
+            self._admin_overrides[canonical] = True
+        elif action == "no shutdown":
+            self._admin_overrides[canonical] = False
+        elif action in {"power inline auto", "power inline never"}:
+            self._poe_overrides[canonical] = action.rsplit(" ", 1)[-1]
+        elif action == "no description":
+            self._description_overrides[canonical] = ""
+        elif action.startswith("description "):
+            self._description_overrides[canonical] = sanitize_description(
+                action[len("description ") :]
+            )
+        else:
+            return "% Invalid input detected at '^' marker."
+        return "Mock IOS accepted the bounded configuration operation."
+
     def run_command_sequence(self, commands: list[str]) -> str:
-        return "Mock mode — write actions are simulated.\n" + "\n".join(commands)
+        return self.run_raw_action(commands)
 
     def is_alive(self) -> bool:
         return True

@@ -917,6 +917,79 @@ class GuideRunResult(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+# --- Controlled operations --------------------------------------------------
+
+OperationKind = Literal[
+    "admin_up",
+    "admin_down",
+    "poe_auto",
+    "poe_never",
+    "set_description",
+]
+
+
+class OperationStage(BaseModel):
+    """One step of a change transaction, streamed to the UI as it happens."""
+
+    name: Literal["precheck", "backup", "execute", "verify", "audit", "rollback"]
+    status: Literal["pending", "running", "ok", "failed", "skipped"]
+    detail: str = ""
+
+
+class OperationResult(BaseModel):
+    operation_id: str = Field(alias="operationId")
+    kind: OperationKind
+    interface: str
+    #: blocked  refused before anything was sent
+    #: failed   sent, but rejected or unverified
+    #: rolled_back  verification failed and the previous state was restored
+    status: Literal["success", "failed", "blocked", "rolled_back"]
+    detail: str = ""
+    stages: List[OperationStage] = Field(default_factory=list)
+    before_state: Optional[str] = Field(default=None, alias="beforeState")
+    after_state: Optional[str] = Field(default=None, alias="afterState")
+    commands: List[str] = Field(default_factory=list)
+    duration_ms: int = Field(default=0, alias="durationMs")
+    rolled_back: Optional[bool] = Field(default=None, alias="rolledBack")
+    backup_path: Optional[str] = Field(default=None, alias="backupPath")
+    #: True when the running configuration now differs from startup.
+    requires_save: bool = Field(default=False, alias="requiresSave")
+    at: datetime
+
+    model_config = {"populate_by_name": True}
+
+
+class OperationRequest(BaseModel):
+    kind: OperationKind
+    value: Optional[str] = Field(default=None, max_length=64)
+
+
+class WriteLockStatus(BaseModel):
+    """Two independent gates: installation capability, and session unlock."""
+
+    capability: bool
+    unlocked: bool
+    unlocked_at: Optional[datetime] = Field(default=None, alias="unlockedAt")
+
+    model_config = {"populate_by_name": True}
+
+
+class ConfigSaveState(BaseModel):
+    """Whether the running configuration has drifted from startup.
+
+    A change is not permanent until somebody chooses to save it, and SwitchOps
+    never saves on its own.
+    """
+
+    running_modified: bool = Field(default=False, alias="runningModified")
+    last_change_at: Optional[datetime] = Field(default=None, alias="lastChangeAt")
+    last_saved_at: Optional[datetime] = Field(default=None, alias="lastSavedAt")
+    pending_operations: int = Field(default=0, alias="pendingOperations")
+    detail: str = ""
+
+    model_config = {"populate_by_name": True}
+
+
 # --- Write actions ---------------------------------------------------------
 
 class PortDescriptionRequest(BaseModel):

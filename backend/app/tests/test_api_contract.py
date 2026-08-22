@@ -142,7 +142,10 @@ def test_env_endpoint_mock():
 
 
 def test_write_endpoints_403_when_disabled():
-    r = client.post("/api/switch/ports/Gi0-6/enable")
+    r = client.post(
+        "/api/interfaces/Gi0-6/operations",
+        json={"kind": "admin_up"},
+    )
     assert r.status_code == 403
 
 
@@ -158,10 +161,111 @@ def test_cross_site_mutation_origin_is_rejected():
 def test_protected_port_always_refused(monkeypatch):
     # Enable writes via a settings monkeypatch to confirm protected refusal still applies.
     from app import main as main_mod
+    from app import operations as operations_mod
     monkeypatch.setattr(main_mod.settings, "enable_write_actions", True)
-    r = client.post("/api/switch/ports/Gi0-1/disable")
-    # The protected check fires regardless of write-enable.
-    assert r.status_code in (403,)
+    monkeypatch.setattr(operations_mod, "get_settings", lambda: main_mod.settings)
+    assert client.post("/api/control/unlock").status_code == 200
+    try:
+        r = client.post(
+            "/api/interfaces/Gi0-01/operations",
+            json={"kind": "admin_down"},
+        )
+        # Canonicalisation makes the leading-zero alias protected too.
+        assert r.status_code == 403
+    finally:
+        client.post("/api/control/lock")
+
+
+def test_operation_catalog_exposes_only_bounded_actions():
+    r = client.get("/api/operations/catalog")
+    assert r.status_code == 200
+    body = r.json()
+    assert {item["kind"] for item in body["operations"]} == {
+        "admin_up",
+        "admin_down",
+        "poe_auto",
+        "poe_never",
+        "set_description",
+    }
+    assert body["arbitraryCli"] is False
+    assert body["automaticSave"] is False
+    assert "Gi0/1" not in body["writableInterfaces"]
+
+
+def test_controlled_operation_api_streams_progress_and_never_auto_saves(monkeypatch):
+    from app import main as main_mod
+    from app import operations as operations_mod
+    from app.live_state import get_live_state
+    from app.operations import get_save_tracker, get_write_lock
+
+    monkeypatch.setattr(main_mod.settings, "enable_write_actions", True)
+    monkeypatch.setattr(operations_mod, "get_settings", lambda: main_mod.settings)
+    device_session.reset_device_session()
+    get_save_tracker().reset()
+    get_write_lock().lock()
+    published: list[str] = []
+    monkeypatch.setattr(
+        get_live_state().hub,
+        "publish",
+        lambda event_type, _payload: published.append(event_type),
+    )
+    try:
+        assert client.post("/api/control/unlock").json()["unlocked"] is True
+        r = client.post(
+            "/api/interfaces/Gi0-6/operations",
+            json={"kind": "admin_up"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["requiresSave"] is True
+        assert "write memory" not in body["commands"]
+        assert "operation_progress" in published
+        assert "operation_complete" in published
+        state = client.get("/api/config/state").json()
+        assert state["runningModified"] is True
+        assert state["pendingOperations"] == 1
+
+        save = client.post("/api/config/save")
+        assert save.status_code == 200
+        assert save.json()["success"] is True
+        assert save.json()["state"]["runningModified"] is False
+    finally:
+        client.post("/api/control/lock")
+        get_save_tracker().reset()
+        device_session.reset_device_session()
+
+
+def test_non_allowlisted_port_is_rejected_before_device_access(monkeypatch):
+    from app import main as main_mod
+    from app import operations as operations_mod
+    from app.operations import get_write_lock
+
+    monkeypatch.setattr(main_mod.settings, "enable_write_actions", True)
+    monkeypatch.setattr(operations_mod, "get_settings", lambda: main_mod.settings)
+    get_write_lock().unlock()
+    try:
+        r = client.post(
+            "/api/interfaces/Gi0-9/operations",
+            json={"kind": "admin_down"},
+        )
+        assert r.status_code == 400
+        assert r.json()["code"] == "command_not_allowed"
+    finally:
+        get_write_lock().lock()
+
+
+def test_new_process_lifespan_always_relocks_control(monkeypatch):
+    from app import main as main_mod
+    from app import operations as operations_mod
+    from app.operations import get_write_lock
+
+    monkeypatch.setattr(main_mod.settings, "enable_write_actions", True)
+    monkeypatch.setattr(operations_mod, "get_settings", lambda: main_mod.settings)
+    get_write_lock().unlock()
+    with TestClient(app) as fresh_process:
+        assert fresh_process.get("/api/control/lock").json()["unlocked"] is False
+    assert get_write_lock().status()["unlocked"] is False
 
 
 def test_backup_config_mock():

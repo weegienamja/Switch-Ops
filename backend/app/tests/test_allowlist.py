@@ -57,7 +57,8 @@ def test_allowlisted_interface_accepted():
     plan = build_write_action("enable_port", interface="Gi0/6")
     assert plan.interface == "GigabitEthernet0/6"
     assert "interface GigabitEthernet0/6" in plan.commands
-    assert plan.commands[-1] == "write memory"
+    assert plan.commands[-1] == "end"
+    assert "write memory" not in plan.commands
 
 
 def test_set_port_description_sanitizes():
