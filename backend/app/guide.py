@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
-from typing import Any, Callable
+from typing import Any
 
 from .command_registry import (
     assert_interface_readable,
@@ -22,6 +22,7 @@ from .parsers.mac_table import parse_mac_table
 from .parsers.memory import parse_memory
 from .parsers.poe import parse_poe
 from .parsers.version import parse_version
+from .parsers.vlans import parse_vlans
 from .switch_client import SwitchClient
 from .tools.backup import backup_running_config
 from .tools.read_only import run_and_audit
@@ -173,22 +174,6 @@ def list_guide_operations() -> list[GuideOperation]:
 
 def _short_interface(canonical: str) -> str:
     return canonical.replace("GigabitEthernet", "Gi")
-
-
-def _parse_vlans(text: str) -> list[dict[str, Any]]:
-    vlans: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        match = re.match(r"^\s*(\d+)\s+(\S+)\s+(active|act/unsup|suspend|shutdown)\s*(.*)$", line, re.IGNORECASE)
-        if not match:
-            continue
-        ports = [port.strip() for port in match.group(4).split(",") if port.strip()]
-        vlans.append({
-            "id": match.group(1),
-            "name": match.group(2),
-            "status": match.group(3),
-            "ports": ports,
-        })
-    return vlans
 
 
 def _parse_spanning_tree(text: str) -> dict[str, Any]:
@@ -361,7 +346,7 @@ def run_guide_operation(
         powered = [port for port in poe.ports if port.oper.lower() not in {"", "off", "n/a"}]
         explanation = f"The switch is using {poe.used_watts:.1f} W of {poe.available_watts:.1f} W and is supplying power on {len(powered)} port(s)."
     elif operation_id == "vlans":
-        vlans = _parse_vlans(outputs["show_vlan_brief"])
+        vlans = parse_vlans(outputs["show_vlan_brief"])
         result = {"vlans": vlans}
         explanation = f"The switch reported {len(vlans)} VLAN(s). A VLAN separates one logical Ethernet network from another."
         if not vlans and not warnings:

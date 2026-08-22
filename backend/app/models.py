@@ -438,6 +438,67 @@ class AuditResponse(BaseModel):
     events: List[AuditEvent]
 
 
+# --- Configuration history -------------------------------------------------
+
+class ConfigurationHistoryEntry(BaseModel):
+    id: int
+    timestamp: datetime
+    device_id: str = Field(alias="deviceId")
+    fingerprint: str
+    filename: str
+    previous_id: Optional[int] = Field(default=None, alias="previousId")
+    known_good: bool = Field(default=False, alias="knownGood")
+    change_detected: bool = Field(default=False, alias="changeDetected")
+    source: Literal["initial_observation", "external_or_unknown"]
+    redacted_diff: List[str] = Field(default_factory=list, alias="redactedDiff")
+
+    model_config = {"populate_by_name": True}
+
+
+class ConfigurationHistoryResponse(BaseModel):
+    entries: List[ConfigurationHistoryEntry]
+
+
+# --- NetDevOps dry-run planning --------------------------------------------
+
+class AccessPointPlanRequest(BaseModel):
+    interface: str
+    role: Literal["wireless-access-point"] = "wireless-access-point"
+    enabled: bool = True
+    vlan: int = Field(default=1, ge=1, le=4094)
+    poe: Literal["auto", "never"] = "auto"
+    portfast: bool = True
+
+    @field_validator("interface")
+    @classmethod
+    def validate_plan_interface(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 64 or any(ord(char) < 32 for char in value):
+            raise ValueError("Interface is invalid.")
+        return value
+
+
+class PlanCheck(BaseModel):
+    name: str
+    passed: bool
+    detail: str
+
+
+class DeploymentPlan(BaseModel):
+    plan_id: str = Field(alias="planId")
+    status: Literal["VALID", "INVALID"]
+    target_interface: str = Field(alias="targetInterface")
+    desired_state: Dict[str, Any] = Field(alias="desiredState")
+    checks: List[PlanCheck]
+    impact: str
+    proposed_ios: List[str] = Field(alias="proposedIos")
+    backup_required: bool = Field(default=True, alias="backupRequired")
+    verification_commands: List[str] = Field(alias="verificationCommands")
+    apply_available: Literal[False] = Field(default=False, alias="applyAvailable")
+
+    model_config = {"populate_by_name": True}
+
+
 class DashboardResponse(BaseModel):
     summary: SwitchSummary
     interfaces: InterfaceStatusResponse
@@ -452,6 +513,7 @@ class DashboardResponse(BaseModel):
     telemetry: TelemetrySnapshotSummary
     events: NetworkEventsResponse
     topology: TopologyModel
+    configuration_history: ConfigurationHistoryResponse = Field(alias="configurationHistory")
     section_errors: Dict[str, str] = Field(default_factory=dict, alias="sectionErrors")
 
     model_config = {"populate_by_name": True}

@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 
 from .audit_store import get_audit_store
 from .command_registry import build_write_action
+from .configuration_history import get_configuration_history_store
 from .config import get_settings
 from .credential_store import SwitchCredentials, get_credential_store
 from .errors import SwitchOpsError
@@ -28,12 +29,16 @@ from .health_logic import build_summary
 from .guide import list_guide_operations, run_guide_operation
 from .logging_config import configure_logging, redact, register_secret
 from .models import (
+    AccessPointPlanRequest,
     ApiError,
     AuditResponse,
     BackupResult,
     CpuStatus,
+    ConfigurationHistoryEntry,
+    ConfigurationHistoryResponse,
     CredentialSetupRequest,
     DashboardResponse,
+    DeploymentPlan,
     EnvironmentStatus,
     GuideCatalogResponse,
     GuideRunRequest,
@@ -47,6 +52,7 @@ from .models import (
     MockScenarioRequest,
     MockScenarioStatus,
     NetworkEventsResponse,
+    NetworkEvent,
     PoeResponse,
     PortDescriptionRequest,
     SetupStatus,
@@ -66,6 +72,8 @@ from .parsers.mac_table import parse_mac_table
 from .parsers.memory import parse_memory
 from .parsers.poe import parse_poe
 from .parsers.version import parse_version
+from .parsers.vlans import parse_vlans
+from .planner import build_access_point_plan
 from .switch_client import (
     SwitchClient,
     get_mock_scenario,
@@ -86,7 +94,7 @@ configure_logging(settings.log_dir)
 
 app = FastAPI(
     title="SwitchOps",
-    version="0.1.0",
+    version="0.2.0",
     description="Local-only network operations sidecar. Allowlisted commands only.",
     docs_url="/docs" if settings.enable_api_docs else None,
     redoc_url=None,
@@ -278,6 +286,7 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         mac_entries=mac_entries,
         poe_ports=poe.ports,
         observed_at=observed_at,
+        source_namespace="mock" if settings.mock_mode else "physical",
     )
     telemetry_store = get_telemetry_store(
         retention_days=settings.telemetry_retention_days
@@ -317,6 +326,35 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
                 for interface in interfaces
             ],
         )
+    config_history_store = get_configuration_history_store()
+    try:
+        if outputs["config"].strip():
+            _, configuration_changed = config_history_store.observe(
+                device_id=topology.root_device_id,
+                hostname=hostname,
+                config_text=outputs["config"],
+                observed_at=observed_at,
+            )
+            if configuration_changed:
+                telemetry_store.record_event(NetworkEvent(
+                    timestamp=observed_at,
+                    deviceId=topology.root_device_id,
+                    eventType="configuration_drift_detected",
+                    severity="NOTICE",
+                    title="Running configuration changed",
+                    detail="The running configuration differs from the preceding observation. Change source is unknown or external to SwitchOps.",
+                    metadata={"source": "external_or_unknown"},
+                ))
+        configuration_history = ConfigurationHistoryResponse(
+            entries=config_history_store.recent(
+                device_id=topology.root_device_id,
+                limit=50,
+            )
+        )
+    except Exception as exc:
+        section_errors["configurationHistory"] = "persistence_failed"
+        logger.warning("Configuration history failed (%s)", type(exc).__name__)
+        configuration_history = ConfigurationHistoryResponse(entries=[])
     summary = build_summary(
         hostname=hostname,
         model=model,
@@ -368,6 +406,7 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
             )
         ),
         topology=topology,
+        configurationHistory=configuration_history,
         sectionErrors=section_errors,
     )
 
@@ -577,6 +616,34 @@ def get_guide_operations():
     return GuideCatalogResponse(operations=list_guide_operations())
 
 
+@app.get(
+    "/api/configuration/history",
+    response_model=ConfigurationHistoryResponse,
+    response_model_by_alias=True,
+)
+def get_configuration_history(
+    device_id: str | None = Query(default=None, alias="deviceId", max_length=128),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    entries = get_configuration_history_store().recent(
+        device_id=device_id,
+        limit=limit,
+    )
+    return ConfigurationHistoryResponse(entries=entries)
+
+
+@app.post(
+    "/api/configuration/history/{entry_id}/known-good",
+    response_model=ConfigurationHistoryEntry,
+    response_model_by_alias=True,
+)
+def post_configuration_known_good(entry_id: int):
+    try:
+        return get_configuration_history_store().mark_known_good(entry_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Configuration version was not found.")
+
+
 @app.post(
     "/api/guide/operations/{operation_id}/run",
     response_model=GuideRunResult,
@@ -589,6 +656,31 @@ def post_guide_operation(operation_id: str, req: GuideRunRequest):
             operation_id=operation_id,
             interface=req.interface,
         )
+
+
+@app.post(
+    "/api/plans/access-point",
+    response_model=DeploymentPlan,
+    response_model_by_alias=True,
+)
+def post_access_point_plan(req: AccessPointPlanRequest):
+    """Build a validated proposal from current read-only observations.
+
+    This route has no execution path: it performs three allowlisted show
+    commands and returns a plan whose ``applyAvailable`` value is always false.
+    """
+    with switch_session() as client:
+        interfaces = parse_interface_status(
+            run_and_audit(client, symbol="show_interfaces_status")
+        )
+        poe = parse_poe(run_and_audit(client, symbol="show_power_inline"))
+        vlans = parse_vlans(run_and_audit(client, symbol="show_vlan_brief"))
+    return build_access_point_plan(
+        req,
+        interfaces=interfaces,
+        poe_ports=poe.ports,
+        vlan_ids={item["id"] for item in vlans},
+    )
 
 
 @app.post("/api/switch/backup-config", response_model=BackupResult, response_model_by_alias=True)

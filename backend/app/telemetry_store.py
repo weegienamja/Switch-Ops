@@ -555,6 +555,29 @@ class TelemetryStore:
             for row in rows
         ]
 
+    def record_event(self, event: NetworkEvent) -> NetworkEvent:
+        """Persist a meaningful event derived by another local observer."""
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """INSERT INTO network_events
+                   (timestamp, device_id, interface, event_type, severity,
+                    title, detail, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event.timestamp.isoformat(),
+                    event.device_id,
+                    event.interface,
+                    event.event_type,
+                    event.severity,
+                    event.title,
+                    event.detail,
+                    json.dumps(event.metadata, sort_keys=True),
+                ),
+            )
+            conn.commit()
+            event.id = cursor.lastrowid
+        return event
+
     def history(
         self,
         *,

@@ -301,7 +301,9 @@ def build_summary(
         shutdownPorts=shutdown,
         errorPorts=error_ports,
         summary=summary,
-        healthy=health.state == "HEALTHY",
+        # The legacy boolean remains true for an informational NOTICE. New
+        # clients should use the four-state assessment for full fidelity.
+        healthy=health.state in {"HEALTHY", "NOTICE"},
         health=health,
         telemetryComplete=telemetry_complete,
     )

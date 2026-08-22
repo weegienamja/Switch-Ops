@@ -122,9 +122,11 @@ def build_topology(
     mac_entries: Iterable[MacTableEntry],
     poe_ports: Iterable[PoePort],
     observed_at: datetime | None = None,
+    source_namespace: str = "physical",
 ) -> TopologyModel:
     observed_at = observed_at or datetime.now(timezone.utc)
-    switch_id = f"switch-{_slug(hostname)}"
+    # Mock and physical observations must never share a history/config identity.
+    switch_id = f"switch-{_slug(source_namespace)}-{_slug(hostname)}"
     devices: list[NetworkDevice] = [
         NetworkDevice(
             id=switch_id,
