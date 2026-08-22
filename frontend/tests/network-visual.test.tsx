@@ -1,70 +1,137 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import CatalystFrontPanel from "@/components/CatalystFrontPanel";
-import LogicalTopology from "@/components/LogicalTopology";
-import { deviceAssetFor } from "@/components/DeviceVisual";
-import type { TelemetrySnapshotSummary, TopologyModel } from "@/lib/types";
+import NetworkMap from "@/components/NetworkMap";
+import PortInspector from "@/components/PortInspector";
+import { deviceArtFor } from "@/components/DeviceArt";
+import { DEVICE_TYPE_LABELS, learnedBehindChip, learnedBehindNote } from "@/lib/evidence";
+import type {
+  NetworkDevice,
+  NetworkLink,
+  TelemetrySnapshotSummary,
+  TopologyModel,
+} from "@/lib/types";
+
+function device(overrides: Partial<NetworkDevice> & { id: string }): NetworkDevice {
+  return {
+    type: "unknown",
+    name: overrides.id,
+    source: "observed",
+    confidence: "medium",
+    classificationStage: "unknown",
+    online: true,
+    visualCategory: "unknown",
+    capabilities: [],
+    evidence: [],
+    evidenceLevel: "unknown",
+    identitySource: "none",
+    learnedMacCount: 0,
+    role: "access",
+    ...overrides,
+  };
+}
+
+function link(overrides: Partial<NetworkLink> & { id: string; toDeviceId: string; fromInterface: string }): NetworkLink {
+  return {
+    fromDeviceId: "switch-lab",
+    status: "up",
+    speed: "a-1000",
+    poe: false,
+    confidence: "high",
+    evidence: [],
+    evidenceLevel: "observed-on-port",
+    learnedMacCount: 1,
+    ...overrides,
+  };
+}
 
 const topology: TopologyModel = {
   generatedAt: "2026-08-22T04:00:00Z",
   rootDeviceId: "switch-lab",
   devices: [
-    {
+    device({
       id: "switch-lab",
       type: "switch",
       vendor: "Cisco",
       model: "WS-C3560CG-8PC-S",
-      name: "Lab switch",
-      source: "observed",
+      name: "SWITCHOPS-TEST-SW1",
       confidence: "high",
       classificationStage: "model",
-      online: true,
       visualCategory: "switch",
-      capabilities: [],
       evidence: ["authenticated telemetry"],
-    },
-    {
+      evidenceLevel: "direct",
+      identitySource: "switch-telemetry",
+      role: "unknown",
+    }),
+    // The regression case: one uplink node carrying five learned addresses.
+    device({
+      id: "endpoint-gi01",
+      type: "router",
+      name: "Uplink to Test Gateway",
+      visualCategory: "router",
+      connectedInterface: "Gi0/1",
+      evidenceLevel: "observed-on-port",
+      identitySource: "interface-description",
+      learnedMacCount: 5,
+      role: "uplink",
+    }),
+    device({
+      id: "endpoint-gi02",
+      type: "desktop",
+      name: "Test Workstation",
+      visualCategory: "desktop",
+      connectedInterface: "Gi0/2",
+      evidenceLevel: "observed-on-port",
+      identitySource: "interface-description",
+      learnedMacCount: 1,
+    }),
+    device({
       id: "expected-ap",
       type: "access-point",
       vendor: "Cisco Meraki",
       model: "TEST-AP",
       name: "TEST-AP-01 AP",
       source: "expected",
-      confidence: "medium",
       classificationStage: "model",
       online: false,
       connectedInterface: "Gi0/4",
       visualCategory: "access-point",
-      capabilities: [],
-      evidence: ["description only"],
-    },
+      evidence: ["interface description only; attachment not observed"],
+      evidenceLevel: "expected",
+      identitySource: "interface-description",
+    }),
   ],
   interfaces: Array.from({ length: 10 }, (_, index) => ({
     id: `switch-lab:Gi0/${index + 1}`,
     deviceId: "switch-lab",
     port: `Gi0/${index + 1}`,
-    description: index === 3 ? "TEST-AP-01 AP" : "Spare",
-    adminState: index > 4 ? "down" as const : "up" as const,
-    operState: index === 0 ? "up" as const : "down" as const,
-    speed: index === 0 ? "a-1000" : "auto",
-    duplex: index === 0 ? "a-full" : "auto",
+    description: index === 0 ? "Uplink to Test Gateway" : index === 1 ? "Test Workstation" : index === 3 ? "TEST-AP-01 AP" : "Spare",
+    adminState: index > 4 ? ("down" as const) : ("up" as const),
+    operState: index < 2 ? ("up" as const) : ("down" as const),
+    speed: index < 2 ? "a-1000" : "auto",
+    duplex: index < 2 ? "a-full" : "auto",
     vlan: "1",
     poeCapable: index < 8,
     poeState: "off",
     poeWatts: 0,
     protected: index < 2,
+    role: index === 0 ? ("uplink" as const) : ("access" as const),
+    learnedMacCount: index === 0 ? 5 : index === 1 ? 1 : 0,
   })),
-  links: [{
-    id: "link-ap",
-    fromDeviceId: "switch-lab",
-    fromInterface: "Gi0/4",
-    toDeviceId: "expected-ap",
-    status: "waiting",
-    speed: "auto",
-    poe: false,
-    confidence: "low",
-    evidence: ["description only"],
-  }],
+  links: [
+    link({ id: "link-gi01", toDeviceId: "endpoint-gi01", fromInterface: "Gi0/1", learnedMacCount: 5 }),
+    link({ id: "link-gi02", toDeviceId: "endpoint-gi02", fromInterface: "Gi0/2" }),
+    link({
+      id: "link-ap",
+      toDeviceId: "expected-ap",
+      fromInterface: "Gi0/4",
+      status: "waiting",
+      speed: "auto",
+      confidence: "low",
+      evidenceLevel: "expected",
+      learnedMacCount: 0,
+    }),
+  ],
 };
 
 const telemetry: TelemetrySnapshotSummary = {
@@ -84,14 +151,13 @@ const telemetry: TelemetrySnapshotSummary = {
   })),
 };
 
-describe("visual network", () => {
+describe("physical front panel", () => {
   it("renders all ten physical ports with non-colour state labels", () => {
     const onSelect = vi.fn();
     render(
       <CatalystFrontPanel
         topology={topology}
         telemetry={telemetry}
-        events={[]}
         selectedPort="Gi0/4"
         onSelectPort={onSelect}
       />,
@@ -99,21 +165,166 @@ describe("visual network", () => {
     const ports = screen.getAllByRole("button", { name: /^Gi0\// });
     expect(ports).toHaveLength(10);
     expect(screen.getAllByText("WAIT").length).toBeGreaterThan(0);
-    expect(screen.getByText("baseline")).toBeTruthy();
+    expect(screen.getAllByText("LINK").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("OFF").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /^Gi0\/2/ }));
     expect(onSelect).toHaveBeenCalledWith("Gi0/2");
   });
 
-  it("renders an expected AP as waiting and correlates it to Gi0/4", () => {
+  it("describes port state in the accessible name rather than by colour alone", () => {
     render(
-      <LogicalTopology topology={topology} selectedPort="Gi0/4" onSelectPort={() => undefined} />,
+      <CatalystFrontPanel
+        topology={topology}
+        telemetry={telemetry}
+        selectedPort="Gi0/1"
+        onSelectPort={() => undefined}
+      />,
     );
-    expect(screen.getByText("TEST-AP-01 AP")).toBeTruthy();
-    expect(screen.getByText("EXPECTED")).toBeTruthy();
-    expect(screen.getByText(/Gi0\/4/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Gi0\/1, link established/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Gi0\/3, enabled, no link detected/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Gi0\/6, administratively disabled/ })).toBeTruthy();
+    // Protection is stated in words, not just an icon.
+    expect(
+      screen.getByRole("button", { name: /Gi0\/1.*protected from configuration changes/ }),
+    ).toBeTruthy();
+  });
+});
+
+describe("network map", () => {
+  it("draws one node per interface and never duplicates an uplink per learned MAC", () => {
+    render(
+      <NetworkMap
+        topology={topology}
+        telemetry={telemetry}
+        selectedPort="Gi0/4"
+        onSelectPort={() => undefined}
+      />,
+    );
+    // Three endpoints, not seven: Gi0/1 carries five addresses behind one node.
+    const nodes = document.querySelectorAll("[data-node]");
+    expect(nodes).toHaveLength(3);
+    expect(screen.getAllByText("Uplink to Test Gateway")).toHaveLength(1);
+    expect(screen.queryByText("Uplink to Test Gateway 1")).toBeNull();
+    expect(screen.queryByText("Uplink to Test Gateway 2")).toBeNull();
   });
 
-  it("uses the explicit unknown-device fallback", () => {
-    expect(deviceAssetFor("unknown")).toBe("/device-assets/unknown-device.svg");
+  it("places an uplink upstream and endpoints below the switch", () => {
+    render(
+      <NetworkMap
+        topology={topology}
+        telemetry={telemetry}
+        selectedPort="Gi0/4"
+        onSelectPort={() => undefined}
+      />,
+    );
+    const upstream = document.querySelector(".lab-canvas__tier--upstream") as HTMLElement;
+    const edge = document.querySelector(".lab-canvas__tier--edge") as HTMLElement;
+    expect(within(upstream).getByText("Uplink to Test Gateway")).toBeTruthy();
+    expect(within(edge).getByText("Test Workstation")).toBeTruthy();
+    expect(within(edge).getByText("TEST-AP-01 AP")).toBeTruthy();
+    expect(within(upstream).queryByText("Test Workstation")).toBeNull();
+  });
+
+  it("labels an unobserved device as expected and waiting rather than offline", () => {
+    render(
+      <NetworkMap
+        topology={topology}
+        telemetry={telemetry}
+        selectedPort="Gi0/4"
+        onSelectPort={() => undefined}
+      />,
+    );
+    const node = document.querySelector('[data-node="expected-ap"]') as HTMLElement;
+    expect(within(node).getByText("WAITING")).toBeTruthy();
+    expect(within(node).getByText("Expected")).toBeTruthy();
+    expect(within(node).getByText("Expected on Gi0/4")).toBeTruthy();
+    expect(within(node).queryByText(/offline/i)).toBeNull();
+  });
+
+  it("selects the physical port when a topology node is clicked", () => {
+    const onSelect = vi.fn();
+    render(
+      <NetworkMap
+        topology={topology}
+        telemetry={telemetry}
+        selectedPort="Gi0/4"
+        onSelectPort={onSelect}
+      />,
+    );
+    fireEvent.click(document.querySelector('[data-node="endpoint-gi02"]') as HTMLElement);
+    expect(onSelect).toHaveBeenCalledWith("Gi0/2");
+  });
+
+  it("marks the selected node so the front panel and map stay correlated", () => {
+    render(
+      <NetworkMap
+        topology={topology}
+        telemetry={telemetry}
+        selectedPort="Gi0/1"
+        onSelectPort={() => undefined}
+      />,
+    );
+    const selected = document.querySelector('[data-node="endpoint-gi01"]') as HTMLElement;
+    expect(selected.getAttribute("aria-pressed")).toBe("true");
+    expect(selected.className).toContain("topo-node--selected");
+    const other = document.querySelector('[data-node="endpoint-gi02"]') as HTMLElement;
+    expect(other.getAttribute("aria-pressed")).toBe("false");
+  });
+});
+
+describe("port inspector", () => {
+  it("explains learned-behind evidence instead of claiming attached devices", () => {
+    render(
+      <PortInspector topology={topology} telemetry={telemetry} events={[]} selectedPort="Gi0/1" />,
+    );
+    expect(screen.getByText("Observed on port")).toBeTruthy();
+    expect(screen.getByText(/5 addresses are reachable through this link/)).toBeTruthy();
+    expect(
+      screen.getByText(/Name taken from the interface description you configured/),
+    ).toBeTruthy();
+  });
+
+  it("gives a deterministic reason for each reported value", () => {
+    render(
+      <PortInspector topology={topology} telemetry={telemetry} events={[]} selectedPort="Gi0/2" />,
+    );
+    expect(screen.getByText("CONNECTED")).toBeTruthy();
+    expect(screen.getByText("1 GBPS")).toBeTruthy();
+    expect(screen.getByText("FULL DUPLEX")).toBeTruthy();
+    expect(screen.getByText("VLAN 1")).toBeTruthy();
+    expect(screen.getByText("PROTECTED")).toBeTruthy();
+    expect(screen.getAllByText("Learn more").length).toBeGreaterThan(0);
+  });
+
+  it("explains a disabled port as configuration, not failure", () => {
+    render(
+      <PortInspector topology={topology} telemetry={telemetry} events={[]} selectedPort="Gi0/6" />,
+    );
+    expect(screen.getByText("DISABLED")).toBeTruthy();
+    expect(
+      screen.getByText(/administratively shut down and will not establish a link/),
+    ).toBeTruthy();
+    expect(screen.getByText(/Nothing is evidenced on this interface/)).toBeTruthy();
+  });
+});
+
+describe("device art", () => {
+  it("falls back to the unknown-device drawing for an unrecognised type", () => {
+    expect(deviceArtFor("unknown")).toBe(deviceArtFor("unknown"));
+    expect(DEVICE_TYPE_LABELS.unknown).toBe("Unknown device");
+    expect(DEVICE_TYPE_LABELS["access-point"]).toBe("Access point");
+  });
+});
+
+describe("learned-behind wording", () => {
+  it("says nothing when there is nothing to say", () => {
+    expect(learnedBehindNote(0)).toBeNull();
+    expect(learnedBehindNote(1)).toBeNull();
+    expect(learnedBehindChip(1)).toBeNull();
+  });
+
+  it("counts the addresses behind the link without claiming they are attached", () => {
+    expect(learnedBehindChip(5)).toBe("+4 behind");
+    expect(learnedBehindNote(5)).toContain("behind the device on this port");
   });
 });

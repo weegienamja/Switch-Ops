@@ -12,6 +12,41 @@ export interface SetupStatus {
   switchDeviceType?: string | null;
 }
 
+export interface RuntimeInfo {
+  version: string;
+  apiHost: string;
+  apiPort: number;
+  mockMode: boolean;
+  enableWriteActions: boolean;
+  legacySsh: boolean;
+  apiDocsEnabled: boolean;
+  hostKeyPinned: boolean;
+  telemetryRetentionDays: number;
+  telemetryCollection: "refresh-driven";
+  dataDir: string;
+  backupDir: string;
+  logDir: string;
+  corsOrigins: string[];
+  deviceDriver?: string | null;
+}
+
+export interface ConnectionCheck {
+  id: string;
+  label: string;
+  status: "pass" | "fail" | "skipped";
+  detail: string;
+}
+
+export interface ConnectionTestResult {
+  ok: boolean;
+  mode: "mock" | "real";
+  summary: string;
+  checks: ConnectionCheck[];
+  failureCode?: string | null;
+  testedAt: string;
+  durationMs: number;
+}
+
 export interface CredentialSetupRequest {
   switchHost: string;
   switchUsername: string;

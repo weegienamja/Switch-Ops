@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 64" role="img" aria-labelledby="title">
-  <title id="title">Generic phone</title>
-  <rect x="34" y="4" width="28" height="56" rx="6" fill="#111b2b" stroke="#8ea2b8" stroke-width="2"/>
-  <rect x="38" y="10" width="20" height="38" rx="2" fill="#07101e" stroke="#64748b"/>
-  <circle cx="48" cy="54" r="2" fill="#22d3ee"/>
-</svg>

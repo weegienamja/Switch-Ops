@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 64" role="img" aria-labelledby="title">
-  <title id="title">Generic network camera</title>
-  <path d="M17 23h52v27H17z" fill="#111b2b" stroke="#8ea2b8" stroke-width="2"/>
-  <circle cx="52" cy="36.5" r="10" fill="#07101e" stroke="#38bdf8" stroke-width="2"/>
-  <circle cx="52" cy="36.5" r="4" fill="#22d3ee" opacity=".6"/>
-  <path d="m69 29 12-6v27l-12-6zM28 50l-7 9m21-9 7 9" fill="#111b2b" stroke="#8ea2b8" stroke-width="2" stroke-linejoin="round"/>
-</svg>

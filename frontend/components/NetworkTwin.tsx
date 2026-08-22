@@ -5,35 +5,42 @@ import type {
   TelemetrySnapshotSummary,
   TopologyModel,
 } from "@/lib/types";
-import CatalystFrontPanel from "./CatalystFrontPanel";
-import LogicalTopology from "./LogicalTopology";
+import NetworkMap from "./NetworkMap";
+import PortInspector from "./PortInspector";
 
+/**
+ * The Visual network view: the lab drawn as one picture, then everything
+ * known about whichever port is selected.
+ */
 export default function NetworkTwin({
   topology,
   telemetry,
   events,
   selectedPort,
   onSelectPort,
+  model,
 }: {
   topology: TopologyModel;
   telemetry: TelemetrySnapshotSummary;
   events: NetworkEvent[];
   selectedPort: string;
   onSelectPort: (port: string) => void;
+  model?: string;
 }) {
   return (
     <div className="network-twin">
-      <CatalystFrontPanel
+      <NetworkMap
+        topology={topology}
+        telemetry={telemetry}
+        selectedPort={selectedPort}
+        onSelectPort={onSelectPort}
+        model={model}
+      />
+      <PortInspector
         topology={topology}
         telemetry={telemetry}
         events={events}
         selectedPort={selectedPort}
-        onSelectPort={onSelectPort}
-      />
-      <LogicalTopology
-        topology={topology}
-        selectedPort={selectedPort}
-        onSelectPort={onSelectPort}
       />
     </div>
   );
