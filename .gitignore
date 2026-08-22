@@ -51,6 +51,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Rendered-UI check output (scripts/visual-check.mjs)
+.visual/
+
 # Logs
 *.log
 logs/
