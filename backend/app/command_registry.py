@@ -106,6 +106,12 @@ PROTECTED_INTERFACES: Tuple[str, ...] = (
     "Vlan1",
 )
 
+# Interfaces that a bounded read-only guide may select for filtering parsed
+# results. The value is never interpolated into an IOS command.
+READABLE_INTERFACES: Tuple[str, ...] = tuple(
+    f"GigabitEthernet0/{number}" for number in range(1, 11)
+)
+
 
 _DESCRIPTION_OK = set(
     "abcdefghijklmnopqrstuvwxyz"
@@ -150,6 +156,16 @@ def assert_interface_writable(name: str) -> str:
     if canonical not in ALLOWLISTED_INTERFACES:
         raise CommandNotAllowedError(
             f"Interface {canonical} is not in the safe-write allowlist."
+        )
+    return canonical
+
+
+def assert_interface_readable(name: str) -> str:
+    """Validate a guide/filter interface without granting write authority."""
+    canonical = normalize_interface(name)
+    if canonical not in READABLE_INTERFACES:
+        raise CommandNotAllowedError(
+            f"Interface {canonical} is not in the read-only interface set."
         )
     return canonical
 

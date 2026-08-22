@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     legacy_ssh: bool = Field(default=True, alias="SWITCH_LEGACY_SSH")
     allow_system_ssh: bool = Field(default=False, alias="SWITCH_ALLOW_SYSTEM_SSH")
     enable_api_docs: bool = Field(default=False, alias="SWITCHOPS_ENABLE_API_DOCS")
+    telemetry_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        alias="SWITCHOPS_TELEMETRY_RETENTION_DAYS",
+    )
 
     # Read directly only if keyring + file are both unavailable. Treated as
     # placeholders; never logged.

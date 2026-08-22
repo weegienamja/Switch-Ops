@@ -8,7 +8,9 @@ import argparse
 import logging
 import re
 from contextlib import contextmanager
-from typing import Callable, Iterator, TypeVar
+from datetime import datetime, timedelta, timezone
+from threading import RLock
+from typing import Callable, Iterator, Literal, TypeVar
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -23,6 +25,7 @@ from .config import get_settings
 from .credential_store import SwitchCredentials, get_credential_store
 from .errors import SwitchOpsError
 from .health_logic import build_summary
+from .guide import list_guide_operations, run_guide_operation
 from .logging_config import configure_logging, redact, register_secret
 from .models import (
     ApiError,
@@ -32,15 +35,24 @@ from .models import (
     CredentialSetupRequest,
     DashboardResponse,
     EnvironmentStatus,
+    GuideCatalogResponse,
+    GuideRunRequest,
+    GuideRunResult,
     InterfaceErrorsResponse,
+    InterfaceDelta,
     InterfaceStatusResponse,
     LogsResponse,
     MacTableResponse,
     MemoryStatus,
+    MockScenarioRequest,
+    MockScenarioStatus,
+    NetworkEventsResponse,
     PoeResponse,
     PortDescriptionRequest,
     SetupStatus,
     SwitchSummary,
+    TelemetryHistoryResponse,
+    TelemetrySnapshotSummary,
     WriteActionResult,
 )
 from .parsers.config_parser import parse_running_config, redact_config
@@ -54,7 +66,14 @@ from .parsers.mac_table import parse_mac_table
 from .parsers.memory import parse_memory
 from .parsers.poe import parse_poe
 from .parsers.version import parse_version
-from .switch_client import SwitchClient, get_switch_client
+from .switch_client import (
+    SwitchClient,
+    get_mock_scenario,
+    get_switch_client,
+    set_mock_scenario,
+)
+from .telemetry_store import get_telemetry_store
+from .topology import build_topology
 from .tools.backup import backup_running_config
 from .tools.read_only import run_and_audit
 from .tools.safe_write import execute_safe_write
@@ -128,16 +147,21 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
 
 # --- client lifecycle ------------------------------------------------------
 
+_switch_access_lock = RLock()
+
+
 @contextmanager
 def switch_session() -> Iterator[SwitchClient]:
-    client = get_switch_client()
-    try:
-        yield client
-    finally:
+    """Open one session while holding the process-wide switch access lock."""
+    with _switch_access_lock:
+        client = get_switch_client()
         try:
-            client.close()
-        except Exception:  # pragma: no cover
-            pass
+            yield client
+        finally:
+            try:
+                client.close()
+            except Exception:  # pragma: no cover
+                pass
 
 
 T = TypeVar("T")
@@ -233,19 +257,70 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         "logs", parse_logs, outputs["logs"], LogsResponse(entries=[]), section_errors
     )
 
+    observed_at = datetime.now(timezone.utc)
     credential_status = get_credential_store().status()
     inventory_serial = inventory.get("serial")
     if inventory_serial and inventory_serial.startswith("__"):
         inventory_serial = None
+    hostname = str(config.get("hostname") or version.get("hostname") or "Unknown")
+    model = str(inventory.get("pid") or version.get("model") or "Unknown Cisco device")
+    management_ip = str(
+        config.get("management_ip")
+        or credential_status.get("switch_host")
+        or settings.switch_host
+        or "Unknown"
+    )
+    topology = build_topology(
+        hostname=hostname,
+        model=model,
+        management_ip=management_ip,
+        interfaces=interfaces,
+        mac_entries=mac_entries,
+        poe_ports=poe.ports,
+        observed_at=observed_at,
+    )
+    telemetry_store = get_telemetry_store(
+        retention_days=settings.telemetry_retention_days
+    )
+    try:
+        telemetry = telemetry_store.record_snapshot(
+            device_id=topology.root_device_id,
+            reachable=True,
+            cpu=cpu,
+            memory=memory,
+            environment=environment,
+            poe=poe,
+            interfaces=interfaces,
+            errors=counters,
+            mac_entries=mac_entries,
+            observed_at=observed_at,
+        )
+    except Exception as exc:
+        section_errors["telemetry"] = "persistence_failed"
+        logger.warning("Telemetry persistence failed (%s)", type(exc).__name__)
+        errors_by_port = {counter.port: counter.total for counter in counters}
+        telemetry = TelemetrySnapshotSummary(
+            observedAt=observed_at,
+            historyAvailable=False,
+            retentionDays=settings.telemetry_retention_days,
+            interfaceDeltas=[
+                InterfaceDelta(
+                    port=interface.port,
+                    currentTotalErrors=errors_by_port.get(interface.port, 0),
+                    counterState="first",
+                    statusAfter=interface.status,
+                    adminAfter="down" if interface.status == "disabled" else "up",
+                    speedAfter=interface.speed,
+                    duplexAfter=interface.duplex,
+                    vlanAfter=interface.vlan,
+                )
+                for interface in interfaces
+            ],
+        )
     summary = build_summary(
-        hostname=str(config.get("hostname") or version.get("hostname") or "Unknown"),
-        model=str(inventory.get("pid") or version.get("model") or "Unknown Cisco device"),
-        management_ip=str(
-            config.get("management_ip")
-            or credential_status.get("switch_host")
-            or settings.switch_host
-            or "Unknown"
-        ),
+        hostname=hostname,
+        model=model,
+        management_ip=management_ip,
         gateway=str(config.get("gateway") or "Unknown"),
         ios_version=str(version.get("ios_version") or "Unknown"),
         serial=inventory_serial or version.get("serial"),
@@ -253,14 +328,22 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         interfaces=interfaces,
         env=environment,
         cpu=cpu,
+        memory=memory,
         poe=poe,
         errors=errors,
+        deltas=telemetry.interface_deltas,
+        evaluated_at=observed_at,
         pid=inventory.get("pid") or version.get("model"),
         hardware_revision=inventory.get("vid") or version.get("hardware_revision"),
         ios_image=version.get("ios_image"),
         bootloader=version.get("bootloader"),
         interface_counts=version.get("interface_counts"),
         telemetry_complete=not section_errors,
+    )
+    errors.healthy = not any(
+        delta.counter_state in {"increased", "wrapped"}
+        and (delta.error_delta or 0) > 0
+        for delta in telemetry.interface_deltas
     )
     if section_errors:
         unavailable = ", ".join(section_errors)
@@ -277,6 +360,14 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         macTable=MacTableResponse(entries=mac_entries),
         logs=logs,
         audit=AuditResponse(events=get_audit_store().recent(limit=100)),
+        telemetry=telemetry,
+        events=NetworkEventsResponse(
+            events=telemetry_store.recent_events(
+                device_id=topology.root_device_id,
+                limit=100,
+            )
+        ),
+        topology=topology,
         sectionErrors=section_errors,
     )
 
@@ -308,6 +399,28 @@ def setup_status():
         switchUsername=raw["switch_username"],
         switchDeviceType=raw["switch_device_type"],
     )
+
+
+@app.get(
+    "/api/mock/scenario",
+    response_model=MockScenarioStatus,
+    response_model_by_alias=True,
+)
+def get_mock_scenario_status():
+    if not settings.mock_mode:
+        raise HTTPException(status_code=403, detail="Mock scenarios are available only in mock mode.")
+    return MockScenarioStatus(scenario=get_mock_scenario(), mockMode=True)
+
+
+@app.post(
+    "/api/mock/scenario",
+    response_model=MockScenarioStatus,
+    response_model_by_alias=True,
+)
+def post_mock_scenario(req: MockScenarioRequest):
+    if not settings.mock_mode:
+        raise HTTPException(status_code=403, detail="Mock scenarios are available only in mock mode.")
+    return MockScenarioStatus(scenario=set_mock_scenario(req.scenario), mockMode=True)
 
 
 @app.post("/api/setup/credentials", response_model=SetupStatus, response_model_by_alias=True)
@@ -413,6 +526,69 @@ def get_summary():
 def get_audit(limit: int = Query(default=100, ge=1, le=500)):
     events = get_audit_store().recent(limit=limit)
     return AuditResponse(events=events)
+
+
+@app.get(
+    "/api/network/events",
+    response_model=NetworkEventsResponse,
+    response_model_by_alias=True,
+)
+def get_network_events(
+    limit: int = Query(default=100, ge=1, le=500),
+    device_id: str | None = Query(default=None, alias="deviceId", max_length=128),
+    interface: str | None = Query(default=None, max_length=64),
+    severity: Literal["HEALTHY", "NOTICE", "ATTENTION", "CRITICAL"] | None = None,
+    event_type: str | None = Query(default=None, alias="eventType", pattern=r"^[a-z0-9_]{1,64}$"),
+):
+    events = get_telemetry_store(
+        retention_days=settings.telemetry_retention_days
+    ).recent_events(
+        limit=limit,
+        device_id=device_id,
+        interface=interface,
+        severity=severity,
+        event_type=event_type,
+    )
+    return NetworkEventsResponse(events=events)
+
+
+@app.get(
+    "/api/telemetry/history",
+    response_model=TelemetryHistoryResponse,
+    response_model_by_alias=True,
+)
+def get_telemetry_history(
+    device_id: str = Query(alias="deviceId", min_length=1, max_length=128),
+    hours: int = Query(default=24, ge=1, le=24 * 90),
+    limit: int = Query(default=500, ge=1, le=2000),
+):
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    return get_telemetry_store(
+        retention_days=settings.telemetry_retention_days
+    ).history(device_id=device_id, since=since, limit=limit)
+
+
+@app.get(
+    "/api/guide/operations",
+    response_model=GuideCatalogResponse,
+    response_model_by_alias=True,
+)
+def get_guide_operations():
+    return GuideCatalogResponse(operations=list_guide_operations())
+
+
+@app.post(
+    "/api/guide/operations/{operation_id}/run",
+    response_model=GuideRunResult,
+    response_model_by_alias=True,
+)
+def post_guide_operation(operation_id: str, req: GuideRunRequest):
+    with switch_session() as client:
+        return run_guide_operation(
+            client,
+            operation_id=operation_id,
+            interface=req.interface,
+        )
 
 
 @app.post("/api/switch/backup-config", response_model=BackupResult, response_model_by_alias=True)

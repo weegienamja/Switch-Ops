@@ -24,6 +24,17 @@ class SetupStatus(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class MockScenarioRequest(BaseModel):
+    scenario: Literal["baseline", "ap_attached"]
+
+
+class MockScenarioStatus(BaseModel):
+    scenario: Literal["baseline", "ap_attached"]
+    mock_mode: bool = Field(alias="mockMode")
+
+    model_config = {"populate_by_name": True}
+
+
 class CredentialSetupRequest(BaseModel):
     switch_host: str = Field(alias="switchHost")
     switch_username: str = Field(alias="switchUsername")
@@ -76,6 +87,183 @@ class ApiError(BaseModel):
 
 # --- Switch domain ---------------------------------------------------------
 
+HealthState = Literal["HEALTHY", "NOTICE", "ATTENTION", "CRITICAL"]
+
+
+class HealthReason(BaseModel):
+    code: str
+    severity: HealthState
+    title: str
+    detail: str
+    interface: Optional[str] = None
+
+
+class HealthAssessment(BaseModel):
+    state: HealthState = "HEALTHY"
+    reasons: List[HealthReason] = Field(default_factory=list)
+    evaluated_at: datetime = Field(alias="evaluatedAt")
+    based_on_history: bool = Field(default=False, alias="basedOnHistory")
+
+    model_config = {"populate_by_name": True}
+
+
+class InterfaceDelta(BaseModel):
+    port: str
+    previous_total_errors: Optional[int] = Field(default=None, alias="previousTotalErrors")
+    current_total_errors: int = Field(default=0, alias="currentTotalErrors")
+    error_delta: Optional[int] = Field(default=None, alias="errorDelta")
+    counter_state: Literal["first", "unchanged", "increased", "reset", "wrapped"] = Field(
+        default="first", alias="counterState"
+    )
+    status_before: Optional[str] = Field(default=None, alias="statusBefore")
+    status_after: str = Field(default="", alias="statusAfter")
+    admin_before: Optional[str] = Field(default=None, alias="adminBefore")
+    admin_after: str = Field(default="unknown", alias="adminAfter")
+    speed_before: Optional[str] = Field(default=None, alias="speedBefore")
+    speed_after: str = Field(default="", alias="speedAfter")
+    duplex_before: Optional[str] = Field(default=None, alias="duplexBefore")
+    duplex_after: str = Field(default="", alias="duplexAfter")
+    vlan_before: Optional[str] = Field(default=None, alias="vlanBefore")
+    vlan_after: str = Field(default="", alias="vlanAfter")
+    poe_before: Optional[str] = Field(default=None, alias="poeBefore")
+    poe_after: str = Field(default="", alias="poeAfter")
+
+    model_config = {"populate_by_name": True}
+
+
+class TelemetrySnapshotSummary(BaseModel):
+    observed_at: datetime = Field(alias="observedAt")
+    previous_observed_at: Optional[datetime] = Field(default=None, alias="previousObservedAt")
+    history_available: bool = Field(default=False, alias="historyAvailable")
+    interface_deltas: List[InterfaceDelta] = Field(default_factory=list, alias="interfaceDeltas")
+    retention_days: int = Field(default=30, alias="retentionDays")
+
+    model_config = {"populate_by_name": True}
+
+
+class DeviceObservationPoint(BaseModel):
+    timestamp: datetime
+    reachable: bool
+    cpu_5sec: Optional[float] = Field(default=None, alias="cpu5Sec")
+    memory_used_pct: Optional[float] = Field(default=None, alias="memoryUsedPct")
+    temperature_c: Optional[int] = Field(default=None, alias="temperatureC")
+    poe_used_w: Optional[float] = Field(default=None, alias="poeUsedW")
+    poe_available_w: Optional[float] = Field(default=None, alias="poeAvailableW")
+
+    model_config = {"populate_by_name": True}
+
+
+class TelemetryHistoryResponse(BaseModel):
+    device_id: str = Field(alias="deviceId")
+    observations: List[DeviceObservationPoint]
+
+    model_config = {"populate_by_name": True}
+
+
+class NetworkEvent(BaseModel):
+    id: Optional[int] = None
+    timestamp: datetime
+    device_id: str = Field(alias="deviceId")
+    interface: Optional[str] = None
+    event_type: str = Field(alias="eventType")
+    severity: HealthState
+    title: str
+    detail: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
+
+
+class NetworkEventsResponse(BaseModel):
+    events: List[NetworkEvent]
+
+
+DeviceType = Literal[
+    "router",
+    "switch",
+    "access-point",
+    "desktop",
+    "laptop",
+    "server",
+    "phone",
+    "tv-media",
+    "printer",
+    "camera",
+    "unknown",
+]
+
+
+class DeviceCapability(BaseModel):
+    name: str
+    available: bool = True
+    source: str
+
+
+class NetworkDevice(BaseModel):
+    id: str
+    type: DeviceType
+    vendor: Optional[str] = None
+    model: Optional[str] = None
+    name: str
+    mac: Optional[str] = None
+    ip: Optional[str] = None
+    source: Literal["observed", "inferred", "expected"]
+    confidence: Literal["low", "medium", "high"]
+    classification_stage: Literal["unknown", "category", "vendor", "model"] = Field(
+        alias="classificationStage"
+    )
+    online: bool
+    connected_interface: Optional[str] = Field(default=None, alias="connectedInterface")
+    visual_category: DeviceType = Field(alias="visualCategory")
+    capabilities: List[DeviceCapability] = Field(default_factory=list)
+    last_seen: Optional[datetime] = Field(default=None, alias="lastSeen")
+    evidence: List[str] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
+class NetworkInterface(BaseModel):
+    id: str
+    device_id: str = Field(alias="deviceId")
+    port: str
+    description: str = ""
+    admin_state: Literal["up", "down", "unknown"] = Field(alias="adminState")
+    oper_state: Literal["up", "down", "unknown"] = Field(alias="operState")
+    speed: str = ""
+    duplex: str = ""
+    vlan: str = ""
+    poe_capable: bool = Field(default=False, alias="poeCapable")
+    poe_state: str = Field(default="", alias="poeState")
+    poe_watts: float = Field(default=0.0, alias="poeWatts")
+    protected: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class NetworkLink(BaseModel):
+    id: str
+    from_device_id: str = Field(alias="fromDeviceId")
+    from_interface: str = Field(alias="fromInterface")
+    to_device_id: str = Field(alias="toDeviceId")
+    to_interface: Optional[str] = Field(default=None, alias="toInterface")
+    status: Literal["up", "down", "waiting", "unknown"]
+    speed: str = ""
+    poe: bool = False
+    confidence: Literal["low", "medium", "high"]
+    evidence: List[str] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
+class TopologyModel(BaseModel):
+    generated_at: datetime = Field(alias="generatedAt")
+    root_device_id: str = Field(alias="rootDeviceId")
+    devices: List[NetworkDevice]
+    interfaces: List[NetworkInterface]
+    links: List[NetworkLink]
+
+    model_config = {"populate_by_name": True}
+
 class SwitchSummary(BaseModel):
     hostname: str
     model: str
@@ -99,6 +287,7 @@ class SwitchSummary(BaseModel):
     error_ports: List[str] = Field(default_factory=list, alias="errorPorts")
     summary: str = "Switch state pending."
     healthy: bool = True
+    health: HealthAssessment
     telemetry_complete: bool = Field(default=True, alias="telemetryComplete")
 
     model_config = {"populate_by_name": True}
@@ -260,7 +449,53 @@ class DashboardResponse(BaseModel):
     mac_table: MacTableResponse = Field(alias="macTable")
     logs: LogsResponse
     audit: AuditResponse
+    telemetry: TelemetrySnapshotSummary
+    events: NetworkEventsResponse
+    topology: TopologyModel
     section_errors: Dict[str, str] = Field(default_factory=dict, alias="sectionErrors")
+
+    model_config = {"populate_by_name": True}
+
+
+# --- Beginner Lab Guide ----------------------------------------------------
+
+class GuideOperation(BaseModel):
+    id: str
+    category: Literal["GETTING STARTED", "TROUBLESHOOTING", "NETWORKING", "SWITCH"]
+    title: str
+    question: str
+    what_it_tells_you: str = Field(alias="whatItTellsYou")
+    safety: Literal["READ ONLY"] = "READ ONLY"
+    commands: List[str]
+    requires_interface: bool = Field(default=False, alias="requiresInterface")
+
+    model_config = {"populate_by_name": True}
+
+
+class GuideCatalogResponse(BaseModel):
+    operations: List[GuideOperation]
+
+
+class GuideRunRequest(BaseModel):
+    interface: Optional[str] = None
+
+    @field_validator("interface")
+    @classmethod
+    def validate_interface_length(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value or len(value) > 64 or any(ord(char) < 32 for char in value):
+            raise ValueError("Interface is invalid.")
+        return value
+
+
+class GuideRunResult(BaseModel):
+    operation: GuideOperation
+    observed_at: datetime = Field(alias="observedAt")
+    result: Dict[str, Any]
+    explanation: str
+    warnings: List[str] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
 

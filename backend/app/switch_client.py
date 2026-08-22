@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, Protocol
+from threading import Lock
+from typing import Literal, Optional, Protocol
 
 from .command_registry import (
     READ_ONLY_COMMANDS,
@@ -54,7 +55,28 @@ _SAMPLE_FILES = {
     "show_memory_statistics": "show_memory_statistics.txt",
     "show_mac_address_table": "show_mac_address_table.txt",
     "show_logging": "show_logging.txt",
+    "show_vlan_brief": "show_vlan_brief.txt",
+    "show_spanning_tree": "show_spanning_tree.txt",
+    "show_cdp_neighbors_detail": "show_cdp_neighbors_detail.txt",
 }
+
+MockScenario = Literal["baseline", "ap_attached"]
+_mock_scenario: MockScenario = "baseline"
+_mock_scenario_lock = Lock()
+
+
+def get_mock_scenario() -> MockScenario:
+    with _mock_scenario_lock:
+        return _mock_scenario
+
+
+def set_mock_scenario(scenario: MockScenario) -> MockScenario:
+    if scenario not in {"baseline", "ap_attached"}:
+        raise CommandNotAllowedError(f"Unknown mock scenario: {scenario!r}")
+    global _mock_scenario
+    with _mock_scenario_lock:
+        _mock_scenario = scenario
+    return scenario
 
 
 class SwitchClient(Protocol):
@@ -76,7 +98,9 @@ class MockSwitchClient:
         filename = _SAMPLE_FILES.get(symbol)
         if not filename:
             return ""
-        path = self.sample_dir / filename
+        scenario = get_mock_scenario()
+        scenario_path = self.sample_dir / "scenarios" / scenario / filename
+        path = scenario_path if scenario != "baseline" and scenario_path.exists() else self.sample_dir / filename
         if not path.exists():
             return ""
         return path.read_text(encoding="utf-8")
