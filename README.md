@@ -16,6 +16,48 @@ SwitchOps is a Windows-first desktop application that:
 - Ships a controlled safe-write mode (disabled by default) for a tiny set of mapped actions on spare ports.
 - Never accepts arbitrary CLI from the UI or any future LLM/MCP integration.
 
+## SwitchOps v0.2.1 (current)
+
+A correctness and product-quality pass over the v0.2 foundation. No new subsystem.
+
+**Topology correlation fixed.** v0.2 created one device node per learned MAC and
+copied the interface description onto each, so the Gi0/1 uplink rendered as
+several directly connected "Test ISP router" objects that do not exist. A MAC
+learned through an interface is not proof of a device attached to that
+interface, so the builder now emits **at most one endpoint node per interface**
+and counts the remaining addresses as learned-behind evidence.
+
+**Explicit evidence vocabulary.** Every device and link carries an
+`evidenceLevel` — `direct`, `observed-on-port`, `learned-behind`, `expected` or
+`unknown` — and an `identitySource`, so a name taken from an interface
+description is never presented as a discovered identity. CDP is now collected in
+the dashboard sweep because a neighbour announcing itself is the only direct
+attachment evidence this platform can offer.
+
+**The Visual network is a picture, not cards.** The Catalyst front panel is the
+centre of the topology, upstream devices sit above it, endpoints below, and a
+measured cable runs from every device to the physical port it is plugged into.
+
+**Honest observation history.** "Last 24 hours / 1 samples" is now "Recent
+observations / 1 observation", with the collection model stated. Below three
+observations SwitchOps draws discrete markers instead of a chart; above it, a
+time-aware sparkline where gaps read as gaps.
+
+**Beginner learning separated from change control.** Enable port / Disable port
+/ Enable PoE / Write memory no longer sit at the bottom of the read-only Lab
+Guide. They live in a new **Change control** view with the dry-run planner,
+configuration history and backup. Raw IOS logs and the developer audit are
+behind Advanced disclosures rather than leading the What changed page.
+
+**Settings and Test connection.** Settings is a sectioned dialog written for a
+beginner — "Windows Credential Manager", not "keyring". `POST
+/api/setup/test-connection` runs a bounded read-only diagnostic (credentials →
+TCP 22 → SSH → host key → authentication → Cisco IOS → read-only operations),
+sends only allowlisted show commands, and deliberately claims nothing about
+Internet reachability, privilege level, or switch health.
+
+Physical write execution remains disabled.
+
 ## SwitchOps v0.2 foundation
 
 Version 0.2 turns the physical lab into a visual, historical, self-explaining system:
@@ -23,8 +65,8 @@ Version 0.2 turns the physical lab into a visual, historical, self-explaining sy
 - Refresh-driven SQLite telemetry keeps 30 days of device/interface observations by default. Mock and physical histories have separate identities.
 - Health uses current state and counter deltas rather than treating an old cumulative error as an active fault.
 - A user-facing event timeline records observed link, administrative, speed, duplex, VLAN, PoE, error-counter, and learned-device changes.
-- A normalized evidence-aware topology and original local SVG library support observed, inferred, expected, and unknown devices without fabricated identification.
-- A clickable ten-port Catalyst front panel stays correlated with the logical topology and contextual beginner explanations.
+- A normalized evidence-aware topology supports observed, inferred, expected, and unknown devices without fabricated identification. (v0.2.1 tightened the correlation rules; see above.)
+- A clickable ten-port Catalyst front panel stays correlated with the topology and contextual beginner explanations.
 - Thirteen Lab Guide operations resolve only to fixed allowlisted read commands and return structured results.
 - Change-only configuration history stores private local versions, fingerprints, known-good markers, and redacted diffs.
 - Access-point port planning validates current state and renders a dry-run proposal. Applying it is intentionally impossible in v0.2.
@@ -151,15 +193,28 @@ pnpm build
 ## Tests
 
 ```powershell
-cd backend
-pytest -v
+# backend
+.\.venv\Scripts\python.exe -m pytest backend -q
+
+# frontend unit tests, types, lint, production export
+cd frontend
+pnpm test
+pnpm typecheck
+pnpm lint
+pnpm build
 ```
 
-Frontend type-check + build:
+### Rendered UI check
+
+Compilation passing is not evidence that the UI looks right.
+`scripts/visual-check.mjs` drives an already-installed Chrome or Edge over the
+DevTools protocol to screenshot every view at three widths and report console
+errors, failed requests and horizontal overflow. It adds no dependency and
+ships nothing.
 
 ```powershell
-cd frontend
-pnpm build
+# with the backend and a static export already served
+node scripts/visual-check.mjs --url http://127.0.0.1:3100 --out .visual
 ```
 
 ## Security model
@@ -177,8 +232,10 @@ pnpm build
 
 ```
 GET  /health
+GET  /api/system/info               # non-secret runtime facts for Settings
 GET  /api/setup/status
 POST /api/setup/credentials
+POST /api/setup/test-connection    # bounded read-only diagnostic; changes nothing
 GET  /api/switch/dashboard
 GET  /api/switch/summary
 GET  /api/switch/interfaces
@@ -209,8 +266,9 @@ POST /api/switch/save-config
 
 ## Roadmap
 
-- **v0.2 (this release)** — historical telemetry, delta health, events, digital twin, Lab Guide, configuration history, and non-executable planning.
-- **Next** — validate discovery and visuals with the physical access point, then deepen evidence correlation.
+- **v0.2** — historical telemetry, delta health, events, digital twin, Lab Guide, configuration history, and non-executable planning.
+- **v0.2.1 (this release)** — correct topology evidence correlation, a visual lab canvas, honest observation history, beginner/change-control separation, redesigned Settings, and a read-only connection test.
+- **Next** — physically attach the TEST-AP-01 to Gi0/4 and validate the expected → observed transition, including whether it announces itself over CDP.
 - **Future** — gated plan/apply/verify/rollback workflows only after explicit safety design and authorization. Never raw CLI.
 
 ## Troubleshooting
