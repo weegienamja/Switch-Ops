@@ -1,7 +1,35 @@
 "use client";
-import { useState } from "react";
+
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import type { SetupStatus } from "@/lib/types";
+import type { ConnectionTestResult, RuntimeInfo, SetupStatus } from "@/lib/types";
+
+/** Plain-English names for the credential backends. Never show "keyring". */
+const STORAGE_LABEL: Record<SetupStatus["storage"], string> = {
+  keyring: "Windows Credential Manager",
+  file: "Restricted local file",
+  env: "Environment variable",
+  none: "Not stored",
+};
+
+const STORAGE_DETAIL: Record<SetupStatus["storage"], string> = {
+  keyring: "Stored in the Windows secure credential store, encrypted for your user account.",
+  file: "The OS credential store was unavailable, so credentials are in a permission-restricted local file.",
+  env: "Read from an environment variable in this session. Nothing is written to disk.",
+  none: "No switch credentials have been saved yet.",
+};
+
+/** Driver id to the platform name a beginner would recognise. */
+const PLATFORM_LABEL: Record<string, string> = {
+  cisco_ios: "Cisco IOS",
+};
+
+function friendlyPath(path: string | undefined): string {
+  if (!path) return "—";
+  // %LOCALAPPDATA% is long and noisy; keep the meaningful tail.
+  const match = /^[A-Za-z]:\\Users\\[^\\]+\\(.*)$/.exec(path);
+  return match ? `…\\${match[1]}` : path;
+}
 
 export default function SettingsPanel({
   setup,
@@ -12,77 +40,334 @@ export default function SettingsPanel({
   onClose: () => void;
   onChange: () => void;
 }) {
+  const [info, setInfo] = useState<RuntimeInfo | null>(null);
+  const [test, setTest] = useState<ConnectionTestResult | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testError, setTestError] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
-  async function clearCreds() {
-    if (
-      !confirm(
-        "Clear saved switch credentials? You will need to re-enter them on next launch.",
-      )
-    )
-      return;
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .systemInfo()
+      .then((value) => {
+        if (!cancelled) setInfo(value);
+      })
+      .catch(() => {
+        // Settings still works without the extra runtime facts.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function runTest() {
+    setTesting(true);
+    setTestError(null);
+    setTest(null);
+    try {
+      setTest(await api.testConnection());
+    } catch (cause) {
+      setTestError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function clearCredentials() {
     setBusy(true);
     setError(null);
     try {
       await api.clearCredentials();
+      setConfirmClear(false);
       onChange();
-    } catch (e: any) {
-      setError(e?.message || String(e));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(false);
     }
   }
 
+  const platform = PLATFORM_LABEL[setup.switchDeviceType || ""] || "Unrecognised platform";
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3 className="card__title" style={{ marginBottom: 14 }}>
-          Settings
-        </h3>
-        <dl className="kv">
-          <dt>Host</dt>
-          <dd>{setup.switchHost || "—"}</dd>
-          <dt>Username</dt>
-          <dd>{setup.switchUsername || "—"}</dd>
-          <dt>Device type</dt>
-          <dd>{setup.switchDeviceType || "—"}</dd>
-          <dt>Storage</dt>
-          <dd>{setup.storage}</dd>
-          <dt>Mock mode</dt>
-          <dd>{setup.mockMode ? "yes" : "no"}</dd>
-          <dt>Writes enabled</dt>
-          <dd>{setup.enableWriteActions ? "yes" : "no"}</dd>
-        </dl>
-        {setup.storage === "file" ? (
-          <div
-            className="mono"
-            style={{ color: "var(--amber)", fontSize: 12, marginTop: 14 }}
-          >
-            OS keyring unavailable. Credentials are in a restricted local fallback file.
+      <div
+        className="settings-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        tabIndex={-1}
+        ref={dialogRef}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className="settings-dialog__head">
+          <div>
+            <div className="eyebrow">SwitchOps {info?.version || ""}</div>
+            <h2 id="settings-title">Settings</h2>
           </div>
-        ) : null}
-        {error && (
-          <div className="mono" style={{ color: "var(--red)", fontSize: 12, marginTop: 12 }}>
-            {error}
-          </div>
-        )}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 10,
-            marginTop: 20,
-          }}
-        >
-          <button className="btn" disabled={busy} onClick={clearCreds}>
-            Clear credentials
-          </button>
-          <button className="btn btn--primary" onClick={onClose}>
+          <button className="btn btn--ghost" onClick={onClose} aria-label="Close settings">
             Close
           </button>
+        </header>
+
+        <div className="settings-dialog__body">
+          <Section title="Device connection">
+            <div className="settings-device">
+              <div>
+                <strong>{setup.switchHost ? `Switch at ${setup.switchHost}` : "No switch configured"}</strong>
+                <span>{platform}</span>
+              </div>
+              <StateChip
+                tone={setup.configured ? "good" : "warn"}
+                label={setup.configured ? "Credentials saved" : "Not configured"}
+              />
+            </div>
+            <Rows
+              rows={[
+                { label: "Host", value: setup.switchHost || "—" },
+                { label: "Username", value: setup.switchUsername || "—" },
+                { label: "Platform", value: platform },
+                {
+                  label: "Credential storage",
+                  value: STORAGE_LABEL[setup.storage],
+                  hint: STORAGE_DETAIL[setup.storage],
+                },
+              ]}
+            />
+            <div className="settings-actions">
+              <button className="btn btn--primary" onClick={runTest} disabled={testing}>
+                {testing ? "Testing…" : "Test connection"}
+              </button>
+              <span className="settings-actions__note">
+                Read-only. Sends only allowlisted show commands and changes nothing.
+              </span>
+            </div>
+            {testError ? (
+              <p className="settings-alert settings-alert--bad" role="alert">{testError}</p>
+            ) : null}
+            {test ? <ConnectionTestReport result={test} /> : null}
+          </Section>
+
+          <Section title="Operation mode">
+            <div className="settings-modes">
+              <ModeCard
+                label="Real hardware"
+                state={setup.mockMode ? "Inactive" : "Active"}
+                tone={setup.mockMode ? "neutral" : "good"}
+              />
+              <ModeCard
+                label="Mock mode"
+                state={setup.mockMode ? "On" : "Off"}
+                tone={setup.mockMode ? "info" : "neutral"}
+              />
+              <ModeCard
+                label="Write operations"
+                state={setup.enableWriteActions ? "Enabled" : "Disabled"}
+                tone={setup.enableWriteActions ? "warn" : "good"}
+              />
+            </div>
+            <p className="settings-explain">
+              {setup.mockMode
+                ? "SwitchOps is showing recorded sample output. No device is being contacted."
+                : setup.enableWriteActions
+                  ? "SwitchOps may inspect this device and apply allowlisted changes. Gi0/1, Gi0/2 and Vlan1 remain protected."
+                  : "SwitchOps is currently allowed to inspect this device but not change its configuration."}
+            </p>
+          </Section>
+
+          <Section title="Security">
+            <Rows
+              rows={[
+                { label: "Backend", value: "Localhost only", hint: `Bound to ${info?.apiHost || "127.0.0.1"}; not reachable from the network.` },
+                {
+                  label: "SSH host key",
+                  value: info ? (info.hostKeyPinned ? "Pinned" : "Not yet pinned") : "—",
+                  hint: info?.hostKeyPinned
+                    ? "The switch key was recorded on first use. A change is refused rather than accepted."
+                    : "The first successful connection will record the key and refuse changes afterwards.",
+                },
+                {
+                  label: "Credentials",
+                  value: STORAGE_LABEL[setup.storage],
+                  hint: "Never written to logs, backups, or API responses.",
+                },
+                { label: "Raw CLI", value: "Unavailable", hint: "No endpoint accepts an arbitrary IOS command." },
+                {
+                  label: "API documentation",
+                  value: info?.apiDocsEnabled ? "Enabled" : "Disabled",
+                },
+                {
+                  label: "Legacy SSH compatibility",
+                  value: info?.legacySsh ? "Enabled for this process" : "Disabled",
+                  hint: "Older ciphers are permitted inside SwitchOps only. Windows SSH configuration is untouched.",
+                },
+              ]}
+            />
+          </Section>
+
+          <Section title="Data">
+            <Rows
+              rows={[
+                {
+                  label: "Telemetry collection",
+                  value: "Refresh-driven",
+                  hint: "An observation is recorded when you press refresh. No background polling runs.",
+                },
+                { label: "Telemetry retention", value: `${info?.telemetryRetentionDays ?? 30} days` },
+                { label: "Configuration history", value: "Local only", hint: "Raw configurations stay in private local files; the UI shows redacted diffs." },
+                { label: "Backups", value: friendlyPath(info?.backupDir) },
+                { label: "Database and logs", value: friendlyPath(info?.dataDir) },
+              ]}
+            />
+          </Section>
+
+          <details className="settings-advanced">
+            <summary>Advanced</summary>
+            <Rows
+              rows={[
+                { label: "Device driver", value: info?.deviceDriver || setup.switchDeviceType || "—" },
+                { label: "Backend API", value: info ? `${info.apiHost}:${info.apiPort}` : "—" },
+                { label: "Allowed origins", value: (info?.corsOrigins || []).join(", ") || "—" },
+                { label: "Log directory", value: info?.logDir || "—" },
+                { label: "Application version", value: info?.version || "—" },
+              ]}
+            />
+          </details>
+
+          <section className="settings-danger">
+            <h3>Danger zone</h3>
+            {confirmClear ? (
+              <div className="settings-danger__confirm" role="alertdialog" aria-label="Confirm clearing credentials">
+                <p>
+                  This removes the stored SwitchOps login from {STORAGE_LABEL[setup.storage]}. The switch
+                  configuration will not be changed, and you will need to enter the credentials again
+                  on the next launch.
+                </p>
+                <div className="settings-actions">
+                  <button className="btn btn--ghost" onClick={() => setConfirmClear(false)} disabled={busy}>
+                    Cancel
+                  </button>
+                  <button className="btn btn--danger" onClick={clearCredentials} disabled={busy}>
+                    {busy ? "Clearing…" : "Yes, clear credentials"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="settings-danger__row">
+                <div>
+                  <strong>Clear stored credentials</strong>
+                  <span>Removes the saved login. The switch itself is not modified.</span>
+                </div>
+                <button
+                  className="btn btn--danger"
+                  onClick={() => setConfirmClear(true)}
+                  disabled={!setup.configured}
+                >
+                  Clear credentials
+                </button>
+              </div>
+            )}
+            {error ? <p className="settings-alert settings-alert--bad" role="alert">{error}</p> : null}
+          </section>
         </div>
       </div>
+    </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="settings-section">
+      <h3 className="settings-section__title">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function Rows({ rows }: { rows: Array<{ label: string; value: string; hint?: string }> }) {
+  return (
+    <dl className="settings-rows">
+      {rows.map((row) => (
+        <div key={row.label}>
+          <dt>{row.label}</dt>
+          <dd>
+            <span>{row.value}</span>
+            {row.hint ? <small>{row.hint}</small> : null}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function StateChip({ tone, label }: { tone: "good" | "warn" | "info" | "neutral"; label: string }) {
+  return (
+    <span className={`state-chip state-chip--${tone}`}>
+      <i aria-hidden />
+      {label}
+    </span>
+  );
+}
+
+function ModeCard({
+  label,
+  state,
+  tone,
+}: {
+  label: string;
+  state: string;
+  tone: "good" | "warn" | "info" | "neutral";
+}) {
+  return (
+    <div className={`mode-card mode-card--${tone}`}>
+      <span className="mode-card__label">{label}</span>
+      <StateChip tone={tone} label={state} />
+    </div>
+  );
+}
+
+const CHECK_MARK: Record<ConnectionTestResult["checks"][number]["status"], string> = {
+  pass: "PASS",
+  fail: "FAIL",
+  skipped: "SKIP",
+};
+
+function ConnectionTestReport({ result }: { result: ConnectionTestResult }) {
+  return (
+    <div className={`conn-test conn-test--${result.ok ? "ok" : "bad"}`} aria-live="polite">
+      <div className="conn-test__head">
+        <strong>Connection test</strong>
+        <span>{new Date(result.testedAt).toLocaleTimeString()}</span>
+      </div>
+      <p className="conn-test__summary">{result.summary}</p>
+      <ul className="conn-test__checks">
+        {result.checks.map((check) => (
+          <li key={check.id} className={`conn-check conn-check--${check.status}`}>
+            <span className="conn-check__mark">{CHECK_MARK[check.status]}</span>
+            <span className="conn-check__copy">
+              <strong>{check.label}</strong>
+              <small>{check.detail}</small>
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="conn-test__boundary">
+        This test does not check Internet access, privilege level, or switch health. It only reports
+        what it observed.
+      </p>
     </div>
   );
 }

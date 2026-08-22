@@ -68,6 +68,67 @@ class CredentialSetupRequest(BaseModel):
         return value
 
 
+# --- Runtime information ---------------------------------------------------
+
+
+class RuntimeInfo(BaseModel):
+    """Non-secret facts about how this backend is running.
+
+    Everything here is local configuration the operator already controls. No
+    credential, secret, or credential-file content is included.
+    """
+
+    version: str
+    api_host: str = Field(alias="apiHost")
+    api_port: int = Field(alias="apiPort")
+    mock_mode: bool = Field(alias="mockMode")
+    enable_write_actions: bool = Field(alias="enableWriteActions")
+    legacy_ssh: bool = Field(alias="legacySsh")
+    api_docs_enabled: bool = Field(alias="apiDocsEnabled")
+    host_key_pinned: bool = Field(alias="hostKeyPinned")
+    telemetry_retention_days: int = Field(alias="telemetryRetentionDays")
+    telemetry_collection: Literal["refresh-driven"] = Field(
+        default="refresh-driven", alias="telemetryCollection"
+    )
+    data_dir: str = Field(alias="dataDir")
+    backup_dir: str = Field(alias="backupDir")
+    log_dir: str = Field(alias="logDir")
+    cors_origins: List[str] = Field(default_factory=list, alias="corsOrigins")
+    device_driver: Optional[str] = Field(default=None, alias="deviceDriver")
+
+    model_config = {"populate_by_name": True}
+
+
+# --- Connection diagnostics ------------------------------------------------
+
+ConnectionCheckStatus = Literal["pass", "fail", "skipped"]
+
+
+class ConnectionCheck(BaseModel):
+    id: str
+    label: str
+    status: ConnectionCheckStatus
+    detail: str
+
+
+class ConnectionTestResult(BaseModel):
+    """Result of a bounded read-only reachability test.
+
+    ``failure_code`` is a fixed vocabulary, never a server exception string, so
+    no credential, path, or internal detail can escape through this response.
+    """
+
+    ok: bool
+    mode: Literal["mock", "real"]
+    summary: str
+    checks: List[ConnectionCheck] = Field(default_factory=list)
+    failure_code: Optional[str] = Field(default=None, alias="failureCode")
+    tested_at: datetime = Field(alias="testedAt")
+    duration_ms: int = Field(default=0, alias="durationMs")
+
+    model_config = {"populate_by_name": True}
+
+
 # --- Common ----------------------------------------------------------------
 
 class CommandResult(BaseModel):

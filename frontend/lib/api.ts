@@ -21,6 +21,8 @@ import type {
   SwitchSummary,
   TelemetryHistoryResponse,
   AccessPointPlanRequest,
+  ConnectionTestResult,
+  RuntimeInfo,
 } from "./types";
 
 export interface InterfaceStatusResponse {
@@ -72,6 +74,9 @@ export const api = {
       enableWriteActions: boolean;
     }>("/health"),
   setupStatus: () => fetchJson<SetupStatus>("/api/setup/status"),
+  systemInfo: () => fetchJson<RuntimeInfo>("/api/system/info"),
+  testConnection: () =>
+    fetchJson<ConnectionTestResult>("/api/setup/test-connection", { method: "POST" }),
   saveCredentials: (req: CredentialSetupRequest) =>
     fetchJson<SetupStatus>("/api/setup/credentials", {
       method: "POST",

@@ -22,10 +22,12 @@ from fastapi.responses import JSONResponse
 from .audit_store import get_audit_store
 from .command_registry import build_write_action
 from .configuration_history import get_configuration_history_store
+from .connection_test import run_connection_test
 from .config import get_settings
 from .credential_store import SwitchCredentials, get_credential_store
 from .errors import SwitchOpsError
 from .health_logic import build_summary
+from .host_key_store import is_host_pinned
 from .guide import list_guide_operations, run_guide_operation
 from .logging_config import configure_logging, redact, register_secret
 from .models import (
@@ -36,6 +38,7 @@ from .models import (
     CpuStatus,
     ConfigurationHistoryEntry,
     ConfigurationHistoryResponse,
+    ConnectionTestResult,
     CredentialSetupRequest,
     DashboardResponse,
     DeploymentPlan,
@@ -55,6 +58,7 @@ from .models import (
     NetworkEvent,
     PoeResponse,
     PortDescriptionRequest,
+    RuntimeInfo,
     SetupStatus,
     SwitchSummary,
     TelemetryHistoryResponse,
@@ -95,7 +99,7 @@ configure_logging(settings.log_dir)
 
 app = FastAPI(
     title="SwitchOps",
-    version="0.2.0",
+    version="0.2.1",
     description="Local-only network operations sidecar. Allowlisted commands only.",
     docs_url="/docs" if settings.enable_api_docs else None,
     redoc_url=None,
@@ -431,6 +435,29 @@ def health():
     }
 
 
+@app.get("/api/system/info", response_model=RuntimeInfo, response_model_by_alias=True)
+def system_info():
+    """Non-secret runtime facts for the Settings screen."""
+    credential_status = get_credential_store().status()
+    host = credential_status.get("switch_host") or settings.switch_host
+    return RuntimeInfo(
+        version=app.version,
+        apiHost=settings.host,
+        apiPort=settings.port,
+        mockMode=settings.mock_mode,
+        enableWriteActions=settings.enable_write_actions,
+        legacySsh=settings.legacy_ssh,
+        apiDocsEnabled=settings.enable_api_docs,
+        hostKeyPinned=bool(host) and is_host_pinned(str(host)),
+        telemetryRetentionDays=settings.telemetry_retention_days,
+        dataDir=str(settings.data_dir),
+        backupDir=str(settings.backup_dir),
+        logDir=str(settings.log_dir),
+        corsOrigins=settings.cors_origin_list,
+        deviceDriver=credential_status.get("switch_device_type") or settings.switch_device_type,
+    )
+
+
 @app.get("/api/setup/status", response_model=SetupStatus, response_model_by_alias=True)
 def setup_status():
     store = get_credential_store()
@@ -494,6 +521,18 @@ def clear_credentials():
 
 
 # --- read-only switch endpoints -------------------------------------------
+
+@app.post(
+    "/api/setup/test-connection",
+    response_model=ConnectionTestResult,
+    response_model_by_alias=True,
+)
+def post_test_connection():
+    """Bounded read-only reachability test. Sends only allowlisted show commands."""
+    # Serialized with every other device access: the switch gets one session.
+    with _switch_access_lock:
+        return run_connection_test()
+
 
 @app.get("/api/switch/interfaces", response_model=InterfaceStatusResponse, response_model_by_alias=True)
 def get_interfaces():
