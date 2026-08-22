@@ -112,7 +112,7 @@ configure_logging(settings.log_dir)
 
 app = FastAPI(
     title="SwitchOps",
-    version="0.2.1",
+    version="0.3.0",
     description="Local-only network operations sidecar. Allowlisted commands only.",
     docs_url="/docs" if settings.enable_api_docs else None,
     redoc_url=None,

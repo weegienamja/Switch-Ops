@@ -16,7 +16,7 @@ SwitchOps is a Windows-first desktop application that:
 - Ships a controlled safe-write mode (disabled by default) for a tiny set of mapped actions on spare ports.
 - Never accepts arbitrary CLI from the UI or any future LLM/MCP integration.
 
-## SwitchOps v0.2.1 (current)
+## SwitchOps v0.2.1
 
 A correctness and product-quality pass over the v0.2 foundation. No new subsystem.
 
@@ -250,6 +250,9 @@ GET  /api/switch/audit
 POST /api/switch/backup-config
 GET  /api/network/events
 GET  /api/telemetry/history
+GET  /api/topology/intent            # expected topology (SwitchOps-local)
+PUT  /api/topology/intent/{port}     # record intent; never writes to the switch
+DELETE /api/topology/intent/{port}   # fall back to the interface description
 GET  /api/guide/operations
 POST /api/guide/operations/{operation_id}/run
 GET  /api/configuration/history
@@ -267,8 +270,9 @@ POST /api/switch/save-config
 ## Roadmap
 
 - **v0.2** — historical telemetry, delta health, events, digital twin, Lab Guide, configuration history, and non-executable planning.
-- **v0.2.1 (this release)** — correct topology evidence correlation, a visual lab canvas, honest observation history, beginner/change-control separation, redesigned Settings, and a read-only connection test.
-- **Next** — physically attach the TEST-AP-01 to Gi0/4 and validate the expected → observed transition, including whether it announces itself over CDP.
+- **v0.2.1** — correct topology evidence correlation, a visual lab canvas, honest observation history, beginner/change-control separation, redesigned Settings, and a read-only connection test.
+- **v0.3.0 (this release)** — topology reconciliation: observed / expected / historical / inferred held together and compared, health separated from drift, and SwitchOps-local expected topology.
+- **Next** — a second evidence provider, so reconciliation has more than one observation point to reason from.
 - **Future** — gated plan/apply/verify/rollback workflows only after explicit safety design and authorization. Never raw CLI.
 
 ## Troubleshooting
