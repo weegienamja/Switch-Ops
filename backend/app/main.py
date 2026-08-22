@@ -10,12 +10,16 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Literal, TypeVar
 
+import asyncio
+import json
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .audit_store import get_audit_store
 from .command_registry import assert_interface_readable, build_write_action
@@ -25,6 +29,13 @@ from .intent_store import get_intent_store
 from .config import get_settings
 from .credential_store import SwitchCredentials, get_credential_store
 from .device_session import JobPriority, get_device_session, run_on_device
+from .live_state import (
+    LiveCollector,
+    TierConfig,
+    get_collector,
+    get_live_state,
+    set_collector,
+)
 from .errors import SwitchOpsError
 from .health_logic import build_summary
 from .host_key_store import is_host_pinned
@@ -108,12 +119,23 @@ logger = logging.getLogger("switchops")
 settings = get_settings()
 configure_logging(settings.log_dir)
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Own the device worker and collectors for the process lifetime."""
+    _start_live_operations()
+    try:
+        yield
+    finally:
+        _stop_live_operations()
+
+
 app = FastAPI(
     title="SwitchOps",
     version="0.3.0",
     description="Local-only network operations sidecar. Allowlisted commands only.",
     docs_url="/docs" if settings.enable_api_docs else None,
     redoc_url=None,
+    lifespan=_lifespan,
 )
 
 app.add_middleware(
@@ -388,6 +410,10 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
     # separate from health: a network can be perfectly healthy and still not
     # match what the operator believes is plugged in.
     intent_store = get_intent_store()
+    # The live cache needs the device identity to attribute its events.
+    live_state = get_live_state()
+    live_state.device_id = topology.root_device_id
+    live_state.mark_fresh("deep", observed_at)
     gateway_value = str(config.get("gateway") or "")
     try:
         previous_identities = intent_store.previous_observations(topology.root_device_id)
@@ -494,6 +520,191 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
 
 
 # --- system endpoints -----------------------------------------------------
+
+# --- live operations lifecycle ---------------------------------------------
+
+
+def _record_interface_transitions(changes: list[dict], at: datetime) -> None:
+    """Persist meaningful link transitions the fast tier revealed.
+
+    Only transitions are written. A 5 s sample rate would add roughly 17,000
+    rows a day if every sample were stored, to answer a question nobody asks.
+    """
+    live = get_live_state()
+    device_id = live.device_id
+    if not device_id:
+        return
+    store = get_telemetry_store(retention_days=settings.telemetry_retention_days)
+    for change in changes:
+        before, after = change["before"], change["after"]
+        port = change["port"]
+        if before["oper_state"] != after["oper_state"]:
+            up = after["oper_state"] == "up"
+            event = NetworkEvent(
+                timestamp=at,
+                deviceId=device_id,
+                interface=port,
+                eventType="interface_link_up" if up else "interface_link_down",
+                severity="HEALTHY" if up else "NOTICE",
+                title=f"{port} link {'established' if up else 'lost'}",
+                detail=(
+                    f"Observed by live telemetry. Negotiated {after['speed']} "
+                    f"{after['duplex']}." if up
+                    else "The switch no longer detects an Ethernet link on this interface."
+                ),
+                metadata={"source": "live-fast"},
+            )
+        elif before["admin_state"] != after["admin_state"]:
+            enabled = after["admin_state"] == "up"
+            event = NetworkEvent(
+                timestamp=at,
+                deviceId=device_id,
+                interface=port,
+                eventType="interface_admin_changed",
+                severity="NOTICE",
+                title=f"{port} administratively {'enabled' if enabled else 'disabled'}",
+                detail="The interface's administrative state changed.",
+                metadata={"source": "live-fast"},
+            )
+        elif before["description"] != after["description"]:
+            event = NetworkEvent(
+                timestamp=at,
+                deviceId=device_id,
+                interface=port,
+                eventType="interface_description_changed",
+                severity="NOTICE",
+                title=f"{port} description changed",
+                detail=f"The interface description is now {after['description']!r}.",
+                metadata={"source": "live-fast"},
+            )
+        else:
+            continue
+        try:
+            stored = store.record_event(event)
+            get_live_state().hub.publish("network_event", stored.model_dump(by_alias=True, mode="json"))
+        except Exception:
+            logger.warning("Could not persist a live transition for %s", port)
+
+
+def _record_poe_transitions(changes: list[dict], at: datetime) -> None:
+    live = get_live_state()
+    device_id = live.device_id
+    if not device_id:
+        return
+    store = get_telemetry_store(retention_days=settings.telemetry_retention_days)
+    for change in changes:
+        active = str(change["after"]).lower() not in {"", "off", "n/a", "faulty", "deny"}
+        event = NetworkEvent(
+            timestamp=at,
+            deviceId=device_id,
+            interface=change["port"],
+            eventType="poe_state_changed",
+            severity="HEALTHY" if active else "NOTICE",
+            title=f"PoE {'started' if active else 'stopped'} on {change['port']}",
+            detail=(
+                f"Observed PoE operational state changed from {change['before'] or 'unknown'} "
+                f"to {change['after'] or 'unknown'}."
+            ),
+            metadata={"source": "live-medium", "watts": change.get("watts")},
+        )
+        try:
+            stored = store.record_event(event)
+            live.hub.publish("network_event", stored.model_dump(by_alias=True, mode="json"))
+        except Exception:
+            logger.warning("Could not persist a PoE transition")
+
+
+def _start_live_operations() -> None:
+    session = get_device_session()
+    session.start()
+    live = get_live_state()
+    session.add_listener(lambda status: live.hub.publish("connection_state", status))
+    collector = LiveCollector(
+        state=live,
+        session=session,
+        config=TierConfig(),
+        on_fast_change=_record_interface_transitions,
+        on_poe_change=_record_poe_transitions,
+    )
+    set_collector(collector)
+    collector.start()
+
+
+def _stop_live_operations() -> None:
+    collector = get_collector()
+    if collector is not None:
+        collector.stop()
+    set_collector(None)
+    get_device_session().stop()
+
+
+@app.get("/api/live/state")
+def get_live_snapshot():
+    """Current normalised live state, for a client that has just connected."""
+    live = get_live_state()
+    payload = live.snapshot()
+    payload["connection"] = get_device_session().status()
+    collector = get_collector()
+    payload["tiers"] = {
+        "fastSeconds": collector.config.fast_seconds if collector else None,
+        "mediumSeconds": collector.config.medium_seconds if collector else None,
+        "slowSeconds": collector.config.slow_seconds if collector else None,
+        "paused": collector.paused if collector else False,
+        "ticksRun": collector.ticks_run if collector else 0,
+        "ticksSkipped": collector.ticks_skipped if collector else 0,
+    }
+    return payload
+
+
+@app.get("/api/live/stream")
+async def live_stream(request: Request):
+    """Server-Sent Events channel.
+
+    SSE rather than WebSocket: the traffic is one-directional, EventSource
+    reconnects on its own, and it needs no dependency beyond what is already
+    here.
+    """
+    live = get_live_state()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=64)
+    live.hub.subscribe(loop, queue)
+
+    async def events():
+        try:
+            # The first message is always a complete snapshot, so a client
+            # never has to assemble state from a partial stream.
+            opening = live.snapshot()
+            opening["connection"] = get_device_session().status()
+            yield _sse("snapshot", opening)
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    message = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    # Keeps intermediaries and EventSource from timing out, and
+                    # tells the UI the channel is still alive.
+                    yield ": keepalive\n\n"
+                    continue
+                yield _sse(message["type"], message["data"], at=message["at"])
+        finally:
+            live.hub.unsubscribe(queue)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _sse(event_type: str, data: Any, at: str | None = None) -> str:
+    payload = {"at": at or datetime.now(timezone.utc).isoformat(), "data": data}
+    return f"event: {event_type}\ndata: {json.dumps(payload, default=str)}\n\n"
+
 
 @app.get("/health")
 def health():
