@@ -5,6 +5,8 @@ import { motion } from "motion/react";
 import { api } from "@/lib/api";
 import type {
   AuditResponse,
+  ExpectedRelationship,
+  ReconciliationSummary,
   ConfigurationHistoryResponse,
   EnvironmentStatus,
   GuideOperation,
@@ -40,6 +42,7 @@ import MockScenarioPanel from "./MockScenarioPanel";
 import NetworkEventTimeline from "./NetworkEventTimeline";
 import NetworkTwin from "./NetworkTwin";
 import ObservationHistoryPanel from "./ObservationHistoryPanel";
+import ReconciliationSummaryPanel from "./ReconciliationSummaryPanel";
 import PoePanel from "./PoePanel";
 import PortStatusTable from "./PortStatusTable";
 import RuntimeBadge from "./RuntimeBadge";
@@ -66,6 +69,8 @@ interface DashboardData {
   history: TelemetryHistoryResponse | null;
   events: NetworkEventsResponse;
   topology: TopologyModel;
+  reconciliation: ReconciliationSummary;
+  intent: ExpectedRelationship[];
   guideOperations: GuideOperation[];
   configurationHistory: ConfigurationHistoryResponse;
   mockScenario: "baseline" | "ap_attached";
@@ -119,6 +124,12 @@ export default function DashboardShell() {
       } catch {
         // History is a local enhancement; current switch telemetry remains usable.
       }
+      let intent: ExpectedRelationship[] = [];
+      try {
+        intent = (await api.topologyIntent(dashboard.topology.rootDeviceId)).relationships;
+      } catch {
+        // Recorded intent is optional; reconciliation falls back to descriptions.
+      }
       setData({
         setup,
         summary: dashboard.summary,
@@ -135,6 +146,8 @@ export default function DashboardShell() {
         history,
         events: dashboard.events,
         topology: dashboard.topology,
+        reconciliation: dashboard.reconciliation,
+        intent,
         guideOperations: guide.operations,
         configurationHistory: dashboard.configurationHistory,
         mockScenario: mockScenario?.scenario || "baseline",
@@ -243,6 +256,12 @@ export default function DashboardShell() {
               </motion.div>
               <div className="grid grid--12">
                 <motion.div className="col-6" variants={fadeUp}><HealthPanel health={summary.health} /></motion.div>
+                <motion.div className="col-6" variants={fadeUp}>
+                  <ReconciliationSummaryPanel
+                    reconciliation={data.reconciliation}
+                    onInspect={(port) => { setSelectedPort(port); setActiveView("network"); }}
+                  />
+                </motion.div>
                 <motion.div className="col-6" variants={fadeUp}><ObservationHistoryPanel history={data.history} /></motion.div>
                 <motion.div className="col-4" variants={fadeUp}><EnvironmentPanel env={data.env} /></motion.div>
                 <motion.div className="col-8" variants={fadeUp}><CpuMemoryPanel cpu={data.cpu} memory={data.memory} /></motion.div>
@@ -270,6 +289,9 @@ export default function DashboardShell() {
                   selectedPort={selectedPort}
                   onSelectPort={setSelectedPort}
                   model={summary.pid || summary.model}
+                  reconciliation={data.reconciliation}
+                  intent={data.intent}
+                  onIntentChange={() => void loadAll(true)}
                 />
               </motion.div>
               <motion.details className="advanced-disclosure" variants={fadeUp}>

@@ -184,12 +184,137 @@ export type EvidenceLevel =
 
 export type IdentitySource =
   | "cdp"
+  | "lldp"
   | "interface-description"
   | "mac-oui"
+  | "user-intent"
+  | "meraki-api"
+  | "historical"
   | "switch-telemetry"
   | "none";
 
 export type InterfaceRole = "uplink" | "access" | "unknown";
+
+/**
+ * Topology reconciliation. Mirrors backend/app/models.py.
+ *
+ * The axis that matters is `evidenceClass`: it is what keeps a description
+ * somebody typed into the switch from being rendered as observed truth.
+ */
+export type EvidenceClass =
+  | "observed"
+  | "expected"
+  | "historical"
+  | "inferred"
+  | "unknown";
+
+export type EvidenceSource =
+  | "cdp"
+  | "lldp"
+  | "mac-table"
+  | "arp"
+  | "interface-telemetry"
+  | "interface-description"
+  | "user-intent"
+  | "accepted-plan"
+  | "prior-observation"
+  | "mac-address-form"
+  | "meraki-api"
+  | "none";
+
+export type RelationshipKind =
+  | "direct-neighbour"
+  | "attached-endpoint"
+  | "learned-behind"
+  | "gateway-path"
+  | "expected-neighbour";
+
+export interface TopologyAssertion {
+  subject: string;
+  relationship: RelationshipKind;
+  objectLabel: string;
+  /** False when only presence was proven. Never treat the label as a name. */
+  objectIdentified: boolean;
+  evidenceClass: EvidenceClass;
+  source: EvidenceSource;
+  confidence: "low" | "medium" | "high";
+  detail: string;
+  observedAt?: string | null;
+  deviceType?: DeviceType | null;
+  vendor?: string | null;
+  model?: string | null;
+}
+
+export type ReconciliationStatus =
+  | "aligned"
+  | "drift"
+  | "expected-not-observed"
+  | "unexpected"
+  | "uncertain"
+  | "not-applicable";
+
+export type DriftKind = "identity" | "location" | "none";
+
+export interface InterfaceReconciliation {
+  interface: string;
+  status: ReconciliationStatus;
+  driftKind: DriftKind;
+  headline: string;
+  explanation: string;
+  observed?: TopologyAssertion | null;
+  expected?: TopologyAssertion | null;
+  historical?: TopologyAssertion | null;
+  inferred: TopologyAssertion[];
+  /** Orthogonal to status: a link can match intent and still have changed. */
+  changedSincePrevious: boolean;
+  changeSummary?: string | null;
+  assertions: TopologyAssertion[];
+  /** The switch's own description no longer matches the active intent. */
+  documentationStale: boolean;
+}
+
+export interface ReconciliationSummary {
+  evaluatedAt: string;
+  deviceId: string;
+  aligned: number;
+  drift: number;
+  expectedNotObserved: number;
+  unexpected: number;
+  uncertain: number;
+  changed: number;
+  /** Needs a human decision. Never means the network is unhealthy. */
+  attention: boolean;
+  headline: string;
+  interfaces: InterfaceReconciliation[];
+}
+
+export interface ExpectedRelationship {
+  deviceId: string;
+  interface: string;
+  expectedName: string;
+  expectedDeviceType: DeviceType;
+  expectedVendor?: string | null;
+  expectedModel?: string | null;
+  source: "user-intent" | "accepted-plan" | "interface-description";
+  note?: string | null;
+  suppressed: boolean;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface ExpectedRelationshipRequest {
+  expectedName: string;
+  expectedDeviceType?: DeviceType;
+  expectedVendor?: string | null;
+  expectedModel?: string | null;
+  note?: string | null;
+  suppressed?: boolean;
+}
+
+export interface ExpectedTopologyResponse {
+  deviceId: string;
+  relationships: ExpectedRelationship[];
+}
 
 export interface CdpNeighbor {
   remoteName: string;
@@ -225,6 +350,9 @@ export interface NetworkDevice {
   evidence: string[];
   evidenceLevel: EvidenceLevel;
   identitySource: IdentitySource;
+  /** What intent says should be here, kept apart from the observed name. */
+  expectedName?: string | null;
+  expectedType?: DeviceType | null;
   /** Addresses reachable through this link. >1 means devices sit behind it. */
   learnedMacCount: number;
   role: InterfaceRole;
@@ -408,6 +536,7 @@ export interface DashboardResponse {
   telemetry: TelemetrySnapshotSummary;
   events: NetworkEventsResponse;
   topology: TopologyModel;
+  reconciliation: ReconciliationSummary;
   configurationHistory: ConfigurationHistoryResponse;
   sectionErrors: Record<string, string>;
 }

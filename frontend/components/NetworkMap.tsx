@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
+  InterfaceReconciliation,
   NetworkDevice,
   NetworkLink,
+  ReconciliationSummary,
   TelemetrySnapshotSummary,
   TopologyModel,
 } from "@/lib/types";
+import { STATUS_COPY } from "@/lib/reconciliation";
 import CatalystFrontPanel from "./CatalystFrontPanel";
 import DeviceArt from "./DeviceArt";
 import {
@@ -23,6 +26,7 @@ interface PlacedDevice {
   device: NetworkDevice;
   link: NetworkLink | undefined;
   port: string;
+  reconciliation: InterfaceReconciliation | undefined;
 }
 
 interface Wire {
@@ -65,12 +69,14 @@ export default function NetworkMap({
   selectedPort,
   onSelectPort,
   model,
+  reconciliation,
 }: {
   topology: TopologyModel;
   telemetry: TelemetrySnapshotSummary;
   selectedPort: string;
   onSelectPort: (port: string) => void;
   model?: string;
+  reconciliation?: ReconciliationSummary;
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef(new Map<string, HTMLElement>());
@@ -80,11 +86,16 @@ export default function NetworkMap({
   const root = topology.devices.find((device) => device.id === topology.rootDeviceId);
   const linkByDevice = new Map(topology.links.map((link) => [link.toDeviceId, link]));
 
+  const reconciliationByPort = new Map(
+    (reconciliation?.interfaces || []).map((item) => [item.interface, item]),
+  );
+
   const placed: PlacedDevice[] = topology.devices
     .filter((device) => device.id !== topology.rootDeviceId)
     .map((device) => {
       const link = linkByDevice.get(device.id);
-      return { device, link, port: link?.fromInterface || device.connectedInterface || "" };
+      const port = link?.fromInterface || device.connectedInterface || "";
+      return { device, link, port, reconciliation: reconciliationByPort.get(port) };
     })
     .filter((item) => item.port)
     .sort((a, b) => portNumber(a.port) - portNumber(b.port));
@@ -294,30 +305,53 @@ function TopologyNode({
   onSelect: (port: string) => void;
   nodeRef: (element: HTMLElement | null) => void;
 }) {
-  const { device, port } = placed;
+  const { device, port, reconciliation } = placed;
   const tone = deviceStateTone(device);
   const evidence = EVIDENCE_COPY[device.evidenceLevel];
+  const status = reconciliation?.status;
+  const needsAttention =
+    status === "drift" || status === "expected-not-observed" || status === "unexpected";
+  // An expectation is only worth showing separately when it is not already
+  // the node's label - otherwise a dark port would say the same thing twice.
+  const expectation =
+    device.expectedName && device.expectedName !== device.name ? device.expectedName : null;
+
   return (
     <button
       type="button"
       ref={nodeRef}
       data-node={device.id}
-      className={`topo-node topo-node--${tone} ${selected ? "topo-node--selected" : ""}`}
+      data-reconciliation={status || "none"}
+      className={`topo-node topo-node--${tone} ${selected ? "topo-node--selected" : ""} ${
+        needsAttention ? "topo-node--attention" : ""
+      }`}
       onClick={() => onSelect(port)}
       aria-pressed={selected}
-      title={evidence.detail}
+      title={reconciliation ? reconciliation.explanation : evidence.detail}
     >
+      {needsAttention ? (
+        <span className="topo-node__flag" aria-hidden>!</span>
+      ) : null}
       <span className="topo-node__art">
         <DeviceArt type={device.visualCategory} label={device.name} width={82} />
       </span>
       <span className="topo-node__name">{device.name}</span>
-      <span className="topo-node__identity">{deviceIdentityLine(device)}</span>
+      {expectation ? (
+        <span className="topo-node__expected">Expected: {expectation}</span>
+      ) : (
+        <span className="topo-node__identity">{deviceIdentityLine(device)}</span>
+      )}
       <span className={`topo-node__state topo-node__state--${tone}`}>
         <i aria-hidden />
         {deviceStateLabel(device)}
       </span>
       <span className="topo-node__fact">{factLine(placed)}</span>
-      <span className={`evidence-tag evidence-tag--${device.evidenceLevel}`}>{evidence.label}</span>
+      <span className="topo-node__tags">
+        <span className={`evidence-tag evidence-tag--${device.evidenceLevel}`}>{evidence.label}</span>
+        {status && status !== "not-applicable" ? (
+          <span className={`recon-badge recon-badge--${status}`}>{STATUS_COPY[status].label}</span>
+        ) : null}
+      </span>
     </button>
   );
 }

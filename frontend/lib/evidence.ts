@@ -66,9 +66,13 @@ export const EVIDENCE_COPY: Record<EvidenceLevel, EvidenceCopy> = {
 
 export const IDENTITY_COPY: Record<IdentitySource, string> = {
   cdp: "Name and platform reported by the device itself (CDP).",
+  lldp: "Name and platform reported by the device itself (LLDP).",
   "interface-description":
     "Name taken from the interface description you configured, not from the device.",
   "mac-oui": "Vendor inferred from the hardware address prefix.",
+  "user-intent": "Name you recorded in SwitchOps. It is an expectation, not a sighting.",
+  "meraki-api": "Reported by a Meraki controller.",
+  historical: "Carried over from an earlier observation; it may no longer hold.",
   "switch-telemetry": "Read from this switch over an authenticated session.",
   none: "Nothing identifies this device yet.",
 };

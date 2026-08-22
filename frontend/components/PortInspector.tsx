@@ -1,10 +1,13 @@
 "use client";
 
 import type {
+  ExpectedRelationship,
   NetworkEvent,
+  ReconciliationSummary,
   TelemetrySnapshotSummary,
   TopologyModel,
 } from "@/lib/types";
+import ReconciliationInspector from "./ReconciliationInspector";
 import { explainPort, interfaceDeltaFor } from "@/lib/explanations";
 import {
   EVIDENCE_COPY,
@@ -31,11 +34,17 @@ export default function PortInspector({
   telemetry,
   events,
   selectedPort,
+  reconciliation,
+  intent,
+  onIntentChange,
 }: {
   topology: TopologyModel;
   telemetry: TelemetrySnapshotSummary;
   events: NetworkEvent[];
   selectedPort: string;
+  reconciliation?: ReconciliationSummary;
+  intent?: ExpectedRelationship[];
+  onIntentChange?: () => void;
 }) {
   const selected = topology.interfaces.find((item) => item.port === selectedPort);
   const delta = interfaceDeltaFor(selectedPort, telemetry.interfaceDeltas);
@@ -46,6 +55,10 @@ export default function PortInspector({
   const recentEvents = events.filter((event) => event.interface === selectedPort).slice(0, 4);
   const state = selected ? portState(selected) : "unknown";
   const facts = explainPort(selected, delta);
+  const reconciled = reconciliation?.interfaces.find(
+    (item) => item.interface === selectedPort,
+  );
+  const portIntent = (intent || []).find((item) => item.interface === selectedPort);
   const behindNote = learnedBehindNote(link?.learnedMacCount || 0);
 
   return (
@@ -136,6 +149,20 @@ export default function PortInspector({
               </li>
             ))}
           </ul>
+        </div>
+
+        <div className="port-inspector__column port-inspector__column--reconciliation">
+          <div className="eyebrow">Expected vs observed</div>
+          {reconciliation ? (
+            <ReconciliationInspector
+              deviceId={reconciliation.deviceId}
+              result={reconciled}
+              intent={portIntent}
+              onIntentChange={onIntentChange || (() => undefined)}
+            />
+          ) : (
+            <p className="empty-note">Reconciliation was unavailable for this observation.</p>
+          )}
         </div>
 
         <div className="port-inspector__column port-inspector__column--events">

@@ -1,7 +1,9 @@
 "use client";
 
 import type {
+  ExpectedRelationship,
   NetworkEvent,
+  ReconciliationSummary,
   TelemetrySnapshotSummary,
   TopologyModel,
 } from "@/lib/types";
@@ -19,6 +21,9 @@ export default function NetworkTwin({
   selectedPort,
   onSelectPort,
   model,
+  reconciliation,
+  intent,
+  onIntentChange,
 }: {
   topology: TopologyModel;
   telemetry: TelemetrySnapshotSummary;
@@ -26,6 +31,9 @@ export default function NetworkTwin({
   selectedPort: string;
   onSelectPort: (port: string) => void;
   model?: string;
+  reconciliation?: ReconciliationSummary;
+  intent: ExpectedRelationship[];
+  onIntentChange: () => void;
 }) {
   return (
     <div className="network-twin">
@@ -35,12 +43,16 @@ export default function NetworkTwin({
         selectedPort={selectedPort}
         onSelectPort={onSelectPort}
         model={model}
+        reconciliation={reconciliation}
       />
       <PortInspector
         topology={topology}
         telemetry={telemetry}
         events={events}
         selectedPort={selectedPort}
+        reconciliation={reconciliation}
+        intent={intent}
+        onIntentChange={onIntentChange}
       />
     </div>
   );

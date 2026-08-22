@@ -22,6 +22,8 @@ import type {
   TelemetryHistoryResponse,
   AccessPointPlanRequest,
   ConnectionTestResult,
+  ExpectedRelationshipRequest,
+  ExpectedTopologyResponse,
   RuntimeInfo,
 } from "./types";
 
@@ -110,6 +112,24 @@ export const api = {
     fetchJson<ConfigurationHistoryEntry>(
       `/api/configuration/history/${entryId}/known-good`,
       { method: "POST" },
+    ),
+  topologyIntent: (deviceId: string) =>
+    fetchJson<ExpectedTopologyResponse>(
+      `/api/topology/intent?deviceId=${encodeURIComponent(deviceId)}`,
+    ),
+  setTopologyIntent: (
+    deviceId: string,
+    port: string,
+    request: ExpectedRelationshipRequest,
+  ) =>
+    fetchJson<ExpectedTopologyResponse>(
+      `/api/topology/intent/${portToPath(port)}?deviceId=${encodeURIComponent(deviceId)}`,
+      { method: "PUT", body: JSON.stringify(request) },
+    ),
+  clearTopologyIntent: (deviceId: string, port: string) =>
+    fetchJson<ExpectedTopologyResponse>(
+      `/api/topology/intent/${portToPath(port)}?deviceId=${encodeURIComponent(deviceId)}`,
+      { method: "DELETE" },
     ),
   guideOperations: () => fetchJson<GuideCatalogResponse>("/api/guide/operations"),
   runGuideOperation: (operationId: string, interfaceName?: string) =>
