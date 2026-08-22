@@ -25,6 +25,12 @@ import type {
   ExpectedRelationshipRequest,
   ExpectedTopologyResponse,
   RuntimeInfo,
+  ConfigSaveResult,
+  ConfigSaveState,
+  LiveSnapshot,
+  OperationKind,
+  OperationResult,
+  WriteLockStatus,
 } from "./types";
 
 export interface InterfaceStatusResponse {
@@ -37,6 +43,10 @@ const BACKEND_BASE =
 
 function url(path: string): string {
   return `${BACKEND_BASE}${path}`;
+}
+
+export function backendEventStreamUrl(): string {
+  return url("/api/live/stream");
 }
 
 async function fetchJson<T>(
@@ -153,23 +163,19 @@ export const api = {
     }),
   backup: () =>
     fetchJson<BackupResult>("/api/switch/backup-config", { method: "POST" }),
-  enablePort: (port: string) =>
-    fetchJson("/api/switch/ports/" + portToPath(port) + "/enable", {
+  liveState: () => fetchJson<LiveSnapshot>("/api/live/state"),
+  controlLock: () => fetchJson<WriteLockStatus>("/api/control/lock"),
+  unlockControl: () =>
+    fetchJson<WriteLockStatus>("/api/control/unlock", { method: "POST" }),
+  lockControl: () =>
+    fetchJson<WriteLockStatus>("/api/control/lock", { method: "POST" }),
+  runOperation: (port: string, kind: OperationKind, value?: string) =>
+    fetchJson<OperationResult>(`/api/interfaces/${portToPath(port)}/operations`, {
       method: "POST",
+      body: JSON.stringify({ kind, value: value || null }),
     }),
-  disablePort: (port: string) =>
-    fetchJson("/api/switch/ports/" + portToPath(port) + "/disable", {
-      method: "POST",
-    }),
-  setPortDescription: (port: string, description: string) =>
-    fetchJson("/api/switch/ports/" + portToPath(port) + "/description", {
-      method: "POST",
-      body: JSON.stringify({ description }),
-    }),
-  enablePortPoe: (port: string) =>
-    fetchJson("/api/switch/ports/" + portToPath(port) + "/poe/enable", {
-      method: "POST",
-    }),
-  saveConfig: () =>
-    fetchJson("/api/switch/save-config", { method: "POST" }),
+  configState: () => fetchJson<ConfigSaveState>("/api/config/state"),
+  refreshConfigState: () =>
+    fetchJson<ConfigSaveState>("/api/config/state/refresh", { method: "POST" }),
+  saveConfig: () => fetchJson<ConfigSaveResult>("/api/config/save", { method: "POST" }),
 };

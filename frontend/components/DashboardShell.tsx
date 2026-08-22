@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { api } from "@/lib/api";
+import { mergeLiveInterfaces } from "@/lib/live";
+import { useLiveOperations } from "@/lib/useLiveOperations";
 import type {
   AuditResponse,
   ExpectedRelationship,
@@ -37,6 +39,7 @@ import HealthPanel from "./HealthPanel";
 import LabGuide from "./LabGuide";
 import LoadingState from "./LoadingState";
 import LogsPanel from "./LogsPanel";
+import LiveStatusBadge from "./LiveStatusBadge";
 import MacTable from "./MacTable";
 import MockScenarioPanel from "./MockScenarioPanel";
 import NetworkEventTimeline from "./NetworkEventTimeline";
@@ -102,6 +105,11 @@ export default function DashboardShell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeView, setActiveView] = useState<View>("overview");
   const [selectedPort, setSelectedPort] = useState("Gi0/4");
+  const live = useLiveOperations(Boolean(data?.setup && (data.setup.configured || data.setup.mockMode)));
+  const liveMerged = useMemo(() => {
+    if (!data?.topology || !data.interfaces || !data.poe) return null;
+    return mergeLiveInterfaces(data.topology, data.interfaces, data.poe, live.interfaces);
+  }, [data, live.interfaces]);
 
   async function loadAll(silent = false) {
     if (!silent) setLoading(true);
@@ -189,6 +197,10 @@ export default function DashboardShell() {
   }
 
   const summary = data.summary;
+  const currentTopology = liveMerged?.topology || data.topology;
+  const currentInterfaces = liveMerged?.interfaces || data.interfaces;
+  const currentPoe = liveMerged?.poe || data.poe;
+  const selectedInterface = currentTopology.interfaces.find((item) => item.port === selectedPort);
   return (
     <div className="app-shell">
       <div className="local-banner">
@@ -208,13 +220,19 @@ export default function DashboardShell() {
           </div>
           <div className="header__meta">
             <RuntimeBadge setup={data.setup} />
+            <LiveStatusBadge
+              connection={live.connection}
+              streamState={live.streamState}
+              freshness={live.freshness}
+            />
             <span className={`badge ${healthBadgeClass(summary.health.state)}`}>
               {summary.health.state === "HEALTHY" ? <span className="pulse" /> : <span className="dot" />}
               {summary.health.state}
             </span>
-            {lastRefresh ? <span className="badge">observed {lastRefresh.toLocaleTimeString()}</span> : null}
+            {live.config.runningModified ? <span className="badge badge--amber">UNSAVED CONFIG</span> : null}
+            {lastRefresh ? <span className="badge">deep {lastRefresh.toLocaleTimeString()}</span> : null}
             <button className="btn" onClick={() => void loadAll(true)} disabled={refreshing}>
-              {refreshing ? "Observing…" : "Refresh observation"}
+              {refreshing ? "Observing…" : "Deep refresh"}
             </button>
             <button className="btn btn--ghost" onClick={() => setSettingsOpen(true)}>Settings</button>
           </div>
@@ -252,7 +270,7 @@ export default function DashboardShell() {
             <>
               <motion.div variants={fadeUp}><SwitchHero summary={summary} /></motion.div>
               <motion.div variants={fadeUp}>
-                <SummaryCards summary={summary} poe={data.poe} telemetry={data.telemetry} />
+                <SummaryCards summary={summary} poe={currentPoe} telemetry={data.telemetry} />
               </motion.div>
               <div className="grid grid--12">
                 <motion.div className="col-6" variants={fadeUp}><HealthPanel health={summary.health} /></motion.div>
@@ -283,7 +301,7 @@ export default function DashboardShell() {
               ) : null}
               <motion.div variants={fadeUp}>
                 <NetworkTwin
-                  topology={data.topology}
+                  topology={currentTopology}
                   telemetry={data.telemetry}
                   events={data.events.events}
                   selectedPort={selectedPort}
@@ -294,6 +312,9 @@ export default function DashboardShell() {
                   onIntentChange={() => void loadAll(true)}
                 />
               </motion.div>
+              <motion.div variants={fadeUp}>
+                <AdvancedOperationsPanel key={selectedPort} selected={selectedInterface} live={live} />
+              </motion.div>
               <motion.details className="advanced-disclosure" variants={fadeUp}>
                 <summary>
                   <span className="advanced-disclosure__label">Reference tables</span>
@@ -302,8 +323,8 @@ export default function DashboardShell() {
                   </span>
                 </summary>
                 <div className="grid grid--12 advanced-disclosure__body">
-                  <div className="col-12"><PortStatusTable interfaces={data.interfaces.interfaces} /></div>
-                  <div className="col-6"><PoePanel poe={data.poe} /></div>
+                  <div className="col-12"><PortStatusTable interfaces={currentInterfaces.interfaces} /></div>
+                  <div className="col-6"><PoePanel poe={currentPoe} /></div>
                   <div className="col-6"><MacTable mac={data.mac} /></div>
                 </div>
               </motion.details>
@@ -346,7 +367,7 @@ export default function DashboardShell() {
 
           {activeView === "guide" ? (
             <motion.div variants={fadeUp}>
-              <LabGuide operations={data.guideOperations} interfaces={data.interfaces.interfaces} />
+              <LabGuide operations={data.guideOperations} interfaces={currentInterfaces.interfaces} />
             </motion.div>
           ) : null}
 
@@ -359,12 +380,12 @@ export default function DashboardShell() {
                     <li><strong>Learn</strong><span>Understand the port in the Lab Guide</span></li>
                     <li><strong>Plan</strong><span>Describe the intent and validate it</span></li>
                     <li><strong>Review</strong><span>Read the proposed IOS and the impact</span></li>
-                    <li className="is-blocked"><strong>Apply</strong><span>Not available in this build</span></li>
+                    <li><strong>Apply</strong><span>Use bounded controls in Visual network</span></li>
                   </ol>
                 </div>
               </motion.div>
               <motion.div variants={fadeUp}>
-                <DeploymentPlanPanel interfaces={data.interfaces.interfaces} />
+                <DeploymentPlanPanel interfaces={currentInterfaces.interfaces} />
               </motion.div>
               <div className="grid grid--12">
                 <motion.div className="col-7" variants={fadeUp}>
@@ -377,21 +398,6 @@ export default function DashboardShell() {
                   <ConfigBackupPanel onChange={() => void loadAll(true)} />
                 </motion.div>
               </div>
-              <motion.details className="advanced-disclosure" variants={fadeUp}>
-                <summary>
-                  <span className="advanced-disclosure__label">Advanced operations</span>
-                  <span className="advanced-disclosure__hint">
-                    Direct allowlisted device actions · {data.setup.enableWriteActions ? "writes enabled" : "disabled in this build"}
-                  </span>
-                </summary>
-                <div className="advanced-disclosure__body">
-                  <AdvancedOperationsPanel
-                    setup={data.setup}
-                    interfaces={data.interfaces.interfaces}
-                    onChange={() => void loadAll(true)}
-                  />
-                </div>
-              </motion.details>
             </>
           ) : null}
         </motion.main>

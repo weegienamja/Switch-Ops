@@ -1,8 +1,9 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import AdvancedOperationsPanel from "@/components/AdvancedOperationsPanel";
 import LabGuide from "@/components/LabGuide";
-import type { GuideOperation, InterfaceStatus, SetupStatus } from "@/lib/types";
+import type { LiveOperationsController } from "@/lib/useLiveOperations";
+import type { GuideOperation, InterfaceStatus, NetworkInterface } from "@/lib/types";
 
 const interfaceStatus: InterfaceStatus = {
   port: "Gi0/4",
@@ -38,14 +39,44 @@ const operations: GuideOperation[] = [
   },
 ];
 
-const readOnlySetup: SetupStatus = {
-  configured: true,
-  hasPassword: false,
-  hasEnableSecret: false,
-  storage: "none",
-  mockMode: true,
-  enableWriteActions: false,
+const selected: NetworkInterface = {
+  id: "if-gi04",
+  deviceId: "switch-lab",
+  port: "Gi0/4",
+  description: "Lab access point",
+  adminState: "up",
+  operState: "down",
+  speed: "auto",
+  duplex: "auto",
+  vlan: "1",
+  poeCapable: true,
+  poeState: "off",
+  poeWatts: 0,
+  protected: false,
+  role: "access",
+  learnedMacCount: 0,
 };
+
+function liveController(
+  overrides: Partial<LiveOperationsController> = {},
+): LiveOperationsController {
+  return {
+    interfaces: [],
+    freshness: {},
+    connection: { state: "live", queueDepth: 0 },
+    streamState: "open",
+    operation: null,
+    lock: { capability: false, unlocked: false },
+    config: { runningModified: false, pendingOperations: 0, detail: "Configurations match." },
+    lastEventAt: null,
+    unlock: vi.fn(),
+    lockNow: vi.fn(),
+    runOperation: vi.fn(),
+    save: vi.fn(),
+    refreshConfig: vi.fn(),
+    ...overrides,
+  } as LiveOperationsController;
+}
 
 describe("Lab Guide stays read-only learning", () => {
   it("renders an allowlisted operation, exact command, and read-only boundary", () => {
@@ -83,13 +114,12 @@ describe("advanced operations", () => {
   it("keeps all physical write controls disabled when write mode is off", () => {
     render(
       <AdvancedOperationsPanel
-        setup={readOnlySetup}
-        interfaces={[interfaceStatus]}
-        onChange={() => undefined}
+        selected={selected}
+        live={liveController()}
       />,
     );
     const actionButtons = screen.getAllByRole("button").filter((button) =>
-      /Enable port|Disable port|Enable PoE|Write memory|Apply/i.test(button.textContent || ""),
+      /Enable port|Disable port|PoE Auto|PoE Off|Review/i.test(button.textContent || ""),
     );
     expect(actionButtons.length).toBeGreaterThan(0);
     expect(actionButtons.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
@@ -98,31 +128,24 @@ describe("advanced operations", () => {
   it("states the write state in words and names the protected interfaces", () => {
     render(
       <AdvancedOperationsPanel
-        setup={readOnlySetup}
-        interfaces={[interfaceStatus]}
-        onChange={() => undefined}
+        selected={selected}
+        live={liveController()}
       />,
     );
-    expect(screen.getByText("WRITES DISABLED")).toBeTruthy();
-    expect(screen.getByText(/SwitchOps cannot change this switch/)).toBeTruthy();
+    expect(screen.getByText("CONTROL LOCKED")).toBeTruthy();
+    expect(screen.getByText("Read-only installation")).toBeTruthy();
     expect(screen.getByText(/Gi0\/1, Gi0\/2 and Vlan1 stay protected/)).toBeTruthy();
   });
 
   it("never offers an apply action for the protected interfaces", () => {
     render(
       <AdvancedOperationsPanel
-        setup={{ ...readOnlySetup, enableWriteActions: true }}
-        interfaces={[
-          { ...interfaceStatus, port: "Gi0/1", name: "Uplink to Test Gateway", protected: true },
-          { ...interfaceStatus, port: "Gi0/2", name: "Test Workstation", protected: true },
-          interfaceStatus,
-        ]}
-        onChange={() => undefined}
+        selected={{ ...selected, port: "Gi0/1", protected: true }}
+        live={liveController({ lock: { capability: true, unlocked: true } })}
       />,
     );
-    const options = screen.getAllByRole("option").map((option) => option.textContent || "");
-    expect(options.some((option) => option.startsWith("Gi0/4"))).toBe(true);
-    expect(options.some((option) => option.startsWith("Gi0/1"))).toBe(false);
-    expect(options.some((option) => option.startsWith("Gi0/2"))).toBe(false);
+    expect(screen.getByText(/management interface is protected/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Enable port" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Disable port" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

@@ -127,6 +127,119 @@ export interface TelemetrySnapshotSummary {
   retentionDays: number;
 }
 
+export type LiveConnectionState =
+  | "offline"
+  | "connecting"
+  | "live"
+  | "stale"
+  | "reconnecting";
+
+export interface LiveConnection {
+  state: LiveConnectionState;
+  error?: string | null;
+  errorCode?: string | null;
+  queueDepth: number;
+  lastSuccessAt?: string | null;
+  metrics?: Record<string, unknown>;
+}
+
+export interface LiveFreshness {
+  fast?: string | null;
+  medium?: string | null;
+  slow?: string | null;
+  deep?: string | null;
+}
+
+/** Live cache uses dataclass field names rather than Pydantic aliases. */
+export interface LiveInterfaceState {
+  port: string;
+  description: string;
+  status: string;
+  admin_state: "up" | "down" | "unknown";
+  oper_state: "up" | "down" | "unknown";
+  speed: string;
+  duplex: string;
+  vlan: string;
+  poe_state: string;
+  poe_watts: number;
+  protected: boolean;
+}
+
+export interface LiveSnapshot {
+  deviceId?: string | null;
+  interfaces: LiveInterfaceState[];
+  poe: { usedW: number; availableW: number };
+  freshness: LiveFreshness;
+  operationInProgress?: string | null;
+  connection: LiveConnection;
+  tiers?: {
+    fastSeconds?: number | null;
+    mediumSeconds?: number | null;
+    slowSeconds?: number | null;
+    paused: boolean;
+    ticksRun: number;
+    ticksSkipped: number;
+  };
+}
+
+export type OperationKind =
+  | "admin_up"
+  | "admin_down"
+  | "poe_auto"
+  | "poe_never"
+  | "set_description";
+
+export interface OperationStage {
+  name: "precheck" | "backup" | "execute" | "verify" | "audit" | "rollback";
+  status: "pending" | "running" | "ok" | "failed" | "skipped";
+  detail: string;
+}
+
+export interface OperationResult {
+  operationId: string;
+  kind: OperationKind;
+  interface: string;
+  status: "success" | "failed" | "blocked" | "rolled_back";
+  detail: string;
+  stages: OperationStage[];
+  beforeState?: string | null;
+  afterState?: string | null;
+  commands: string[];
+  durationMs: number;
+  rolledBack?: boolean | null;
+  backupPath?: string | null;
+  requiresSave: boolean;
+  at: string;
+}
+
+export interface OperationProgress {
+  kind: OperationKind;
+  interface: string;
+  stages: OperationStage[];
+  status: "running" | OperationResult["status"];
+  result?: OperationResult;
+}
+
+export interface WriteLockStatus {
+  capability: boolean;
+  unlocked: boolean;
+  unlockedAt?: string | null;
+}
+
+export interface ConfigSaveState {
+  runningModified: boolean;
+  lastChangeAt?: string | null;
+  lastSavedAt?: string | null;
+  pendingOperations: number;
+  detail: string;
+}
+
+export interface ConfigSaveResult {
+  success: boolean;
+  detail: string;
+  state: ConfigSaveState;
+}
+
 export interface DeviceObservationPoint {
   timestamp: string;
   reachable: boolean;
