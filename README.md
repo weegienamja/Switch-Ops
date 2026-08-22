@@ -9,12 +9,27 @@ A polished local desktop dashboard for the SWITCHOPS-TEST-SW1 Cisco Catalyst WS-
 SwitchOps is a Windows-first desktop application that:
 
 - Connects to the local Cisco Catalyst over SSH using Netmiko, with a legacy-SSH Paramiko fallback for the old KEX/cipher/MAC suites the switch requires.
-- Runs **only allowlisted read-only commands** in v1.
+- Runs **only allowlisted read-only commands** for dashboard, guide, and planning observations.
 - Surfaces switch state — health, ports, PoE, environment, CPU, memory, MAC table, logs — in a polished dark "network operations" UI.
 - Logs every executed command into both SQLite and a JSONL audit log.
 - Backs up the running configuration on demand with timestamped filenames.
 - Ships a controlled safe-write mode (disabled by default) for a tiny set of mapped actions on spare ports.
 - Never accepts arbitrary CLI from the UI or any future LLM/MCP integration.
+
+## SwitchOps v0.2 foundation
+
+Version 0.2 turns the physical lab into a visual, historical, self-explaining system:
+
+- Refresh-driven SQLite telemetry keeps 30 days of device/interface observations by default. Mock and physical histories have separate identities.
+- Health uses current state and counter deltas rather than treating an old cumulative error as an active fault.
+- A user-facing event timeline records observed link, administrative, speed, duplex, VLAN, PoE, error-counter, and learned-device changes.
+- A normalized evidence-aware topology and original local SVG library support observed, inferred, expected, and unknown devices without fabricated identification.
+- A clickable ten-port Catalyst front panel stays correlated with the logical topology and contextual beginner explanations.
+- Thirteen Lab Guide operations resolve only to fixed allowlisted read commands and return structured results.
+- Change-only configuration history stores private local versions, fingerprints, known-good markers, and redacted diffs.
+- Access-point port planning validates current state and renders a dry-run proposal. Applying it is intentionally impossible in v0.2.
+
+No background poller was added. A dashboard refresh reuses its single sequential switch session; guide and planner actions run only when the user explicitly requests them.
 
 ## Switch under management
 
@@ -176,6 +191,13 @@ GET  /api/switch/mac-table
 GET  /api/switch/logs
 GET  /api/switch/audit
 POST /api/switch/backup-config
+GET  /api/network/events
+GET  /api/telemetry/history
+GET  /api/guide/operations
+POST /api/guide/operations/{operation_id}/run
+GET  /api/configuration/history
+POST /api/configuration/history/{entry_id}/known-good
+POST /api/plans/access-point  # dry-run only; no execution capability
 
 # disabled unless ENABLE_WRITE_ACTIONS=true
 POST /api/switch/ports/{port}/enable
@@ -187,9 +209,9 @@ POST /api/switch/save-config
 
 ## Roadmap
 
-- **v1 (this release)** — read-only dashboard, audit logging, config backup, mock mode.
-- **v2** — safe writes on spare ports, PoE toggle on Meraki port, save config.
-- **v3** — MCP server exposing the *same* safe tools to an LLM. Never raw CLI.
+- **v0.2 (this release)** — historical telemetry, delta health, events, digital twin, Lab Guide, configuration history, and non-executable planning.
+- **Next** — validate discovery and visuals with the physical access point, then deepen evidence correlation.
+- **Future** — gated plan/apply/verify/rollback workflows only after explicit safety design and authorization. Never raw CLI.
 
 ## Troubleshooting
 
