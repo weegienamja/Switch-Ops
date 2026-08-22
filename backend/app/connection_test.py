@@ -16,12 +16,14 @@ import logging
 import socket
 import time
 from datetime import datetime, timezone
+from typing import Optional
 
 from .command_registry import resolve_read_command
 from .config import get_settings
 from .credential_store import get_credential_store
 from .errors import (
     CredentialsMissingError,
+    SwitchOpsError,
     HostKeyChangedError,
     LegacySshNegotiationError,
     SwitchConnectionError,
@@ -30,7 +32,7 @@ from .host_key_store import is_host_pinned
 from .models import ConnectionCheck, ConnectionTestResult
 from .parsers.interfaces import parse_interface_status
 from .parsers.version import parse_version
-from .switch_client import SwitchClient, get_switch_client
+from .switch_client import SwitchClient
 from .tools.read_only import run_and_audit
 
 logger = logging.getLogger(__name__)
@@ -114,6 +116,47 @@ def _probe_tcp(host: str, port: int = SSH_PORT, timeout: float = TCP_TIMEOUT_SEC
         return False
 
 
+def _classify_session_failure(
+    checks: dict[str, ConnectionCheck],
+    error: Optional[SwitchOpsError],
+    pinned_before: bool,
+    now: datetime,
+    started: float,
+) -> ConnectionTestResult:
+    """Describe why the operational session is unavailable."""
+    code = _classify(error) if error is not None else "connection_failed"
+    if code == "host_key_changed":
+        checks["ssh"].status = "pass"
+        checks["ssh"].detail = "The switch answered the SSH handshake."
+        checks["host_key"].status = "fail"
+        checks["host_key"].detail = FAILURE_TEXT[code]
+        summary = "Blocked for safety: the SSH host key changed."
+    elif code == "authentication_failed":
+        checks["ssh"].status = "pass"
+        checks["ssh"].detail = "The switch answered the SSH handshake."
+        checks["host_key"].status = "pass"
+        checks["host_key"].detail = (
+            "The presented host key matched the pinned key."
+            if pinned_before
+            else "First connection; no pinned key to compare against yet."
+        )
+        checks["auth"].status = "fail"
+        checks["auth"].detail = FAILURE_TEXT[code]
+        summary = "Authentication was rejected by the switch."
+    else:
+        checks["ssh"].status = "fail"
+        checks["ssh"].detail = FAILURE_TEXT.get(code, FAILURE_TEXT["connection_failed"])
+        summary = "The SSH session could not be established."
+    return _finish(
+        checks,
+        ok=False,
+        summary=summary,
+        failure_code=code,
+        now=now,
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+
+
 def _mock_result(now: datetime) -> ConnectionTestResult:
     checks = _pending_checks()
     for check in checks.values():
@@ -148,8 +191,18 @@ def _finish(
     )
 
 
-def run_connection_test() -> ConnectionTestResult:
-    """Run the bounded diagnostic. Caller must hold the switch access lock."""
+def run_connection_test(
+    *,
+    client: Optional[SwitchClient] = None,
+    session_error: Optional[SwitchOpsError] = None,
+) -> ConnectionTestResult:
+    """Run the bounded diagnostic against the operational session.
+
+    ``client`` is the persistent session handed over by the device worker. When
+    it is None the worker could not provide one, and ``session_error`` carries
+    why - which is more useful than opening a throwaway connection that tells
+    the user nothing about the session SwitchOps actually uses.
+    """
     settings = get_settings()
     now = datetime.now(timezone.utc)
     started = time.monotonic()
@@ -196,55 +249,11 @@ def run_connection_test() -> ConnectionTestResult:
     checks["reachable"].detail = f"{host} accepted a TCP connection on port {SSH_PORT}."
 
     pinned_before = is_host_pinned(host)
-    client: SwitchClient | None = None
-    try:
-        client = get_switch_client()
-    except CredentialsMissingError:
-        checks["credentials"].status = "fail"
-        checks["credentials"].detail = FAILURE_TEXT["credentials_missing"]
-        return _finish(
-            checks,
-            ok=False,
-            summary="Stored credentials disappeared between checks.",
-            failure_code="credentials_missing",
-            now=now,
-            duration_ms=int((time.monotonic() - started) * 1000),
+    if client is None:
+        # The worker holds the only session, and it does not have one.
+        return _classify_session_failure(
+            checks, session_error, pinned_before, now, started
         )
-    except (HostKeyChangedError, LegacySshNegotiationError, SwitchConnectionError, Exception) as exc:
-        code = _classify(exc)
-        # Log the type only. The detail may name the account or the path.
-        logger.warning("Connection test failed (%s)", type(exc).__name__)
-        if code == "host_key_changed":
-            checks["ssh"].status = "pass"
-            checks["ssh"].detail = "The switch answered the SSH handshake."
-            checks["host_key"].status = "fail"
-            checks["host_key"].detail = FAILURE_TEXT[code]
-            summary = "Blocked for safety: the SSH host key changed."
-        elif code == "authentication_failed":
-            checks["ssh"].status = "pass"
-            checks["ssh"].detail = "The switch answered the SSH handshake."
-            checks["host_key"].status = "pass"
-            checks["host_key"].detail = (
-                "The presented host key matched the pinned key."
-                if pinned_before
-                else "First connection; no pinned key to compare against yet."
-            )
-            checks["auth"].status = "fail"
-            checks["auth"].detail = FAILURE_TEXT[code]
-            summary = "Authentication was rejected by the switch."
-        else:
-            checks["ssh"].status = "fail"
-            checks["ssh"].detail = FAILURE_TEXT[code]
-            summary = "The SSH session could not be established."
-        return _finish(
-            checks,
-            ok=False,
-            summary=summary,
-            failure_code=code,
-            now=now,
-            duration_ms=int((time.monotonic() - started) * 1000),
-        )
-
     try:
         checks["ssh"].status = "pass"
         checks["ssh"].detail = "An SSH session was negotiated and opened."
@@ -325,7 +334,5 @@ def run_connection_test() -> ConnectionTestResult:
             duration_ms=int((time.monotonic() - started) * 1000),
         )
     finally:
-        try:
-            client.close()
-        except Exception:  # pragma: no cover - best-effort teardown
-            pass
+        # The session belongs to the device worker; never close it here.
+        pass

@@ -60,9 +60,9 @@ def test_recording_intent_sends_nothing_to_the_switch(client, monkeypatch):
     import backend.app.main as main_module
 
     def explode(*args, **kwargs):  # pragma: no cover - must never run
-        raise AssertionError("recording intent opened a switch session")
+        raise AssertionError("recording intent reached the device worker")
 
-    monkeypatch.setattr(main_module, "switch_session", explode)
+    monkeypatch.setattr(main_module, "on_device", explode)
     response = client.put(
         "/api/topology/intent/Gi0-1",
         params={"deviceId": DEVICE},

@@ -7,10 +7,8 @@ from __future__ import annotations
 import argparse
 import logging
 import re
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from threading import RLock
-from typing import Callable, Iterator, Literal, TypeVar
+from typing import Callable, Literal, TypeVar
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -26,6 +24,7 @@ from .connection_test import run_connection_test
 from .intent_store import get_intent_store
 from .config import get_settings
 from .credential_store import SwitchCredentials, get_credential_store
+from .device_session import JobPriority, get_device_session, run_on_device
 from .errors import SwitchOpsError
 from .health_logic import build_summary
 from .host_key_store import is_host_pinned
@@ -95,7 +94,6 @@ from .reconciliation import (
 from .switch_client import (
     SwitchClient,
     get_mock_scenario,
-    get_switch_client,
     set_mock_scenario,
 )
 from .telemetry_store import get_telemetry_store
@@ -172,22 +170,21 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
 
 
 # --- client lifecycle ------------------------------------------------------
+#
+# Every device access goes through the persistent session worker. No request
+# handler touches the SSH client directly, so two handlers cannot interleave
+# commands on the channel even if they arrive at the same instant.
 
-_switch_access_lock = RLock()
 
-
-@contextmanager
-def switch_session() -> Iterator[SwitchClient]:
-    """Open one session while holding the process-wide switch access lock."""
-    with _switch_access_lock:
-        client = get_switch_client()
-        try:
-            yield client
-        finally:
-            try:
-                client.close()
-            except Exception:  # pragma: no cover
-                pass
+def on_device(
+    kind: str,
+    run: Callable[[SwitchClient], T],
+    *,
+    priority: JobPriority = JobPriority.DIAGNOSTIC,
+    timeout: float = 180.0,
+) -> T:
+    """Run one unit of work on the switch, serialized behind the worker."""
+    return run_on_device(kind, run, priority=priority, timeout=timeout)
 
 
 T = TypeVar("T")
@@ -602,22 +599,36 @@ def clear_credentials():
 )
 def post_test_connection():
     """Bounded read-only reachability test. Sends only allowlisted show commands."""
-    # Serialized with every other device access: the switch gets one session.
-    with _switch_access_lock:
+    if settings.mock_mode:
         return run_connection_test()
+    try:
+        # Runs on the operational session, so the result describes the session
+        # SwitchOps actually uses rather than a throwaway one.
+        return on_device(
+            "connection_test",
+            lambda client: run_connection_test(client=client),
+            priority=JobPriority.DIAGNOSTIC,
+            timeout=90.0,
+        )
+    except SwitchOpsError as exc:
+        return run_connection_test(session_error=exc)
 
 
 @app.get("/api/switch/interfaces", response_model=InterfaceStatusResponse, response_model_by_alias=True)
 def get_interfaces():
-    with switch_session() as c:
-        out = run_and_audit(c, symbol="show_interfaces_status")
+    out = on_device(
+        "interfaces",
+        lambda c: run_and_audit(c, symbol="show_interfaces_status"),
+    )
     return InterfaceStatusResponse(interfaces=parse_interface_status(out))
 
 
 @app.get("/api/switch/errors", response_model=InterfaceErrorsResponse, response_model_by_alias=True)
 def get_errors():
-    with switch_session() as c:
-        out = run_and_audit(c, symbol="show_interfaces_counters_errors")
+    out = on_device(
+        "errors",
+        lambda c: run_and_audit(c, symbol="show_interfaces_counters_errors"),
+    )
     counters = parse_interface_errors(out)
     total = sum(c.total for c in counters)
     return InterfaceErrorsResponse(counters=counters, totalErrors=total, healthy=(total == 0))
@@ -625,43 +636,55 @@ def get_errors():
 
 @app.get("/api/switch/poe", response_model=PoeResponse, response_model_by_alias=True)
 def get_poe():
-    with switch_session() as c:
-        out = run_and_audit(c, symbol="show_power_inline")
+    out = on_device(
+        "poe",
+        lambda c: run_and_audit(c, symbol="show_power_inline"),
+    )
     return parse_poe(out)
 
 
 @app.get("/api/switch/environment", response_model=EnvironmentStatus, response_model_by_alias=True)
 def get_environment():
-    with switch_session() as c:
-        out = run_and_audit(c, symbol="show_env_all")
+    out = on_device(
+        "environment",
+        lambda c: run_and_audit(c, symbol="show_env_all"),
+    )
     return parse_environment(out)
 
 
 @app.get("/api/switch/cpu", response_model=CpuStatus, response_model_by_alias=True)
 def get_cpu():
-    with switch_session() as c:
-        out = run_and_audit(c, symbol="show_processes_cpu")
+    out = on_device(
+        "cpu",
+        lambda c: run_and_audit(c, symbol="show_processes_cpu"),
+    )
     return parse_cpu(out)
 
 
 @app.get("/api/switch/memory", response_model=MemoryStatus, response_model_by_alias=True)
 def get_memory():
-    with switch_session() as c:
-        out = run_and_audit(c, symbol="show_memory_statistics")
+    out = on_device(
+        "memory",
+        lambda c: run_and_audit(c, symbol="show_memory_statistics"),
+    )
     return parse_memory(out)
 
 
 @app.get("/api/switch/mac-table", response_model=MacTableResponse, response_model_by_alias=True)
 def get_mac_table():
-    with switch_session() as c:
-        out = run_and_audit(c, symbol="show_mac_address_table")
+    out = on_device(
+        "mac_table",
+        lambda c: run_and_audit(c, symbol="show_mac_address_table"),
+    )
     return MacTableResponse(entries=parse_mac_table(out))
 
 
 @app.get("/api/switch/logs", response_model=LogsResponse, response_model_by_alias=True)
 def get_logs():
-    with switch_session() as c:
-        out = run_and_audit(c, symbol="show_logging")
+    out = on_device(
+        "logs",
+        lambda c: run_and_audit(c, symbol="show_logging"),
+    )
     return parse_logs(out)
 
 
@@ -671,14 +694,12 @@ def get_logs():
     response_model_by_alias=True,
 )
 def get_dashboard():
-    with switch_session() as client:
-        return _collect_dashboard(client)
+    return on_device("dashboard", lambda client: _collect_dashboard(client))
 
 
 @app.get("/api/switch/summary", response_model=SwitchSummary, response_model_by_alias=True)
 def get_summary():
-    with switch_session() as client:
-        return _collect_dashboard(client).summary
+    return on_device("summary", lambda client: _collect_dashboard(client).summary)
 
 
 @app.get("/api/switch/audit", response_model=AuditResponse, response_model_by_alias=True)
@@ -770,12 +791,14 @@ def post_configuration_known_good(entry_id: int):
     response_model_by_alias=True,
 )
 def post_guide_operation(operation_id: str, req: GuideRunRequest):
-    with switch_session() as client:
-        return run_guide_operation(
+    return on_device(
+        "guide_operation",
+        lambda client: run_guide_operation(
             client,
             operation_id=operation_id,
             interface=req.interface,
-        )
+        ),
+    )
 
 
 @app.post(
@@ -789,12 +812,14 @@ def post_access_point_plan(req: AccessPointPlanRequest):
     This route has no execution path: it performs three allowlisted show
     commands and returns a plan whose ``applyAvailable`` value is always false.
     """
-    with switch_session() as client:
-        interfaces = parse_interface_status(
-            run_and_audit(client, symbol="show_interfaces_status")
+    def _collect(client: SwitchClient):
+        return (
+            parse_interface_status(run_and_audit(client, symbol="show_interfaces_status")),
+            parse_poe(run_and_audit(client, symbol="show_power_inline")),
+            parse_vlans(run_and_audit(client, symbol="show_vlan_brief")),
         )
-        poe = parse_poe(run_and_audit(client, symbol="show_power_inline"))
-        vlans = parse_vlans(run_and_audit(client, symbol="show_vlan_brief"))
+
+    interfaces, poe, vlans = on_device("access_point_plan", _collect)
     return build_access_point_plan(
         req,
         interfaces=interfaces,
@@ -869,8 +894,7 @@ def delete_topology_intent(port: str, deviceId: str = Query(min_length=1, max_le
 
 @app.post("/api/switch/backup-config", response_model=BackupResult, response_model_by_alias=True)
 def post_backup_config():
-    with switch_session() as c:
-        return backup_running_config(c)
+    return on_device("backup_config", lambda c: backup_running_config(c))
 
 
 # --- safe-write endpoints (disabled unless enable_write_actions) ----------
@@ -903,8 +927,11 @@ def post_port_enable(port: str):
     _require_write_actions()
     decoded = _decode_port(port)
     _prevalidate_write("enable_port", interface=decoded)
-    with switch_session() as c:
-        return execute_safe_write(c, action="enable_port", interface=decoded)
+    return on_device(
+        "port_enable",
+        lambda c: execute_safe_write(c, action="enable_port", interface=decoded),
+        priority=JobPriority.TRANSACTION,
+    )
 
 
 @app.post("/api/switch/ports/{port}/disable", response_model=WriteActionResult, response_model_by_alias=True)
@@ -912,8 +939,11 @@ def post_port_disable(port: str):
     _require_write_actions()
     decoded = _decode_port(port)
     _prevalidate_write("disable_port", interface=decoded)
-    with switch_session() as c:
-        return execute_safe_write(c, action="disable_port", interface=decoded)
+    return on_device(
+        "port_disable",
+        lambda c: execute_safe_write(c, action="disable_port", interface=decoded),
+        priority=JobPriority.TRANSACTION,
+    )
 
 
 @app.post("/api/switch/ports/{port}/description", response_model=WriteActionResult, response_model_by_alias=True)
@@ -921,8 +951,13 @@ def post_port_description(port: str, req: PortDescriptionRequest):
     _require_write_actions()
     decoded = _decode_port(port)
     _prevalidate_write("set_port_description", interface=decoded, value=req.description)
-    with switch_session() as c:
-        return execute_safe_write(c, action="set_port_description", interface=decoded, value=req.description)
+    return on_device(
+        "port_description",
+        lambda c: execute_safe_write(
+            c, action="set_port_description", interface=decoded, value=req.description
+        ),
+        priority=JobPriority.TRANSACTION,
+    )
 
 
 @app.post("/api/switch/ports/{port}/poe/enable", response_model=WriteActionResult, response_model_by_alias=True)
@@ -930,16 +965,22 @@ def post_port_poe_enable(port: str):
     _require_write_actions()
     decoded = _decode_port(port)
     _prevalidate_write("enable_poe", interface=decoded)
-    with switch_session() as c:
-        return execute_safe_write(c, action="enable_poe", interface=decoded)
+    return on_device(
+        "port_poe_enable",
+        lambda c: execute_safe_write(c, action="enable_poe", interface=decoded),
+        priority=JobPriority.TRANSACTION,
+    )
 
 
 @app.post("/api/switch/save-config", response_model=WriteActionResult, response_model_by_alias=True)
 def post_save_config():
     _require_write_actions()
     _prevalidate_write("save_config")
-    with switch_session() as c:
-        return execute_safe_write(c, action="save_config")
+    return on_device(
+        "save_config",
+        lambda c: execute_safe_write(c, action="save_config"),
+        priority=JobPriority.TRANSACTION,
+    )
 
 
 # --- entry point ----------------------------------------------------------

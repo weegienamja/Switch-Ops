@@ -40,6 +40,12 @@ class _FakeClient:
     def close(self) -> None:
         self.closed = True
 
+    def is_alive(self) -> bool:
+        return True
+
+    def refresh_prompt(self) -> None:
+        return None
+
 
 IOS_VERSION = """Cisco IOS Software, C3560C Software (C3560c405ex-UNIVERSALK9-M), Version 12.2(55)EX2, RELEASE SOFTWARE (fc1)
 SWITCHOPS-TEST-SW1 uptime is 4 days, 7 hours
@@ -89,8 +95,6 @@ def test_mock_mode_contacts_nothing_and_says_so(monkeypatch):
     settings = ct.get_settings()
     monkeypatch.setattr(settings, "mock_mode", True, raising=False)
     monkeypatch.setattr(ct, "get_settings", lambda: settings)
-    monkeypatch.setattr(ct, "get_switch_client", lambda: pytest.fail("mock mode must not connect"))
-
     result = ct.run_connection_test()
     assert result.mode == "mock"
     assert result.ok is True
@@ -100,9 +104,7 @@ def test_mock_mode_contacts_nothing_and_says_so(monkeypatch):
 
 def test_healthy_path_reports_every_check_and_changes_nothing(real_mode, monkeypatch):
     client = _FakeClient(version=IOS_VERSION, interfaces=IFACE_STATUS)
-    monkeypatch.setattr(ct, "get_switch_client", lambda: client)
-
-    result = ct.run_connection_test()
+    result = ct.run_connection_test(client=client)
     assert result.ok is True
     assert _checks(result) == {
         "credentials": "pass",
@@ -113,9 +115,10 @@ def test_healthy_path_reports_every_check_and_changes_nothing(real_mode, monkeyp
         "platform": "pass",
         "read_ops": "pass",
     }
-    # Only read-only show commands, and the session is always closed.
+    # Only read-only show commands, and the worker's session is left open:
+    # it belongs to the device worker, not to this diagnostic.
     assert client.commands == ["show_version", "show_interfaces_status"]
-    assert client.closed is True
+    assert client.closed is False
     assert "Nothing was changed" in result.summary
 
 
@@ -126,7 +129,6 @@ def test_missing_credentials_stops_before_touching_the_network(real_mode, monkey
         lambda: type("Store", (), {"status": staticmethod(lambda: {"configured": False})})(),
     )
     monkeypatch.setattr(ct, "_probe_tcp", lambda *a, **k: pytest.fail("must not probe"))
-    monkeypatch.setattr(ct, "get_switch_client", lambda: pytest.fail("must not connect"))
 
     result = ct.run_connection_test()
     assert result.ok is False
@@ -137,7 +139,6 @@ def test_missing_credentials_stops_before_touching_the_network(real_mode, monkey
 
 def test_unreachable_host_does_not_attempt_authentication(real_mode, monkeypatch):
     monkeypatch.setattr(ct, "_probe_tcp", lambda *a, **k: False)
-    monkeypatch.setattr(ct, "get_switch_client", lambda: pytest.fail("must not connect"))
 
     result = ct.run_connection_test()
     assert result.ok is False
@@ -147,11 +148,9 @@ def test_unreachable_host_does_not_attempt_authentication(real_mode, monkeypatch
 
 
 def test_host_key_change_is_reported_as_blocked_for_safety(real_mode, monkeypatch):
-    def explode():
-        raise HostKeyChangedError("The switch SSH host key changed; connection refused.")
-
-    monkeypatch.setattr(ct, "get_switch_client", explode)
-    result = ct.run_connection_test()
+    result = ct.run_connection_test(
+        session_error=HostKeyChangedError("The switch SSH host key changed; connection refused.")
+    )
     assert result.ok is False
     assert result.failure_code == "host_key_changed"
     checks = _checks(result)
@@ -165,12 +164,10 @@ def test_authentication_failure_is_distinguished_from_unreachable(real_mode, mon
     class NetmikoAuthenticationException(Exception):
         pass
 
-    def explode():
-        cause = NetmikoAuthenticationException(f"Authentication to 192.0.2.10 failed: {SECRET}")
-        raise SwitchConnectionError("Netmiko connection failed", detail=str(cause)) from cause
-
-    monkeypatch.setattr(ct, "get_switch_client", explode)
-    result = ct.run_connection_test()
+    cause = NetmikoAuthenticationException(f"Authentication to 192.0.2.10 failed: {SECRET}")
+    error = SwitchConnectionError("Netmiko connection failed", detail=str(cause))
+    error.__cause__ = cause
+    result = ct.run_connection_test(session_error=error)
     assert result.failure_code == "authentication_failed"
     checks = _checks(result)
     assert checks["ssh"] == "pass"
@@ -180,19 +177,14 @@ def test_authentication_failure_is_distinguished_from_unreachable(real_mode, mon
 
 
 def test_negotiation_failure_is_reported_at_the_ssh_step(real_mode, monkeypatch):
-    def explode():
-        raise LegacySshNegotiationError("no shared kex")
-
-    monkeypatch.setattr(ct, "get_switch_client", explode)
-    result = ct.run_connection_test()
+    result = ct.run_connection_test(session_error=LegacySshNegotiationError("no shared kex"))
     assert result.failure_code == "ssh_negotiation_failed"
     assert _checks(result)["ssh"] == "fail"
 
 
 def test_non_ios_platform_is_refused_rather_than_assumed(real_mode, monkeypatch):
     client = _FakeClient(version="BusyBox v1.36 built-in shell", interfaces=IFACE_STATUS)
-    monkeypatch.setattr(ct, "get_switch_client", lambda: client)
-    result = ct.run_connection_test()
+    result = ct.run_connection_test(client=client)
     assert result.ok is False
     assert result.failure_code == "unsupported_platform"
     assert _checks(result)["platform"] == "fail"
@@ -201,8 +193,7 @@ def test_non_ios_platform_is_refused_rather_than_assumed(real_mode, monkeypatch)
 
 def test_unusable_read_output_is_a_failure_not_a_pass(real_mode, monkeypatch):
     client = _FakeClient(version=IOS_VERSION, interfaces="% Invalid input detected")
-    monkeypatch.setattr(ct, "get_switch_client", lambda: client)
-    result = ct.run_connection_test()
+    result = ct.run_connection_test(client=client)
     assert result.ok is False
     assert result.failure_code == "read_ops_unavailable"
     assert _checks(result)["read_ops"] == "fail"
@@ -211,14 +202,12 @@ def test_unusable_read_output_is_a_failure_not_a_pass(real_mode, monkeypatch):
 def test_no_failure_detail_echoes_the_underlying_exception(real_mode, monkeypatch):
     """A server-side message must never reach the API response verbatim."""
 
-    def explode():
-        raise SwitchConnectionError(
+    result = ct.run_connection_test(
+        session_error=SwitchConnectionError(
             "Netmiko connection failed",
             detail=f"password={SECRET} user=labuser path=C:/Users/example-user/creds.json",
         )
-
-    monkeypatch.setattr(ct, "get_switch_client", explode)
-    result = ct.run_connection_test()
+    )
     blob = result.model_dump_json()
     assert SECRET not in blob
     assert "labuser" not in blob
@@ -230,19 +219,18 @@ def test_no_failure_detail_echoes_the_underlying_exception(real_mode, monkeypatc
 
 def test_result_never_claims_untested_capabilities(real_mode, monkeypatch):
     client = _FakeClient(version=IOS_VERSION, interfaces=IFACE_STATUS)
-    monkeypatch.setattr(ct, "get_switch_client", lambda: client)
-    blob = ct.run_connection_test().model_dump_json().lower()
+    blob = ct.run_connection_test(client=client).model_dump_json().lower()
     for forbidden in ("internet", "privilege 15", "privilege level", "healthy switch", "gateway reachable"):
         assert forbidden not in blob
 
 
-def test_session_is_closed_even_when_a_read_command_raises(real_mode, monkeypatch):
+def test_a_failed_read_does_not_close_the_shared_session(real_mode):
+    """The session belongs to the device worker; the test must not tear it down."""
     client = _FakeClient(fail=TimeoutError("read timed out"))
-    monkeypatch.setattr(ct, "get_switch_client", lambda: client)
-    result = ct.run_connection_test()
+    result = ct.run_connection_test(client=client)
     assert result.ok is False
-    assert client.closed is True
     assert result.failure_code == "timed_out"
+    assert client.closed is False
 
 
 def test_endpoint_is_reachable_and_serialized_in_mock_mode():

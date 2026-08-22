@@ -4,6 +4,7 @@ os.environ.setdefault("SWITCH_MOCK_MODE", "true")
 
 from fastapi.testclient import TestClient
 
+from app import device_session
 from app.main import app
 
 
@@ -94,8 +95,14 @@ def test_dashboard_keeps_partial_data_when_ios_command_is_unsupported(monkeypatc
                 return "% Invalid input detected at '^' marker."
             return super().run(symbol)
 
-    monkeypatch.setattr(main_mod, "get_switch_client", lambda: PartialClient())
-    r = client.get("/api/switch/dashboard")
+    # The worker holds its client for the process lifetime, so the patched
+    # factory has to be in place before it connects and cleared afterwards.
+    device_session.reset_device_session()
+    monkeypatch.setattr(device_session, "get_switch_client", lambda: PartialClient())
+    try:
+        r = client.get("/api/switch/dashboard")
+    finally:
+        device_session.reset_device_session()
     assert r.status_code == 200
     body = r.json()
     assert len(body["interfaces"]["interfaces"]) == 10
