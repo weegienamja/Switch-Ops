@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SwitchOps",
+  "version": "0.1.0",
+  "identifier": "app.switchops.desktop",
+  "build": {
+    "frontendDist": "../../frontend/out",
+    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "pnpm --filter @switchops/frontend dev",
+    "beforeBuildCommand": "pnpm --filter @switchops/frontend build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SwitchOps",
+        "width": 1480,
+        "height": 940,
+        "minWidth": 1100,
+        "minHeight": 720,
+        "visible": false,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:8765 ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "../binaries/switchops-backend"
+    ],
+    "resources": [],
+    "copyright": "Local-use only. See README.",
+    "category": "DeveloperTool",
+    "shortDescription": "SwitchOps — local network operations dashboard.",
+    "longDescription": "Local-only desktop dashboard for the SWITCHOPS-TEST-SW1 Cisco Catalyst switch. Allowlisted, read-only by default."
+  },
+  "plugins": {
+    "shell": {
+      "open": false
+    }
+  }
+}

@@ -1,0 +1,16 @@
+Syslog logging: enabled (0 messages dropped, 0 messages rate-limited, 0 flushes, 0 overruns, xml disabled, filtering disabled)
+    Console logging: level debugging, 142 messages logged, xml disabled
+    Monitor logging: level debugging, 0 messages logged, xml disabled
+    Buffer logging: level debugging, 142 messages logged, xml disabled
+    Logging Exception size (8192 bytes)
+    Count and timestamp logging messages: disabled
+
+Log Buffer (8192 bytes):
+
+May 10 09:14:33.621: %SYS-5-CONFIG_I: Configured from console by operator on vty0 (192.0.2.21)
+May 10 09:14:48.022: %LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to up
+May 10 09:14:48.040: %LINK-3-UPDOWN: Interface GigabitEthernet0/2, changed state to up
+May 10 09:14:49.024: %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/1, changed state to up
+May 10 09:14:49.040: %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/2, changed state to up
+May 13 22:01:11.119: %SEC_LOGIN-5-LOGIN_SUCCESS: Login Success [user: operator] [Source: 192.0.2.21] [localport: 22] at 22:01:11 UTC Wed May 13 2026
+May 14 09:30:02.802: %SEC_LOGIN-5-LOGIN_SUCCESS: Login Success [user: operator] [Source: 192.0.2.21] [localport: 22] at 09:30:02 UTC Fri May 14 2026

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" rx="188" fill="#070b14"/>
+  <rect x="112" y="188" width="800" height="648" rx="96" fill="#0e1626" stroke="#22d3ee" stroke-width="24"/>
+  <path d="M220 336h584M220 688h584" stroke="#64748b" stroke-width="20" stroke-linecap="round"/>
+  <g fill="#22c55e">
+    <circle cx="264" cy="512" r="42"/><circle cx="424" cy="512" r="42"/>
+    <circle cx="584" cy="512" r="42"/><circle cx="744" cy="512" r="42"/>
+  </g>
+  <path d="M264 512h480" stroke="#22c55e" stroke-width="18" opacity=".45"/>
+  <text x="512" y="292" fill="#e2e8f0" font-family="Segoe UI, sans-serif" font-size="86" font-weight="700" text-anchor="middle">SWITCHOPS</text>
+  <text x="512" y="780" fill="#94a3b8" font-family="Consolas, monospace" font-size="58" text-anchor="middle">LOCAL / ALLOWLISTED</text>
+</svg>

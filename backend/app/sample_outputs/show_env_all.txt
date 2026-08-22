@@ -1,0 +1,10 @@
+SWITCH: 1
+FAN is OK
+TEMPERATURE is OK
+Temperature Value: 49 Degree Celsius
+Temperature State: GREEN
+Yellow Threshold : 80 Degree Celsius
+Red Threshold    : 90 Degree Celsius
+
+POWER is OK
+Power 1: 124 Watts AC In, Good

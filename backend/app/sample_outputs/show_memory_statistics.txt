@@ -1,0 +1,3 @@
+                Head    Total(b)     Used(b)     Free(b)   Lowest(b)  Largest(b)
+Processor    2A1AB18    97574088    27340504    70233584    66782556    69902320
+      I/O    7800000    16777216     8451008     8326208     8326128     8325968

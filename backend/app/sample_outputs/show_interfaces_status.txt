@@ -1,0 +1,11 @@
+Port      Name               Status       Vlan       Duplex  Speed Type
+Gi0/1     Uplink to Test Gateway connected    1          a-full a-1000 10/100/1000BaseTX
+Gi0/2     Test Workstation            connected    1          a-full a-1000 10/100/1000BaseTX
+Gi0/3     Test Server        notconnect   1            auto   auto 10/100/1000BaseTX
+Gi0/4     TEST-AP-01 AP     notconnect   1            auto   auto 10/100/1000BaseTX
+Gi0/5     TV                 notconnect   1            auto   auto 10/100/1000BaseTX
+Gi0/6     Spare Access Port  disabled     1            auto   auto 10/100/1000BaseTX
+Gi0/7     Spare Access Port  disabled     1            auto   auto 10/100/1000BaseTX
+Gi0/8     Spare Access Port  disabled     1            auto   auto 10/100/1000BaseTX
+Gi0/9     Spare Uplink       disabled     1            auto   auto 10/100/1000BaseTX
+Gi0/10    Spare              disabled     1            auto   auto 10/100/1000BaseTX

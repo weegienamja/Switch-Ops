@@ -1,0 +1,13 @@
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.4
+pydantic-settings==2.15.0
+netmiko==4.7.0
+# Netmiko 4.7 requires Paramiko <5. The app uses password authentication only;
+# legacy SHA-1 algorithms are enabled solely for the isolated lab switch.
+paramiko==4.0.0
+keyring==25.7.0
+python-dotenv==1.2.3
+httpx==0.28.1
+pytest==9.1.1
+pytest-asyncio==1.4.0

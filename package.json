@@ -1,0 +1,22 @@
+{
+  "name": "switchops",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SwitchOps — local desktop network operations dashboard for the SWITCHOPS-TEST-SW1 Cisco Catalyst.",
+  "scripts": {
+    "dev": "pnpm --filter @switchops/frontend dev",
+    "build": "pnpm --filter @switchops/frontend build",
+    "test": "pnpm --filter @switchops/frontend typecheck",
+    "lint": "pnpm --filter @switchops/frontend lint",
+    "desktop:dev": "pnpm --filter @switchops/desktop tauri dev",
+    "desktop:build": "pnpm --filter @switchops/desktop tauri build",
+    "verify:secrets": "powershell -ExecutionPolicy Bypass -File scripts/verify-no-secrets.ps1"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss": "8.5.23",
+      "sharp": "0.35.0"
+    }
+  },
+  "packageManager": "pnpm@9.0.0"
+}

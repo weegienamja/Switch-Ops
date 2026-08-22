@@ -1,0 +1,43 @@
+Cisco IOS Software, C3560C Software (C3560c405ex-UNIVERSALK9-M), Version 12.2(55)EX2, RELEASE SOFTWARE (fc1)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2012 by Cisco Systems, Inc.
+Compiled Wed 14-Mar-12 09:00 by prod_rel_team
+
+ROM: Bootstrap program is C3560C boot loader
+BOOTLDR: C3560C Boot Loader (C3560C-HBOOT-M) Version 12.2(55r)EX, RELEASE SOFTWARE (fc1)
+
+SWITCHOPS-TEST-SW1 uptime is 4 days, 7 hours, 12 minutes
+System returned to ROM by power-on
+System restarted at 09:14:21 UTC Mon May 10 2026
+System image file is "flash:c3560c405ex-universalk9-mz.122-55.EX2.bin"
+
+cisco WS-C3560CG-8PC-S (PowerPC) processor (revision V03) with 131072K bytes of memory.
+Processor board ID FOC0000T001
+Last reset from power-on
+1 Virtual Ethernet interface
+10 Gigabit Ethernet interfaces
+The password-recovery mechanism is enabled.
+
+512K bytes of flash-simulated non-volatile configuration memory.
+Base ethernet MAC Address       : 0200.0000.0001
+Motherboard assembly number     : 73-12895-04
+Power supply part number        : 341-0388-02
+Motherboard serial number       : FOC17130BS0
+Power supply serial number      : LIT171202BS
+Model revision number           : V03
+Motherboard revision number     : A0
+Model number                    : WS-C3560CG-8PC-S
+System serial number            : FOC0000T001
+Top Assembly Part Number        : 800-32733-03
+Top Assembly Revision Number    : B0
+Version ID                      : V03
+CLEI Code Number                : COMABCDEFG
+Hardware Board Revision Number  : 0x02
+
+
+Switch Ports Model              SW Version            SW Image
+------ ----- -----              ----------            ----------
+*    1 10    WS-C3560CG-8PC-S   12.2(55)EX2           C3560c405ex-UNIVERSALK9-M
+
+
+Configuration register is 0xF

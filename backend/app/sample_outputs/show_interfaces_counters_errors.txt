@@ -1,0 +1,23 @@
+Port        Align-Err     FCS-Err   Xmit-Err    Rcv-Err  UnderSize  OutDiscards
+Gi0/1               0           0          0          0          0           0
+Gi0/2               0           0          0          0          0           0
+Gi0/3               0           0          0          0          0           0
+Gi0/4               0           0          0          0          0           0
+Gi0/5               0           0          0          0          0           0
+Gi0/6               0           0          0          0          0           0
+Gi0/7               0           0          0          0          0           0
+Gi0/8               0           0          0          0          0           0
+Gi0/9               0           0          0          0          0           0
+Gi0/10              0           0          0          0          0           0
+
+Port      Single-Col  Multi-Col   Late-Col  Excess-Col  Carri-Sen     Runts     Giants
+Gi0/1              0          0          0           0          0         0          0
+Gi0/2              0          0          0           0          0         0          0
+Gi0/3              0          0          0           0          0         0          0
+Gi0/4              0          0          0           0          0         0          0
+Gi0/5              0          0          0           0          0         0          0
+Gi0/6              0          0          0           0          0         0          0
+Gi0/7              0          0          0           0          0         0          0
+Gi0/8              0          0          0           0          0         0          0
+Gi0/9              0          0          0           0          0         0          0
+Gi0/10             0          0          0           0          0         0          0

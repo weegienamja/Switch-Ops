@@ -1,0 +1,13 @@
+Available:124.0(w)  Used:0.0(w)  Remaining:124.0(w)
+
+Interface Admin  Oper       Power   Device              Class Max
+                            (Watts)
+--------- ------ ---------- ------- ------------------- ----- ----
+Gi0/1     auto   off        0.0     n/a                 n/a   30.0
+Gi0/2     auto   off        0.0     n/a                 n/a   30.0
+Gi0/3     auto   off        0.0     n/a                 n/a   30.0
+Gi0/4     auto   off        0.0     n/a                 n/a   30.0
+Gi0/5     auto   off        0.0     n/a                 n/a   30.0
+Gi0/6     auto   off        0.0     n/a                 n/a   30.0
+Gi0/7     auto   off        0.0     n/a                 n/a   30.0
+Gi0/8     auto   off        0.0     n/a                 n/a   30.0

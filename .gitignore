@@ -1,0 +1,56 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+*.secret
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.spec.bak
+
+# Backend runtime
+backend/backups/*
+!backend/backups/.gitkeep
+backend/logs/*
+!backend/logs/.gitkeep
+backend/data/*
+!backend/data/.gitkeep
+backend/app/credentials.json
+
+# Node
+node_modules/
+.next/
+out/
+.pnpm-store/
+*.tsbuildinfo
+.turbo/
+
+# Tauri / Rust
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/binaries/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
