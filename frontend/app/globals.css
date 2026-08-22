@@ -659,16 +659,29 @@ a:focus-visible {
 .trend__head { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .trend__head span { color: var(--text-muted); font-size: 11px; }
 .trend__head strong { font-family: var(--mono); font-size: 12px; }
-.trend__spark {
+.trend__spark-wrap {
+  position: relative;
   width: 100%;
-  height: 48px;
-  padding: 4px 2px;
+  padding: 2px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: rgba(4, 8, 16, .45);
 }
+/* 1 SVG unit = 1 device pixel, so markers stay round at any container width. */
+.trend__spark { display: block; width: 100%; height: 44px; }
 .trend__spark-line { fill: none; stroke: var(--cyan); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .trend__spark-point { fill: var(--cyan); stroke: #04080f; stroke-width: .8; }
+/* Vertical extent of a column that held more than one value, so a spike
+   between two samples survives being reduced to one pixel. */
+.trend__spark-spike { stroke: rgba(34, 211, 238, .45); stroke-width: 2; stroke-linecap: round; }
+.trend__spark-gaps {
+  position: absolute;
+  right: 6px;
+  bottom: 3px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 8px;
+}
 .trend__dots {
   display: flex;
   align-items: center;

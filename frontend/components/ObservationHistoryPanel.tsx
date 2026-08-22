@@ -1,4 +1,34 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
 import type { DeviceObservationPoint, TelemetryHistoryResponse } from "@/lib/types";
+import { buildSparkline } from "@/lib/sparkline";
+
+/**
+ * Measure the rendered width so the chart can work in real pixels.
+ *
+ * The previous chart used a fixed 100-unit viewBox stretched to the container
+ * with preserveAspectRatio="none", which scaled x and y by different factors
+ * and turned every circular marker into an ellipse.
+ */
+function useMeasuredWidth(fallback = 240): [React.RefObject<HTMLDivElement>, number] {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(fallback);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return undefined;
+    const measure = () => {
+      const next = element.clientWidth;
+      if (next > 0) setWidth(next);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return [ref, width];
+}
 
 type MetricKey = "temperatureC" | "cpu5Sec" | "memoryUsedPct" | "poeUsedW";
 
@@ -158,7 +188,13 @@ function ObservationDots({
   );
 }
 
-/** Time-aware sparkline: x is real elapsed time, and every observation is marked. */
+/**
+ * Time-aware sparkline.
+ *
+ * Geometry comes from lib/sparkline, which sorts, de-duplicates, breaks the
+ * line across real gaps in observation and reduces dense clusters to one
+ * column per pixel while keeping the extremes. Everything here is rendering.
+ */
 function Sparkline({
   points,
   metric,
@@ -172,53 +208,76 @@ function Sparkline({
   suffix: string;
   label: string;
 }) {
-  const times = points.map((point) => new Date(point.timestamp).getTime());
-  const start = Math.min(...times);
-  const end = Math.max(...times);
-  const span = end - start || 1;
-  const height = 34;
-  const width = 100;
+  const [ref, width] = useMeasuredWidth();
+  const height = 44;
+  const model = buildSparkline(
+    points.map((point) => ({ timestamp: point.timestamp, value: point[metric] as number | null })),
+    { width, height, ceiling },
+  );
 
-  const plotted = points
-    .map((point, index) => {
-      const value = point[metric];
-      if (value == null) return null;
-      return {
-        x: ((times[index] - start) / span) * width,
-        y: height - Math.max(0, Math.min(1, Number(value) / ceiling)) * (height - 4) - 2,
-        point,
-        value: Number(value),
-      };
-    })
-    .filter((item): item is NonNullable<typeof item> => item !== null);
-
-  if (!plotted.length) {
-    return <div className="trend__dots" aria-label={`${label}: no values recorded`} />;
+  if (!model.buckets.length) {
+    return (
+      <div className="trend__dots" ref={ref} aria-label={`${label}: no values recorded`}>
+        <span className="trend__dots-label">no values recorded</span>
+      </div>
+    );
   }
 
-  const path = plotted.map((item, index) => `${index ? "L" : "M"} ${item.x.toFixed(2)} ${item.y.toFixed(2)}`).join(" ");
+  const latest = model.buckets[model.buckets.length - 1];
+  const gapCount = Math.max(0, model.segments.length - 1);
 
   return (
-    <svg
-      className="trend__spark"
-      viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="none"
-      role="img"
-      aria-label={`${label} across ${points.length} observations, latest ${formatValue(plotted[plotted.length - 1].value, metric, suffix)}`}
-    >
-      <path className="trend__spark-line" d={path} vectorEffect="non-scaling-stroke" />
-      {plotted.map((item, index) => (
-        <circle
-          key={`${item.point.timestamp}-${index}`}
-          className="trend__spark-point"
-          cx={item.x}
-          cy={item.y}
-          r="1.6"
-          vectorEffect="non-scaling-stroke"
-        >
-          <title>{`${new Date(item.point.timestamp).toLocaleString()}: ${formatValue(item.value, metric, suffix)}`}</title>
-        </circle>
-      ))}
-    </svg>
+    <div className="trend__spark-wrap" ref={ref}>
+      <svg
+        className="trend__spark"
+        width={width}
+        height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label={
+          `${label} across ${model.usable} observation${model.usable === 1 ? "" : "s"}` +
+          (gapCount ? `, in ${model.segments.length} runs separated by gaps in observation` : "") +
+          `, latest ${formatValue(latest.vLast, metric, suffix)}`
+        }
+      >
+        {/* Spike extents first, so the line sits on top of them. */}
+        {model.spikes.map((bucket) => (
+          <line
+            key={`spike-${bucket.x}`}
+            className="trend__spark-spike"
+            x1={bucket.x}
+            x2={bucket.x}
+            y1={bucket.yMin}
+            y2={bucket.yMax}
+          />
+        ))}
+        {model.segments.map((segment, index) =>
+          segment.path ? (
+            <path key={`seg-${index}`} className="trend__spark-line" d={segment.path} />
+          ) : null,
+        )}
+        {model.buckets.map((bucket) => (
+          <circle
+            key={`pt-${bucket.x}`}
+            className="trend__spark-point"
+            cx={bucket.x}
+            cy={bucket.yLast}
+            r={2}
+          >
+            <title>
+              {bucket.count > 1
+                ? `${new Date(bucket.tFirst).toLocaleString()} – ${new Date(bucket.tLast).toLocaleTimeString()}: ` +
+                  `${bucket.count} observations, ${formatValue(bucket.vMin, metric, suffix)} to ${formatValue(bucket.vMax, metric, suffix)}`
+                : `${new Date(bucket.tLast).toLocaleString()}: ${formatValue(bucket.vLast, metric, suffix)}`}
+            </title>
+          </circle>
+        ))}
+      </svg>
+      {gapCount ? (
+        <span className="trend__spark-gaps">
+          {gapCount} gap{gapCount === 1 ? "" : "s"} in observation
+        </span>
+      ) : null}
+    </div>
   );
 }
