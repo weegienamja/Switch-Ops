@@ -31,7 +31,7 @@ const summary: SwitchSummary = {
 };
 
 describe("health and partial states", () => {
-  it("explains a healthy first sample as a baseline", () => {
+  it("names the first observation instead of implying a sampling cadence", () => {
     render(<HealthPanel health={{
       state: "HEALTHY",
       evaluatedAt: "2026-08-22T04:00:00Z",
@@ -43,7 +43,8 @@ describe("health and partial states", () => {
         detail: "No adverse change was observed.",
       }],
     }} />);
-    expect(screen.getByText("baseline sample")).toBeTruthy();
+    expect(screen.getByText("first observation")).toBeTruthy();
+    expect(screen.queryByText(/sample/i)).toBeNull();
     expect(screen.getByText("No active problems detected")).toBeTruthy();
   });
 

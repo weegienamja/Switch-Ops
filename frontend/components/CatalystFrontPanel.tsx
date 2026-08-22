@@ -100,6 +100,7 @@ export default function CatalystFrontPanel({
         <span><i className="port-led port-led--up" aria-hidden /> LINK — connected</span>
         <span><i className="port-led port-led--waiting" aria-hidden /> WAIT — no link</span>
         <span><i className="port-led port-led--disabled" aria-hidden /> OFF — disabled</span>
+        <span><i className="port-led port-led--protected" aria-hidden /> protected from changes</span>
       </div>
     </div>
   );

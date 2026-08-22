@@ -74,7 +74,7 @@ def evaluate_health(
     evaluated_at: datetime | None = None,
     thresholds: HealthThresholds = DEFAULT_THRESHOLDS,
 ) -> HealthAssessment:
-    """Evaluate only active conditions and changes since the prior sample.
+    """Evaluate only active conditions and changes since the prior observation.
 
     Cumulative counters are never treated as current faults by themselves.
     A first observation or an unchanged non-zero counter therefore produces no
@@ -270,7 +270,7 @@ def build_summary(
     )
 
     if health.state == "HEALTHY":
-        history_note = " No previous sample is available yet." if not health.based_on_history else ""
+        history_note = " No previous observation is available yet." if not health.based_on_history else ""
         summary = (
             f"Switch is healthy. {len(connected)} port(s) connected; no active error increases detected."
             f"{history_note}"

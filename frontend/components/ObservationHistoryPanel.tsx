@@ -158,7 +158,7 @@ function ObservationDots({
   );
 }
 
-/** Time-aware sparkline: x is real elapsed time, and every sample is marked. */
+/** Time-aware sparkline: x is real elapsed time, and every observation is marked. */
 function Sparkline({
   points,
   metric,

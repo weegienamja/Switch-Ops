@@ -359,3 +359,89 @@ def test_parse_cdp_tolerates_empty_and_noisy_output():
     assert parse_cdp("") == []
     assert parse_cdp("-------------------------\nTotal cdp entries displayed : 0\n") == []
     assert parse_cdp("unexpected banner text") == []
+
+
+# --- physical lab shape ----------------------------------------------------
+#
+# Mirrors the interface table of the real WS-C3560CG-8PC-S so a future change
+# cannot silently alter what that switch renders as. Addresses are from the
+# documentation range; no real lab address is committed.
+
+PHYSICAL_LAB_INTERFACES = [
+    InterfaceStatus(port="Gi0/1", name="Uplink to Test Gateway", status="connected", vlan="1", duplex="a-full", speed="a-1000", protected=True),
+    InterfaceStatus(port="Gi0/2", name="Test Workstation", status="connected", vlan="1", duplex="a-full", speed="a-1000", protected=True),
+    InterfaceStatus(port="Gi0/3", name="Test Server", status="notconnect", vlan="1", duplex="auto", speed="auto"),
+    InterfaceStatus(port="Gi0/4", name="TEST-AP-01 AP", status="notconnect", vlan="1", duplex="auto", speed="auto"),
+    InterfaceStatus(port="Gi0/5", name="TV", status="notconnect", vlan="1", duplex="auto", speed="auto"),
+    InterfaceStatus(port="Gi0/6", name="Spare Access Port", status="disabled", vlan="1", duplex="auto", speed="auto"),
+    InterfaceStatus(port="Gi0/7", name="Spare Access Port", status="disabled", vlan="1", duplex="auto", speed="auto"),
+    InterfaceStatus(port="Gi0/8", name="Spare Access Port", status="disabled", vlan="1", duplex="auto", speed="auto"),
+    InterfaceStatus(port="Gi0/9", name="Spare Uplink", status="disabled", vlan="1", duplex="auto", speed="auto"),
+    InterfaceStatus(port="Gi0/10", name="Spare", status="disabled", vlan="1", duplex="auto", speed="auto"),
+]
+
+
+def _physical_lab_topology(uplink_macs: int = 3):
+    return build_topology(
+        hostname="SWITCHOPS-TEST-SW1",
+        model="WS-C3560CG-8PC-S",
+        management_ip="192.0.2.10",
+        interfaces=PHYSICAL_LAB_INTERFACES,
+        mac_entries=_macs("Gi0/1", *[f"{index:02d}" for index in range(uplink_macs)])
+        + _macs("Gi0/2", "20"),
+        poe_ports=[PoePort(interface=f"Gi0/{index}", oper="off") for index in range(1, 9)],
+        observed_at=datetime(2026, 8, 22, tzinfo=timezone.utc),
+    )
+
+
+def test_physical_lab_renders_the_devices_that_actually_exist():
+    topology = _physical_lab_topology()
+    rendered = {
+        device.connected_interface: (device.name, device.type, device.source, device.evidence_level)
+        for device in topology.devices
+        if device.id != topology.root_device_id
+    }
+    assert rendered == {
+        "Gi0/1": ("Uplink to Test Gateway", "router", "observed", "observed-on-port"),
+        "Gi0/2": ("Test Workstation", "desktop", "observed", "observed-on-port"),
+        "Gi0/3": ("Test Server", "server", "expected", "expected"),
+        "Gi0/4": ("TEST-AP-01 AP", "access-point", "expected", "expected"),
+        "Gi0/5": ("TV", "tv-media", "expected", "expected"),
+    }
+    # Spare and disabled ports invent nothing, including "Spare Uplink".
+    assert "Gi0/6" not in rendered and "Gi0/9" not in rendered and "Gi0/10" not in rendered
+
+
+def test_physical_lab_uplink_stays_singular_however_many_addresses_appear():
+    for uplink_macs in (1, 3, 5, 40):
+        topology = _physical_lab_topology(uplink_macs)
+        uplink = [
+            device for device in topology.devices if device.connected_interface == "Gi0/1"
+        ]
+        assert len(uplink) == 1, f"{uplink_macs} addresses produced {len(uplink)} nodes"
+        assert uplink[0].name == "Uplink to Test Gateway"
+        assert uplink[0].learned_mac_count == uplink_macs
+        # The whole topology grows by nothing as addresses accumulate.
+        assert len(topology.devices) == 6
+        assert len(topology.links) == 5
+
+
+def test_physical_lab_marks_the_management_ports_protected():
+    topology = _physical_lab_topology()
+    protected = {i.port for i in topology.interfaces if i.protected}
+    assert protected == {"Gi0/1", "Gi0/2"}
+
+
+def test_physical_lab_expected_ap_is_ready_for_the_mr44_transition():
+    """Before the TEST-AP is plugged in, Gi0/4 must read as waiting, not offline."""
+    topology = _physical_lab_topology()
+    ap = next(d for d in topology.devices if d.connected_interface == "Gi0/4")
+    assert ap.source == "expected"
+    assert ap.online is False
+    assert ap.model == "TEST-AP" and ap.vendor == "Cisco Meraki"
+    # Identity is described, not discovered — the AP has never spoken.
+    assert ap.identity_source == "interface-description"
+    assert ap.confidence == "medium"
+    link = next(l for l in topology.links if l.from_interface == "Gi0/4")
+    assert link.status == "waiting"
+    assert link.learned_mac_count == 0

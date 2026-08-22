@@ -4,6 +4,30 @@ import { useState } from "react";
 import { api } from "@/lib/api";
 import type { DeploymentPlan, InterfaceStatus } from "@/lib/types";
 
+/** Command blocks render one command per line. */
+const NEWLINE = "\n";
+
+/** One labelled stage of the plan, so the output reads as a deployment plan. */
+function PlanStage({
+  label,
+  mono,
+  children,
+}: {
+  label: string;
+  mono?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="plan-stage">
+      <div className="plan-stage__label">
+        <span>{label}</span>
+        {mono ? <code>{mono}</code> : null}
+      </div>
+      <div className="plan-stage__body">{children}</div>
+    </section>
+  );
+}
+
 export default function DeploymentPlanPanel({ interfaces }: { interfaces: InterfaceStatus[] }) {
   const safeInterfaces = interfaces.filter((item) => !item.protected);
   const [interfaceName, setInterfaceName] = useState(
@@ -98,35 +122,72 @@ export default function DeploymentPlanPanel({ interfaces }: { interfaces: Interf
 
       {plan ? (
         <div className="plan-output" aria-live="polite">
-          <div className="plan-output__head">
-            <div>
-              <div className="eyebrow">{plan.planId}</div>
-              <h3>{plan.status === "VALID" ? "Plan is valid" : "Plan is blocked"}</h3>
-            </div>
+          <PlanStage label="Plan" mono={plan.planId}>
+            <h3 className="plan-title">
+              Prepare {plan.targetInterface.replace("GigabitEthernet", "Gi")} for an access point
+            </h3>
             <span className={`badge ${plan.status === "VALID" ? "badge--green" : "badge--red"}`}>
-              {plan.status}
+              {plan.status === "VALID" ? "PLAN IS VALID" : "PLAN IS BLOCKED"}
             </span>
-          </div>
-          <p>{plan.impact}</p>
-          <ul className="plan-checks">
-            {plan.checks.map((check) => (
-              <li key={check.name} className={check.passed ? "is-pass" : "is-fail"}>
-                <span aria-hidden>{check.passed ? "PASS" : "BLOCK"}</span>
-                <div><strong>{check.name.replaceAll("_", " ")}</strong><small>{check.detail}</small></div>
-              </li>
-            ))}
-          </ul>
+          </PlanStage>
+
+          <PlanStage label="Precheck">
+            <ul className="plan-checks">
+              {plan.checks.map((check) => (
+                <li key={check.name} className={check.passed ? "is-pass" : "is-fail"}>
+                  <span>{check.passed ? "PASS" : "BLOCK"}</span>
+                  <div>
+                    <strong>{check.name.replaceAll("_", " ")}</strong>
+                    <small>{check.detail}</small>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </PlanStage>
+
+          <PlanStage label="Impact">
+            <p className="plan-prose">{plan.impact}</p>
+          </PlanStage>
+
+          <PlanStage label="Desired state">
+            <dl className="plan-state">
+              {Object.entries(plan.desiredState).map(([key, value]) => (
+                <div key={key}>
+                  <dt>{key.replaceAll("_", " ")}</dt>
+                  <dd>{typeof value === "boolean" ? (value ? "enabled" : "disabled") : String(value)}</dd>
+                </div>
+              ))}
+            </dl>
+          </PlanStage>
+
           {plan.proposedIos.length ? (
-            <details className="plan-commands" open>
-              <summary>Proposed IOS — preview only</summary>
-              <pre>{plan.proposedIos.join("\n")}</pre>
-            </details>
+            <PlanStage label="Proposed IOS">
+              <pre className="plan-code">{plan.proposedIos.join(NEWLINE)}</pre>
+              <p className="plan-prose plan-prose--dim">
+                Preview only. This text is never sent to the device by this build.
+              </p>
+            </PlanStage>
           ) : null}
-          <details className="plan-commands">
-            <summary>Read-only verification commands</summary>
-            <pre>{plan.verificationCommands.join("\n")}</pre>
-          </details>
-          <div className="plan-no-apply">APPLY UNAVAILABLE · {plan.backupRequired ? "backup required before any future change" : "no backup requirement"}</div>
+
+          <PlanStage label="Verification">
+            <pre className="plan-code plan-code--read">{plan.verificationCommands.join(NEWLINE)}</pre>
+            <p className="plan-prose plan-prose--dim">
+              Read-only commands that would confirm the change took effect.
+            </p>
+          </PlanStage>
+
+          <PlanStage label="Backup">
+            <p className="plan-prose">
+              {plan.backupRequired
+                ? "A configuration backup is required before any future apply."
+                : "No backup requirement for this plan."}
+            </p>
+          </PlanStage>
+
+          <div className="plan-no-apply">
+            <strong>DRY RUN ONLY</strong>
+            <span>No configuration will be sent to the device. There is no apply endpoint.</span>
+          </div>
         </div>
       ) : null}
     </section>

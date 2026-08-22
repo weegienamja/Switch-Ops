@@ -9,7 +9,7 @@ export default function HealthPanel({ health }: { health: HealthAssessment }) {
           <h2 className="health-panel__state">{health.state}</h2>
         </div>
         <span className="badge">
-          {health.basedOnHistory ? "compared with previous sample" : "baseline sample"}
+          {health.basedOnHistory ? "compared with previous observation" : "first observation"}
         </span>
       </div>
       <ul className="health-reasons">
