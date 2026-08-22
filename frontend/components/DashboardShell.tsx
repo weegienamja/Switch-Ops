@@ -22,6 +22,7 @@ import type {
 } from "@/lib/types";
 import type { InterfaceStatusResponse } from "@/lib/api";
 import { fadeUp } from "@/lib/animation";
+import AdvancedOperationsPanel from "./AdvancedOperationsPanel";
 import AuditTimeline from "./AuditTimeline";
 import ConfigBackupPanel from "./ConfigBackupPanel";
 import ConfigurationHistoryPanel from "./ConfigurationHistoryPanel";
@@ -38,17 +39,16 @@ import MacTable from "./MacTable";
 import MockScenarioPanel from "./MockScenarioPanel";
 import NetworkEventTimeline from "./NetworkEventTimeline";
 import NetworkTwin from "./NetworkTwin";
+import ObservationHistoryPanel from "./ObservationHistoryPanel";
 import PoePanel from "./PoePanel";
 import PortStatusTable from "./PortStatusTable";
-import SafeControlPanel from "./SafeControlPanel";
 import RuntimeBadge from "./RuntimeBadge";
 import SettingsPanel from "./SettingsPanel";
 import SetupWizard from "./SetupWizard";
 import SummaryCards from "./SummaryCards";
 import SwitchHero from "./SwitchHero";
-import TelemetryHistoryPanel from "./TelemetryHistoryPanel";
 
-type View = "overview" | "network" | "events" | "guide";
+type View = "overview" | "network" | "events" | "guide" | "change";
 
 interface DashboardData {
   setup: SetupStatus;
@@ -74,9 +74,10 @@ interface DashboardData {
 
 const VIEWS: Array<{ id: View; label: string; description: string }> = [
   { id: "overview", label: "Overview", description: "Current and historical health" },
-  { id: "network", label: "Visual network", description: "Physical and logical twin" },
+  { id: "network", label: "Visual network", description: "Your lab, port by port" },
   { id: "events", label: "What changed", description: "Meaningful network events" },
   { id: "guide", label: "Lab Guide", description: "Read-only guided learning" },
+  { id: "change", label: "Change control", description: "Plan, back up, verify" },
 ];
 
 function healthBadgeClass(state: SwitchSummary["health"]["state"]): string {
@@ -242,7 +243,7 @@ export default function DashboardShell() {
               </motion.div>
               <div className="grid grid--12">
                 <motion.div className="col-6" variants={fadeUp}><HealthPanel health={summary.health} /></motion.div>
-                <motion.div className="col-6" variants={fadeUp}><TelemetryHistoryPanel history={data.history} /></motion.div>
+                <motion.div className="col-6" variants={fadeUp}><ObservationHistoryPanel history={data.history} /></motion.div>
                 <motion.div className="col-4" variants={fadeUp}><EnvironmentPanel env={data.env} /></motion.div>
                 <motion.div className="col-8" variants={fadeUp}><CpuMemoryPanel cpu={data.cpu} memory={data.memory} /></motion.div>
                 <motion.div className="col-12" variants={fadeUp}><ErrorPanel errors={data.errors} telemetry={data.telemetry} /></motion.div>
@@ -268,13 +269,22 @@ export default function DashboardShell() {
                   events={data.events.events}
                   selectedPort={selectedPort}
                   onSelectPort={setSelectedPort}
+                  model={summary.pid || summary.model}
                 />
               </motion.div>
-              <div className="grid grid--12">
-                <motion.div className="col-12" variants={fadeUp}><PortStatusTable interfaces={data.interfaces.interfaces} /></motion.div>
-                <motion.div className="col-6" variants={fadeUp}><PoePanel poe={data.poe} /></motion.div>
-                <motion.div className="col-6" variants={fadeUp}><MacTable mac={data.mac} /></motion.div>
-              </div>
+              <motion.details className="advanced-disclosure" variants={fadeUp}>
+                <summary>
+                  <span className="advanced-disclosure__label">Reference tables</span>
+                  <span className="advanced-disclosure__hint">
+                    Interface status, Power over Ethernet, MAC address table
+                  </span>
+                </summary>
+                <div className="grid grid--12 advanced-disclosure__body">
+                  <div className="col-12"><PortStatusTable interfaces={data.interfaces.interfaces} /></div>
+                  <div className="col-6"><PoePanel poe={data.poe} /></div>
+                  <div className="col-6"><MacTable mac={data.mac} /></div>
+                </div>
+              </motion.details>
             </>
           ) : null}
 
@@ -283,40 +293,83 @@ export default function DashboardShell() {
               <motion.div variants={fadeUp}>
                 <NetworkEventTimeline events={data.events.events} devices={data.topology.devices} />
               </motion.div>
-              <div className="grid grid--12">
-                <motion.div className="col-12" variants={fadeUp}><LogsPanel logs={data.logs} /></motion.div>
-                <motion.details className="col-12 audit-details" variants={fadeUp}>
-                  <summary>Developer audit trail · {data.audit.events.length} command records</summary>
+              <motion.details className="advanced-disclosure" variants={fadeUp}>
+                <summary>
+                  <span className="advanced-disclosure__label">
+                    Raw switch logs · {data.logs.entries.length}
+                  </span>
+                  <span className="advanced-disclosure__hint">
+                    Unparsed IOS messages exactly as the switch reported them
+                  </span>
+                </summary>
+                <div className="advanced-disclosure__body">
+                  <LogsPanel logs={data.logs} />
+                </div>
+              </motion.details>
+              <motion.details className="advanced-disclosure" variants={fadeUp}>
+                <summary>
+                  <span className="advanced-disclosure__label">
+                    Developer audit trail · {data.audit.events.length}
+                  </span>
+                  <span className="advanced-disclosure__hint">
+                    Every command SwitchOps itself ran, with timings
+                  </span>
+                </summary>
+                <div className="advanced-disclosure__body">
                   <AuditTimeline events={data.audit.events} />
-                </motion.details>
-              </div>
+                </div>
+              </motion.details>
             </>
           ) : null}
 
           {activeView === "guide" ? (
+            <motion.div variants={fadeUp}>
+              <LabGuide operations={data.guideOperations} interfaces={data.interfaces.interfaces} />
+            </motion.div>
+          ) : null}
+
+          {activeView === "change" ? (
             <>
               <motion.div variants={fadeUp}>
-                <LabGuide operations={data.guideOperations} interfaces={data.interfaces.interfaces} />
-              </motion.div>
-              <motion.div variants={fadeUp}>
-                <ConfigurationHistoryPanel
-                  entries={data.configurationHistory.entries}
-                  onChange={() => void loadAll(true)}
-                />
+                <div className="change-intro">
+                  <div className="eyebrow">How a change happens here</div>
+                  <ol className="change-flow">
+                    <li><strong>Learn</strong><span>Understand the port in the Lab Guide</span></li>
+                    <li><strong>Plan</strong><span>Describe the intent and validate it</span></li>
+                    <li><strong>Review</strong><span>Read the proposed IOS and the impact</span></li>
+                    <li className="is-blocked"><strong>Apply</strong><span>Not available in this build</span></li>
+                  </ol>
+                </div>
               </motion.div>
               <motion.div variants={fadeUp}>
                 <DeploymentPlanPanel interfaces={data.interfaces.interfaces} />
               </motion.div>
-              <div className="grid grid--12 guide-secondary">
-                <motion.div className="col-6" variants={fadeUp}><ConfigBackupPanel onChange={() => void loadAll(true)} /></motion.div>
-                <motion.div className="col-6" variants={fadeUp}>
-                  <SafeControlPanel
+              <div className="grid grid--12">
+                <motion.div className="col-7" variants={fadeUp}>
+                  <ConfigurationHistoryPanel
+                    entries={data.configurationHistory.entries}
+                    onChange={() => void loadAll(true)}
+                  />
+                </motion.div>
+                <motion.div className="col-5" variants={fadeUp}>
+                  <ConfigBackupPanel onChange={() => void loadAll(true)} />
+                </motion.div>
+              </div>
+              <motion.details className="advanced-disclosure" variants={fadeUp}>
+                <summary>
+                  <span className="advanced-disclosure__label">Advanced operations</span>
+                  <span className="advanced-disclosure__hint">
+                    Direct allowlisted device actions · {data.setup.enableWriteActions ? "writes enabled" : "disabled in this build"}
+                  </span>
+                </summary>
+                <div className="advanced-disclosure__body">
+                  <AdvancedOperationsPanel
                     setup={data.setup}
                     interfaces={data.interfaces.interfaces}
                     onChange={() => void loadAll(true)}
                   />
-                </motion.div>
-              </div>
+                </div>
+              </motion.details>
             </>
           ) : null}
         </motion.main>

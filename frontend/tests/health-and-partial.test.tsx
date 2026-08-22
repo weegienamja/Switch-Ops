@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import HealthPanel from "@/components/HealthPanel";
-import TelemetryHistoryPanel from "@/components/TelemetryHistoryPanel";
+import ObservationHistoryPanel from "@/components/ObservationHistoryPanel";
 import SummaryCards from "@/components/SummaryCards";
 import type { SwitchSummary } from "@/lib/types";
 
@@ -47,10 +47,54 @@ describe("health and partial states", () => {
     expect(screen.getByText("No active problems detected")).toBeTruthy();
   });
 
-  it("renders missing history without throwing", () => {
-    render(<TelemetryHistoryPanel history={null} />);
-    expect(screen.getByText("0 samples")).toBeTruthy();
-    expect(screen.getByText(/This is the baseline/)).toBeTruthy();
+  it("renders missing history without implying monitoring", () => {
+    render(<ObservationHistoryPanel history={null} />);
+    expect(screen.getByText("0 observations · last 24h")).toBeTruthy();
+    expect(screen.getByText(/No observation has been recorded/)).toBeTruthy();
+    expect(screen.queryByText(/samples/i)).toBeNull();
+  });
+
+  it("names a single observation honestly and refuses to draw a trend", () => {
+    render(<ObservationHistoryPanel history={{
+      deviceId: "switch-lab",
+      observations: [{
+        timestamp: "2026-08-22T04:00:00Z",
+        reachable: true,
+        cpu5Sec: 6,
+        memoryUsedPct: 28,
+        temperatureC: 49,
+        poeUsedW: 0,
+      }],
+    }} />);
+    // Singular, and never "1 samples".
+    expect(screen.getByText("1 observation · last 24h")).toBeTruthy();
+    expect(screen.getByText(/This single observation is the baseline/)).toBeTruthy();
+    expect(screen.getByText(/at least 3 before it will draw a trend/)).toBeTruthy();
+    expect(document.querySelector(".trend__spark")).toBeNull();
+    expect(document.querySelectorAll(".trend__dot").length).toBeGreaterThan(0);
+  });
+
+  it("states that SwitchOps is refresh-driven with no background polling", () => {
+    render(<ObservationHistoryPanel history={null} />);
+    expect(screen.getByText(/No background polling is\s+running/)).toBeTruthy();
+    expect(screen.getByText("Recent observations")).toBeTruthy();
+  });
+
+  it("plots a time-aware sparkline once enough observations exist", () => {
+    const observations = [0, 30, 90].map((minutes) => ({
+      timestamp: new Date(Date.UTC(2026, 7, 22, 4, minutes)).toISOString(),
+      reachable: true,
+      cpu5Sec: 5 + minutes / 30,
+      memoryUsedPct: 28,
+      temperatureC: 49,
+      poeUsedW: 0,
+    }));
+    render(<ObservationHistoryPanel history={{ deviceId: "switch-lab", observations }} />);
+    expect(screen.getByText("3 observations · last 24h")).toBeTruthy();
+    expect(document.querySelector(".trend__spark")).toBeTruthy();
+    // Every observation stays visible as a discrete point.
+    expect(document.querySelectorAll(".trend__spark-point").length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByText(/gaps between them are gaps in\s+observation/)).toBeTruthy();
   });
 
   it("shows a cumulative error as baseline until a positive delta exists", () => {
