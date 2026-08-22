@@ -3,9 +3,9 @@ import "./globals.css";
 import AnimatedBackground from "@/components/AnimatedBackground";
 
 export const metadata: Metadata = {
-  title: "SwitchOps",
+  title: "SwitchOps · Interactive Physical Lab",
   description:
-    "Local desktop network operations dashboard for the SWITCHOPS-TEST-SW1 Cisco Catalyst.",
+    "A local visual, historical, and self-explaining lab for real network hardware.",
 };
 
 export const viewport: Viewport = {

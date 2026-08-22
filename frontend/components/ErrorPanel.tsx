@@ -1,11 +1,18 @@
 "use client";
-import type { InterfaceErrorsResponse } from "@/lib/types";
+import type { InterfaceErrorsResponse, TelemetrySnapshotSummary } from "@/lib/types";
 
 export default function ErrorPanel({
   errors,
+  telemetry,
 }: {
   errors: InterfaceErrorsResponse;
+  telemetry: TelemetrySnapshotSummary;
 }) {
+  const deltaByPort = new Map(telemetry.interfaceDeltas.map((delta) => [delta.port, delta]));
+  const newErrors = telemetry.interfaceDeltas.reduce(
+    (total, delta) => total + Math.max(0, delta.errorDelta || 0),
+    0,
+  );
   return (
     <div className="card">
       <div className="card__head">
@@ -15,7 +22,7 @@ export default function ErrorPanel({
             errors.healthy ? "badge--green" : "badge--amber"
           }`}
         >
-          {errors.totalErrors} total
+          {telemetry.historyAvailable ? `+${newErrors} since previous` : "baseline captured"}
         </span>
       </div>
       <div style={{ overflowX: "auto" }}>
@@ -23,6 +30,7 @@ export default function ErrorPanel({
           <thead>
             <tr>
               <th>Port</th>
+              <th>Change</th>
               <th>Align</th>
               <th>FCS</th>
               <th>Xmit</th>
@@ -35,6 +43,11 @@ export default function ErrorPanel({
             {errors.counters.map((c) => (
               <tr key={c.port}>
                 <td>{c.port}</td>
+                <td>
+                  {deltaByPort.get(c.port)?.errorDelta == null
+                    ? deltaByPort.get(c.port)?.counterState || "—"
+                    : `+${deltaByPort.get(c.port)?.errorDelta}`}
+                </td>
                 <td>{c.alignErr}</td>
                 <td>{c.fcsErr}</td>
                 <td>{c.xmitErr}</td>
@@ -45,7 +58,7 @@ export default function ErrorPanel({
             ))}
             {errors.counters.length === 0 ? (
               <tr>
-                <td colSpan={7} style={{ color: "var(--text-dim)", textAlign: "center" }}>
+                <td colSpan={8} style={{ color: "var(--text-dim)", textAlign: "center" }}>
                   error-counter telemetry unavailable
                 </td>
               </tr>
@@ -53,6 +66,9 @@ export default function ErrorPanel({
           </tbody>
         </table>
       </div>
+      <p className="empty-note" style={{ marginBottom: 0 }}>
+        Totals are cumulative. Current health uses the change since the previous observation, not whether a historic total is non-zero.
+      </p>
     </div>
   );
 }

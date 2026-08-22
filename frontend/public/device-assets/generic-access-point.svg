@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 64" role="img" aria-labelledby="title">
+  <title id="title">Generic wireless access point</title>
+  <rect x="27" y="25" width="42" height="27" rx="11" fill="#111b2b" stroke="#8ea2b8" stroke-width="2"/>
+  <circle cx="48" cy="39" r="3" fill="#22d3ee"/>
+  <path d="M36 20a17 17 0 0 1 24 0M30 14a25 25 0 0 1 36 0" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/>
+</svg>

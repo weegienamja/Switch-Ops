@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 64" role="img" aria-labelledby="title">
+  <title id="title">Generic television or media device</title>
+  <rect x="11" y="8" width="74" height="43" rx="4" fill="#111b2b" stroke="#8ea2b8" stroke-width="2"/>
+  <rect x="17" y="14" width="62" height="31" rx="2" fill="#07101e" stroke="#37475a"/>
+  <path d="M41 51v6m14-6v6M34 57h28" stroke="#8ea2b8" stroke-width="2" stroke-linecap="round"/>
+</svg>

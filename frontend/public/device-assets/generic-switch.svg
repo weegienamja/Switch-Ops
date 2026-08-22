@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 64" role="img" aria-labelledby="title">
+  <title id="title">Generic network switch</title>
+  <rect x="7" y="21" width="82" height="30" rx="4" fill="#111b2b" stroke="#8ea2b8" stroke-width="2"/>
+  <g fill="#07101e" stroke="#64748b">
+    <rect x="17" y="31" width="8" height="7"/><rect x="28" y="31" width="8" height="7"/><rect x="39" y="31" width="8" height="7"/>
+    <rect x="50" y="31" width="8" height="7"/><rect x="61" y="31" width="8" height="7"/><rect x="72" y="31" width="8" height="7"/>
+  </g>
+  <circle cx="17" cy="44" r="1.7" fill="#22c55e"/><circle cx="23" cy="44" r="1.7" fill="#38bdf8"/>
+</svg>

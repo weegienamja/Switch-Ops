@@ -2,16 +2,25 @@ import type {
   AuditResponse,
   BackupResult,
   CpuStatus,
+  ConfigurationHistoryEntry,
+  ConfigurationHistoryResponse,
   CredentialSetupRequest,
   DashboardResponse,
+  DeploymentPlan,
   EnvironmentStatus,
+  GuideCatalogResponse,
+  GuideRunResult,
   InterfaceErrorsResponse,
   LogsResponse,
   MacTableResponse,
   MemoryStatus,
+  MockScenarioStatus,
+  NetworkEventsResponse,
   PoeResponse,
   SetupStatus,
   SwitchSummary,
+  TelemetryHistoryResponse,
+  AccessPointPlanRequest,
 } from "./types";
 
 export interface InterfaceStatusResponse {
@@ -82,6 +91,41 @@ export const api = {
   macTable: () => fetchJson<MacTableResponse>("/api/switch/mac-table"),
   logs: () => fetchJson<LogsResponse>("/api/switch/logs"),
   audit: () => fetchJson<AuditResponse>("/api/switch/audit"),
+  networkEvents: (query = "") =>
+    fetchJson<NetworkEventsResponse>(`/api/network/events${query ? `?${query}` : ""}`),
+  telemetryHistory: (deviceId: string, hours = 24) =>
+    fetchJson<TelemetryHistoryResponse>(
+      `/api/telemetry/history?deviceId=${encodeURIComponent(deviceId)}&hours=${hours}`,
+    ),
+  configurationHistory: (deviceId?: string) =>
+    fetchJson<ConfigurationHistoryResponse>(
+      `/api/configuration/history${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`,
+    ),
+  markConfigurationKnownGood: (entryId: number) =>
+    fetchJson<ConfigurationHistoryEntry>(
+      `/api/configuration/history/${entryId}/known-good`,
+      { method: "POST" },
+    ),
+  guideOperations: () => fetchJson<GuideCatalogResponse>("/api/guide/operations"),
+  runGuideOperation: (operationId: string, interfaceName?: string) =>
+    fetchJson<GuideRunResult>(
+      `/api/guide/operations/${encodeURIComponent(operationId)}/run`,
+      {
+        method: "POST",
+        body: JSON.stringify({ interface: interfaceName || null }),
+      },
+    ),
+  planAccessPoint: (request: AccessPointPlanRequest) =>
+    fetchJson<DeploymentPlan>("/api/plans/access-point", {
+      method: "POST",
+      body: JSON.stringify(request),
+    }),
+  mockScenario: () => fetchJson<MockScenarioStatus>("/api/mock/scenario"),
+  setMockScenario: (scenario: "baseline" | "ap_attached") =>
+    fetchJson<MockScenarioStatus>("/api/mock/scenario", {
+      method: "POST",
+      body: JSON.stringify({ scenario }),
+    }),
   backup: () =>
     fetchJson<BackupResult>("/api/switch/backup-config", { method: "POST" }),
   enablePort: (port: string) =>

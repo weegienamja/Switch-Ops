@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 64" role="img" aria-labelledby="title">
+  <title id="title">Generic laptop</title>
+  <rect x="22" y="9" width="52" height="37" rx="3" fill="#111b2b" stroke="#8ea2b8" stroke-width="2"/>
+  <path d="M15 51h66l-6 6H21z" fill="#111b2b" stroke="#8ea2b8" stroke-width="2" stroke-linejoin="round"/>
+  <circle cx="48" cy="27" r="3" fill="#22d3ee" opacity=".8"/>
+</svg>

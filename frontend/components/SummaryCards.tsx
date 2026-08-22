@@ -1,20 +1,26 @@
 "use client";
+
 import { motion } from "motion/react";
-import type { SwitchSummary, InterfaceErrorsResponse, PoeResponse } from "@/lib/types";
+import type { PoeResponse, SwitchSummary, TelemetrySnapshotSummary } from "@/lib/types";
 
 const stagger = {
   hidden: {},
   show: { transition: { staggerChildren: 0.05 } },
 };
 
-interface Props {
+export default function SummaryCards({
+  summary,
+  poe,
+  telemetry,
+}: {
   summary: SwitchSummary;
-  errors: InterfaceErrorsResponse;
   poe: PoeResponse;
-}
-
-/** Quick-glance metric tiles. Used at the top of the dashboard. */
-export default function SummaryCards({ summary, errors, poe }: Props) {
+  telemetry: TelemetrySnapshotSummary;
+}) {
+  const newErrors = telemetry.interfaceDeltas.reduce(
+    (total, delta) => total + Math.max(0, delta.errorDelta || 0),
+    0,
+  );
   const cards = [
     {
       label: "Temperature",
@@ -32,9 +38,9 @@ export default function SummaryCards({ summary, errors, poe }: Props) {
       tone: "healthy",
     },
     {
-      label: "Interface errors",
-      value: `${errors.totalErrors}`,
-      tone: errors.healthy ? "healthy" : "critical",
+      label: "New errors",
+      value: telemetry.historyAvailable ? `+${newErrors}` : "baseline",
+      tone: newErrors > 0 ? "warning" : "healthy",
     },
     {
       label: "Connected",
@@ -42,7 +48,7 @@ export default function SummaryCards({ summary, errors, poe }: Props) {
       tone: "healthy",
     },
     {
-      label: "Shutdown",
+      label: "Disabled",
       value: `${summary.shutdownPorts.length} ports`,
       tone: "unknown",
     },
@@ -56,59 +62,19 @@ export default function SummaryCards({ summary, errors, poe }: Props) {
       variants={stagger}
       aria-label="Summary metrics"
     >
-      {cards.map((c) => (
+      {cards.map((card) => (
         <motion.div
-          key={c.label}
-          className={`summary-tile tone-${c.tone}`}
+          key={card.label}
+          className={`summary-tile tone-${card.tone}`}
           variants={{
             hidden: { opacity: 0, y: 12 },
             show: { opacity: 1, y: 0, transition: { duration: 0.35, ease: "easeOut" } },
           }}
         >
-          <div className="summary-label">{c.label}</div>
-          <div className="summary-value">{c.value}</div>
+          <div className="summary-label">{card.label}</div>
+          <div className="summary-value">{card.value}</div>
         </motion.div>
       ))}
-      <style jsx global>{`
-        .summary-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-          gap: 14px;
-          margin-bottom: 8px;
-        }
-        .summary-tile {
-          border: 1px solid rgba(148, 163, 184, 0.14);
-          background: rgba(15, 23, 36, 0.65);
-          backdrop-filter: blur(14px);
-          border-radius: 12px;
-          padding: 14px 16px;
-        }
-        .summary-label {
-          color: #94a3b8;
-          font-size: 11px;
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-          margin-bottom: 6px;
-        }
-        .summary-value {
-          color: #e2e8f0;
-          font-size: 22px;
-          font-weight: 600;
-          font-variant-numeric: tabular-nums;
-        }
-        .tone-green .summary-value,
-        .tone-healthy .summary-value {
-          color: #22c55e;
-        }
-        .tone-yellow .summary-value,
-        .tone-warning .summary-value {
-          color: #f59e0b;
-        }
-        .tone-red .summary-value,
-        .tone-critical .summary-value {
-          color: #ef4444;
-        }
-      `}</style>
     </motion.section>
   );
 }

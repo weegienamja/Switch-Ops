@@ -1,11 +1,13 @@
 {
   "name": "@switchops/frontend",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev -H 127.0.0.1 -p 3000",
     "build": "next build",
     "start": "next start -H 127.0.0.1 -p 3000",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
   },
@@ -16,11 +18,14 @@
     "react-dom": "18.3.1"
   },
   "devDependencies": {
+    "@testing-library/react": "16.1.0",
     "@types/node": "20.12.7",
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
     "eslint": "8.57.1",
     "eslint-config-next": "15.5.21",
-    "typescript": "5.5.3"
+    "jsdom": "25.0.1",
+    "typescript": "5.5.3",
+    "vitest": "2.1.9"
   }
 }
