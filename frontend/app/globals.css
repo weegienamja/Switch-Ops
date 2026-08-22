@@ -1156,6 +1156,15 @@ a:focus-visible {
 .plan-no-apply strong { color: var(--amber); font-family: var(--mono); font-size: 10px; letter-spacing: .12em; }
 .plan-no-apply span { color: var(--text-muted); font-size: 11.5px; }
 
+.network-events-list li.event-timeline__more {
+  display: flex;
+  grid-template-columns: none;
+  justify-content: center;
+  padding: 10px 0 2px;
+  border: 0;
+}
+.event-timeline__more .btn { font-size: 11px; }
+
 /* --- Topology reconciliation -------------------------------------------- */
 /* Reconciliation never borrows health colours. Amber here means "needs a
    decision", not "something is broken". */

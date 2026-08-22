@@ -3,6 +3,9 @@
 import { useMemo, useState } from "react";
 import type { NetworkDevice, NetworkEvent } from "@/lib/types";
 
+/** Events shown before the reader has to ask for the rest. */
+const VISIBLE_EVENTS = 25;
+
 export default function NetworkEventTimeline({
   events,
   devices,
@@ -16,6 +19,9 @@ export default function NetworkEventTimeline({
   const [severity, setSeverity] = useState("all");
   const [eventType, setEventType] = useState("all");
   const [deviceId, setDeviceId] = useState("all");
+  // A busy uplink can accumulate a long tail of address churn. Show a
+  // readable window by default and let the reader ask for the rest.
+  const [showAll, setShowAll] = useState(false);
   const interfaces = useMemo(
     () => Array.from(new Set(events.map((event) => event.interface).filter(Boolean) as string[])).sort(),
     [events],
@@ -30,6 +36,8 @@ export default function NetworkEventTimeline({
     && (eventType === "all" || event.eventType === eventType)
     && (deviceId === "all" || event.deviceId === deviceId)
   ));
+  const visible = showAll ? filtered : filtered.slice(0, VISIBLE_EVENTS);
+  const hidden = filtered.length - visible.length;
 
   return (
     <section className="card event-timeline" aria-labelledby="network-events-title">
@@ -40,7 +48,11 @@ export default function NetworkEventTimeline({
             Meaningful observed transitions, separate from the command audit trail.
           </div>
         </div>
-        <span className="badge">{filtered.length} shown</span>
+        <span className="badge">
+          {visible.length === filtered.length
+            ? `${filtered.length} shown`
+            : `${visible.length} of ${filtered.length}`}
+        </span>
       </div>
       <div className="event-filters" aria-label="Event filters">
         <label>
@@ -80,7 +92,7 @@ export default function NetworkEventTimeline({
 
       {filtered.length ? (
         <ol className="network-events-list">
-          {filtered.map((event, index) => (
+          {visible.map((event, index) => (
             <li key={event.id ?? `${event.timestamp}-${index}`}>
               <div className={`event-severity event-severity--${event.severity.toLowerCase()}`}>
                 <span aria-hidden />
@@ -100,6 +112,13 @@ export default function NetworkEventTimeline({
               </div>
             </li>
           ))}
+          {hidden > 0 ? (
+            <li className="event-timeline__more">
+              <button type="button" className="btn btn--ghost" onClick={() => setShowAll(true)}>
+                Show {hidden} older event{hidden === 1 ? "" : "s"}
+              </button>
+            </li>
+          ) : null}
         </ol>
       ) : (
         <div className="event-empty">
