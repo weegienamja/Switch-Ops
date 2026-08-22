@@ -22,7 +22,7 @@ export interface RuntimeInfo {
   apiDocsEnabled: boolean;
   hostKeyPinned: boolean;
   telemetryRetentionDays: number;
-  telemetryCollection: "refresh-driven";
+  telemetryCollection: "live-tiered";
   dataDir: string;
   backupDir: string;
   logDir: string;
@@ -171,6 +171,7 @@ export interface LiveSnapshot {
   poe: { usedW: number; availableW: number };
   freshness: LiveFreshness;
   operationInProgress?: string | null;
+  discovery?: { lldp?: LldpDiscoveryStatus };
   connection: LiveConnection;
   tiers?: {
     fastSeconds?: number | null;
@@ -298,6 +299,7 @@ export type EvidenceLevel =
 export type IdentitySource =
   | "cdp"
   | "lldp"
+  | "local-host"
   | "interface-description"
   | "mac-oui"
   | "user-intent"
@@ -324,6 +326,7 @@ export type EvidenceClass =
 export type EvidenceSource =
   | "cdp"
   | "lldp"
+  | "local-host"
   | "mac-table"
   | "arp"
   | "interface-telemetry"
@@ -436,6 +439,47 @@ export interface CdpNeighbor {
   platform?: string | null;
   capabilities: string[];
   ip?: string | null;
+}
+
+export interface LldpNeighbor {
+  remoteName: string;
+  localInterface: string;
+  remoteInterface?: string | null;
+  systemDescription?: string | null;
+  capabilities: string[];
+  ip?: string | null;
+}
+
+export interface LldpDiscoveryStatus {
+  state: "enabled" | "disabled" | "unsupported" | "unknown";
+  supported: boolean;
+  enabled?: boolean | null;
+  neighbors: LldpNeighbor[];
+  detail: string;
+}
+
+export interface LocalEndpointStatus {
+  state: "confirmed" | "ambiguous" | "not-observed" | "unavailable";
+  interface?: string | null;
+  label: string;
+  ip?: string | null;
+  detail: string;
+}
+
+export interface SnmpInspectionStatus {
+  configured: boolean;
+  versions: Array<"v1/v2c" | "v3">;
+  readOnlyCommunities: number;
+  readWriteCommunities: number;
+  v3Users: number;
+  trapHosts: number;
+  detail: string;
+}
+
+export interface DiscoveryStatus {
+  lldp: LldpDiscoveryStatus;
+  localEndpoint: LocalEndpointStatus;
+  snmp: SnmpInspectionStatus;
 }
 
 export interface DeviceCapability {
@@ -650,6 +694,7 @@ export interface DashboardResponse {
   events: NetworkEventsResponse;
   topology: TopologyModel;
   reconciliation: ReconciliationSummary;
+  discovery: DiscoveryStatus;
   configurationHistory: ConfigurationHistoryResponse;
   sectionErrors: Record<string, string>;
 }

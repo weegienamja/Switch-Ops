@@ -100,6 +100,7 @@ export const EVIDENCE_CLASS_COPY: Record<EvidenceClass, StatusCopy> = {
 export const SOURCE_COPY: Record<EvidenceSource, string> = {
   cdp: "the device announced itself over CDP",
   lldp: "the device announced itself over LLDP",
+  "local-host": "this PC's active adapter matched the switch evidence",
   "mac-table": "addresses learned through the interface",
   arp: "the switch's ARP cache",
   "interface-telemetry": "the interface's own reported state",

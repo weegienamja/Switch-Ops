@@ -223,8 +223,8 @@ export default function SettingsPanel({
               rows={[
                 {
                   label: "Telemetry collection",
-                  value: "Refresh-driven",
-                  hint: "An observation is recorded when you press refresh. No background polling runs.",
+                  value: "Tiered live",
+                  hint: "Ports update every few seconds; costlier health and discovery checks run on slower bounded tiers.",
                 },
                 { label: "Telemetry retention", value: `${info?.telemetryRetentionDays ?? 30} days` },
                 { label: "Configuration history", value: "Local only", hint: "Raw configurations stay in private local files; the UI shows redacted diffs." },

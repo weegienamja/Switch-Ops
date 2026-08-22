@@ -67,6 +67,7 @@ export const EVIDENCE_COPY: Record<EvidenceLevel, EvidenceCopy> = {
 export const IDENTITY_COPY: Record<IdentitySource, string> = {
   cdp: "Name and platform reported by the device itself (CDP).",
   lldp: "Name and platform reported by the device itself (LLDP).",
+  "local-host": "Matched to this SwitchOps PC through its active local adapter and the switch MAC table.",
   "interface-description":
     "Name taken from the interface description you configured, not from the device.",
   "mac-oui": "Vendor inferred from the hardware address prefix.",

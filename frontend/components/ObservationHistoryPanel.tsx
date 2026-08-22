@@ -48,10 +48,10 @@ function formatValue(value: number | null | undefined, metric: MetricKey, suffix
 }
 
 /**
- * Refresh-driven observation history.
+ * Retained observation history from the slow background cadence and deep refreshes.
  *
- * SwitchOps has no background poller: a row exists only because somebody
- * pressed refresh. The wording and the chart both have to say that, otherwise
+ * A row exists only when a health observation was retained. The wording and
+ * the chart both have to say that, otherwise
  * four points across a day read as continuous monitoring.
  */
 export default function ObservationHistoryPanel({
@@ -71,8 +71,8 @@ export default function ObservationHistoryPanel({
         <div>
           <h2 className="card__title" id="observation-history-title">Recent observations</h2>
           <div className="card__subtitle">
-            SwitchOps records one observation each time you refresh. No background polling is
-            running, so these are the only observations that exist.
+            SwitchOps retains health observations on a slow background cadence. Fast live port
+            updates stay in memory, so this chart remains readable rather than storing every tick.
           </div>
         </div>
         <span className="badge">

@@ -14,7 +14,7 @@ const runtimeInfo: RuntimeInfo = {
   apiDocsEnabled: false,
   hostKeyPinned: true,
   telemetryRetentionDays: 30,
-  telemetryCollection: "refresh-driven",
+  telemetryCollection: "live-tiered",
   dataDir: "C:\\Users\\someone\\AppData\\Local\\SwitchOps\\SwitchOps\\data",
   backupDir: "C:\\Users\\someone\\AppData\\Local\\SwitchOps\\SwitchOps\\backups",
   logDir: "C:\\Users\\someone\\AppData\\Local\\SwitchOps\\SwitchOps\\logs",
@@ -123,10 +123,10 @@ describe("settings wording", () => {
     expect(screen.getByText(/Windows SSH configuration is untouched/)).toBeTruthy();
   });
 
-  it("describes telemetry as refresh-driven with a retention window", async () => {
+  it("describes tiered live telemetry with a retention window", async () => {
     render(<SettingsPanel setup={realSetup} onClose={() => undefined} onChange={() => undefined} />);
-    expect(screen.getByText("Refresh-driven")).toBeTruthy();
-    expect(screen.getByText(/No background polling runs/)).toBeTruthy();
+    expect(screen.getByText("Tiered live")).toBeTruthy();
+    expect(screen.getByText(/Ports update every few seconds/)).toBeTruthy();
     await waitFor(() => expect(screen.getByText("30 days")).toBeTruthy());
   });
 });

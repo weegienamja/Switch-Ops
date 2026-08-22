@@ -75,9 +75,9 @@ describe("health and partial states", () => {
     expect(document.querySelectorAll(".trend__dot").length).toBeGreaterThan(0);
   });
 
-  it("states that SwitchOps is refresh-driven with no background polling", () => {
+  it("states that retained history is slower than in-memory live samples", () => {
     render(<ObservationHistoryPanel history={null} />);
-    expect(screen.getByText(/No background polling is\s+running/)).toBeTruthy();
+    expect(screen.getByText(/Fast live port\s+updates stay in memory/)).toBeTruthy();
     expect(screen.getByText("Recent observations")).toBeTruthy();
   });
 

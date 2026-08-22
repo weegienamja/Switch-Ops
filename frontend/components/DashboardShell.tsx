@@ -10,6 +10,7 @@ import type {
   ExpectedRelationship,
   ReconciliationSummary,
   ConfigurationHistoryResponse,
+  DiscoveryStatus,
   EnvironmentStatus,
   GuideOperation,
   InterfaceErrorsResponse,
@@ -31,6 +32,7 @@ import AuditTimeline from "./AuditTimeline";
 import ConfigBackupPanel from "./ConfigBackupPanel";
 import ConfigurationHistoryPanel from "./ConfigurationHistoryPanel";
 import DeploymentPlanPanel from "./DeploymentPlanPanel";
+import DiscoveryStatusPanel from "./DiscoveryStatusPanel";
 import CpuMemoryPanel from "./CpuMemoryPanel";
 import EnvironmentPanel from "./EnvironmentPanel";
 import ErrorPanel from "./ErrorPanel";
@@ -76,6 +78,7 @@ interface DashboardData {
   intent: ExpectedRelationship[];
   guideOperations: GuideOperation[];
   configurationHistory: ConfigurationHistoryResponse;
+  discovery: DiscoveryStatus;
   mockScenario: "baseline" | "ap_attached";
   sectionErrors: Record<string, string>;
 }
@@ -158,6 +161,7 @@ export default function DashboardShell() {
         intent,
         guideOperations: guide.operations,
         configurationHistory: dashboard.configurationHistory,
+        discovery: dashboard.discovery,
         mockScenario: mockScenario?.scenario || "baseline",
         sectionErrors: dashboard.sectionErrors,
       });
@@ -314,6 +318,17 @@ export default function DashboardShell() {
               </motion.div>
               <motion.div variants={fadeUp}>
                 <AdvancedOperationsPanel key={selectedPort} selected={selectedInterface} live={live} />
+              </motion.div>
+              <motion.div variants={fadeUp}>
+                <DiscoveryStatusPanel
+                  discovery={{
+                    ...data.discovery,
+                    lldp:
+                      live.lldp && live.lldp.state !== "unknown"
+                        ? live.lldp
+                        : data.discovery.lldp,
+                  }}
+                />
               </motion.div>
               <motion.details className="advanced-disclosure" variants={fadeUp}>
                 <summary>

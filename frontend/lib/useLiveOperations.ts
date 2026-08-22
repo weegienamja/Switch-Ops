@@ -8,6 +8,7 @@ import type {
   LiveFreshness,
   LiveInterfaceState,
   LiveSnapshot,
+  LldpDiscoveryStatus,
   OperationKind,
   OperationProgress,
   OperationResult,
@@ -46,11 +47,13 @@ export function useLiveOperations(enabled: boolean) {
   const [lock, setLock] = useState<WriteLockStatus>(LOCKED);
   const [config, setConfig] = useState<ConfigSaveState>(UNKNOWN_CONFIG);
   const [lastEventAt, setLastEventAt] = useState<string | null>(null);
+  const [lldp, setLldp] = useState<LldpDiscoveryStatus | null>(null);
 
   const applySnapshot = useCallback((snapshot: LiveSnapshot) => {
     setInterfaces(snapshot.interfaces || []);
     setFreshness(snapshot.freshness || {});
     setConnection(snapshot.connection || OFFLINE);
+    if (snapshot.discovery?.lldp) setLldp(snapshot.discovery.lldp);
     if (snapshot.operationInProgress) {
       const [kind, interfaceName] = snapshot.operationInProgress.split(":", 2);
       setOperation({
@@ -118,6 +121,9 @@ export function useLiveOperations(enabled: boolean) {
     );
     listen<WriteLockStatus>("control_lock", setLock);
     listen<ConfigSaveState>("config_state", setConfig);
+    listen<{ lldp: LldpDiscoveryStatus }>("discovery_state", (payload) =>
+      setLldp(payload.lldp),
+    );
 
     return () => {
       cancelled = true;
@@ -180,6 +186,7 @@ export function useLiveOperations(enabled: boolean) {
     lock,
     config,
     lastEventAt,
+    lldp,
     unlock,
     lockNow,
     runOperation,
