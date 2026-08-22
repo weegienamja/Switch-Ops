@@ -16,6 +16,58 @@ SwitchOps is a Windows-first desktop application that:
 - Ships a controlled safe-write mode (disabled by default) for a tiny set of mapped actions on spare ports.
 - Never accepts arbitrary CLI from the UI or any future LLM/MCP integration.
 
+## SwitchOps v0.3.0 (current) - topology reconciliation
+
+The topology diagram is no longer the answer. It is one view of a comparison.
+
+**The problem.** A description configured on a switch is documentation, and it
+can be years out of date. v0.2.1 built the endpoint for a linked port from that
+description - its name, its type, its icon - and marked the result
+`source="observed"`. A label somebody typed in was being rendered as a
+discovered device.
+
+**The fix.** Four kinds of claim are now held about an interface at once and
+compared, rather than one overwriting the others:
+
+| Class | Means |
+| --- | --- |
+| `observed` | Proven by telemetry read from a device just now. |
+| `expected` | Believed to be intended. Never a sighting. |
+| `historical` | Observed in an earlier snapshot; may no longer hold. |
+| `inferred` | Supported by evidence, not directly proven. |
+| `unknown` | Not enough evidence. |
+
+An interface description now only ever produces an *expected* assertion. The
+observed assertion for the same interface carries what the wire actually
+proved - which, on a switch where nothing announces itself, is presence
+without identity.
+
+**Reconciliation statuses** - `aligned`, `drift` (identity or location),
+`expected-not-observed`, `unexpected`, `uncertain`, `not-applicable` - with
+"changed since the previous observation" kept deliberately orthogonal, because
+an interface can match intent perfectly and still have changed.
+
+**Health and reconciliation are independent.** A network can be entirely
+healthy and not match its documentation at all:
+
+```
+NETWORK HEALTH          HEALTHY
+TOPOLOGY RECONCILIATION Attention - 2 expected but not observed
+```
+
+**Expected topology is editable and local.** `PUT /api/topology/intent/{port}`
+records what should be on an interface. It never touches the switch; when local
+intent and the device's own description disagree, that is reported as stale
+documentation rather than silently corrected.
+
+**Events are raised from a change of situation**, not from the presence of one,
+so a discrepancy still true on the twentieth refresh stays a single event.
+
+See [docs/TOPOLOGY-RECONCILIATION.md](docs/TOPOLOGY-RECONCILIATION.md) for the
+architecture, including why no OUI vendor database was added and how a Meraki
+controller can later act as an evidence provider without SwitchOps becoming a
+second Meraki Dashboard.
+
 ## SwitchOps v0.2.1
 
 A correctness and product-quality pass over the v0.2 foundation. No new subsystem.
