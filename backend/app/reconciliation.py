@@ -397,6 +397,12 @@ class IntentProvider:
             if (assertion := self._expected_for(interface)) is not None
         ]
 
+    def suppressed_interfaces(self) -> set[str]:
+        return {
+            interface for interface, relationship in self.stored.items()
+            if relationship.suppressed
+        }
+
     def expected_by_interface(self) -> dict[str, TopologyAssertion]:
         return {
             interface.port: assertion
@@ -540,6 +546,7 @@ def reconcile_interface(
     historical: Optional[TopologyAssertion],
     inferred: Sequence[TopologyAssertion] = (),
     external_sightings: Sequence[ExternalSighting] = (),
+    suppressed: bool = False,
 ) -> InterfaceReconciliation:
     """Compare the claims held about one interface. Deterministic."""
     status: ReconciliationStatus
@@ -549,7 +556,16 @@ def reconcile_interface(
 
     admin_down = interface.status.strip().lower() == "disabled"
 
-    if observed is None and expected is None:
+    if suppressed:
+        # The operator has muted this interface. The evidence is still gathered
+        # and still shown; it just stops asking for a decision.
+        status = "not-applicable"
+        headline = "Muted"
+        explanation = (
+            f"You have muted reconciliation for {interface.port}. SwitchOps still "
+            "records what it observes here, but will not raise it for attention."
+        )
+    elif observed is None and expected is None:
         status = "not-applicable"
         headline = "Nothing expected, nothing observed"
         explanation = (
@@ -705,6 +721,7 @@ def reconcile(
     inferred = ios.inferred_by_interface()
     expected = intent.expected_by_interface()
     historical = history.historical_by_interface()
+    suppressed_ports = intent.suppressed_interfaces()
 
     results: list[InterfaceReconciliation] = []
     for interface in interfaces:
@@ -715,6 +732,7 @@ def reconcile(
             historical=historical.get(interface.port),
             inferred=inferred.get(interface.port, []),
             external_sightings=external_sightings,
+            suppressed=interface.port in suppressed_ports,
         ))
 
     counts = {

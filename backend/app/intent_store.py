@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS expected_relationships (
     expected_model TEXT,
     source TEXT NOT NULL,
     note TEXT,
+    suppressed INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (device_id, interface)
@@ -91,6 +92,7 @@ class TopologyIntentStore:
             expectedModel=row["expected_model"],
             source=row["source"],
             note=row["note"],
+            suppressed=bool(row["suppressed"]),
             createdAt=datetime.fromisoformat(row["created_at"]),
             updatedAt=datetime.fromisoformat(row["updated_at"]),
         )
@@ -114,6 +116,7 @@ class TopologyIntentStore:
         expected_model: Optional[str] = None,
         source: IntentSource = "user-intent",
         note: Optional[str] = None,
+        suppressed: bool = False,
         now: Optional[datetime] = None,
     ) -> ExpectedRelationship:
         """Record what should be on an interface. Local only; no IOS is sent."""
@@ -129,8 +132,9 @@ class TopologyIntentStore:
                 """
                 INSERT INTO expected_relationships
                     (device_id, interface, expected_name, expected_device_type,
-                     expected_vendor, expected_model, source, note, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     expected_vendor, expected_model, source, note, suppressed,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(device_id, interface) DO UPDATE SET
                     expected_name = excluded.expected_name,
                     expected_device_type = excluded.expected_device_type,
@@ -138,11 +142,13 @@ class TopologyIntentStore:
                     expected_model = excluded.expected_model,
                     source = excluded.source,
                     note = excluded.note,
+                    suppressed = excluded.suppressed,
                     updated_at = excluded.updated_at
                 """,
                 (
                     device_id, interface, expected_name, expected_device_type,
-                    expected_vendor, expected_model, source, note, created, stamp,
+                    expected_vendor, expected_model, source, note,
+                    int(bool(suppressed)), created, stamp,
                 ),
             )
             row = conn.execute(

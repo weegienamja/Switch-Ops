@@ -66,11 +66,19 @@ def test_learned_mac_becomes_observed_visual_device():
         observed_at=datetime(2026, 8, 22, tzinfo=timezone.utc),
     )
 
-    endpoint = next(device for device in topology.devices if device.type == "desktop")
+    endpoint = next(
+        device for device in topology.devices if device.id != topology.root_device_id
+    )
     assert endpoint.source == "observed"
     assert endpoint.online is True
     assert endpoint.evidence_level == "observed-on-port"
-    assert endpoint.identity_source == "interface-description"
+    # Presence is observed; identity is not. The description is held on the
+    # expected facet and never becomes the node's name or type.
+    assert endpoint.name == "Unidentified device"
+    assert endpoint.type == "unknown"
+    assert endpoint.identity_source == "none"
+    assert endpoint.expected_name == "Main desktop"
+    assert endpoint.expected_type == "desktop"
     assert endpoint.mac == "0200.0000.0003"
     assert endpoint.learned_mac_count == 1
     assert topology.links[0].status == "up"
@@ -142,14 +150,17 @@ def test_many_macs_behind_uplink_do_not_become_separate_routers():
     assert len(topology.links) == 1
 
     endpoint = endpoints[0]
-    # No "Uplink to Test Gateway 1", "... 2" duplicates.
-    assert endpoint.name == "Uplink to Test Gateway"
-    assert not any(char.isdigit() for char in endpoint.name.split()[-1])
+    # No "Uplink to Test Gateway 1", "... 2" duplicates - and no borrowed name at
+    # all: nothing announced itself, so nothing is identified.
+    assert endpoint.name == "Unidentified device"
+    assert endpoint.expected_name == "Uplink to Test Gateway"
+    assert endpoint.type == "unknown"
     assert endpoint.learned_mac_count == 5
     # One of five addresses must not be attributed to the neighbour.
     assert endpoint.mac is None
     assert endpoint.evidence_level == "observed-on-port"
-    assert endpoint.identity_source == "interface-description"
+    # Nothing identified it, so no identity source is claimed.
+    assert endpoint.identity_source == "none"
     assert endpoint.role == "uplink"
     assert topology.links[0].learned_mac_count == 5
 
@@ -189,7 +200,8 @@ def test_endpoint_identity_degrades_when_no_description_exists():
     assert endpoint.visual_category == "unknown"
     assert endpoint.identity_source == "none"
     assert endpoint.confidence == "low"
-    assert endpoint.name == "Unknown device on Gi0/5"
+    assert endpoint.name == "Unidentified device"
+    assert endpoint.expected_name is None
     assert endpoint.evidence_level == "observed-on-port"
 
 
@@ -402,12 +414,22 @@ def test_physical_lab_renders_the_devices_that_actually_exist():
         if device.id != topology.root_device_id
     }
     assert rendered == {
-        "Gi0/1": ("Uplink to Test Gateway", "router", "observed", "observed-on-port"),
-        "Gi0/2": ("Test Workstation", "desktop", "observed", "observed-on-port"),
+        # Linked ports: presence observed, identity absent, description kept
+        # as the expectation it is.
+        "Gi0/1": ("Unidentified device", "unknown", "observed", "observed-on-port"),
+        "Gi0/2": ("Unidentified device", "unknown", "observed", "observed-on-port"),
+        # Dark ports: intent only, so the description is the label.
         "Gi0/3": ("Test Server", "server", "expected", "expected"),
         "Gi0/4": ("TEST-AP-01 AP", "access-point", "expected", "expected"),
         "Gi0/5": ("TV", "tv-media", "expected", "expected"),
     }
+    expectations = {
+        device.connected_interface: device.expected_name
+        for device in topology.devices
+        if device.id != topology.root_device_id
+    }
+    assert expectations["Gi0/1"] == "Uplink to Test Gateway"
+    assert expectations["Gi0/2"] == "Test Workstation"
     # Spare and disabled ports invent nothing, including "Spare Uplink".
     assert "Gi0/6" not in rendered and "Gi0/9" not in rendered and "Gi0/10" not in rendered
 
@@ -419,7 +441,8 @@ def test_physical_lab_uplink_stays_singular_however_many_addresses_appear():
             device for device in topology.devices if device.connected_interface == "Gi0/1"
         ]
         assert len(uplink) == 1, f"{uplink_macs} addresses produced {len(uplink)} nodes"
-        assert uplink[0].name == "Uplink to Test Gateway"
+        assert uplink[0].name == "Unidentified device"
+        assert uplink[0].expected_name == "Uplink to Test Gateway"
         assert uplink[0].learned_mac_count == uplink_macs
         # The whole topology grows by nothing as addresses accumulate.
         assert len(topology.devices) == 6

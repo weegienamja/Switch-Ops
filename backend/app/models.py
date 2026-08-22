@@ -474,6 +474,9 @@ class ExpectedRelationship(BaseModel):
     expected_model: Optional[str] = Field(default=None, alias="expectedModel")
     source: IntentSource = "user-intent"
     note: Optional[str] = None
+    # Muted: the operator has said this interface is not worth reconciling.
+    # The discrepancy is not deleted, it simply stops asking for attention.
+    suppressed: bool = False
     created_at: Optional[datetime] = Field(default=None, alias="createdAt")
     updated_at: Optional[datetime] = Field(default=None, alias="updatedAt")
 
@@ -486,6 +489,7 @@ class ExpectedRelationshipRequest(BaseModel):
     expected_vendor: Optional[str] = Field(default=None, alias="expectedVendor", max_length=64)
     expected_model: Optional[str] = Field(default=None, alias="expectedModel", max_length=64)
     note: Optional[str] = Field(default=None, max_length=200)
+    suppressed: bool = False
 
     model_config = {"populate_by_name": True}
 
@@ -545,6 +549,10 @@ class NetworkDevice(BaseModel):
     evidence: List[str] = Field(default_factory=list)
     evidence_level: EvidenceLevel = Field(default="unknown", alias="evidenceLevel")
     identity_source: IdentitySource = Field(default="none", alias="identitySource")
+    # What intent says should be here, kept separate from ``name`` so an
+    # observed node can never borrow a description for its identity.
+    expected_name: Optional[str] = Field(default=None, alias="expectedName")
+    expected_type: Optional[DeviceType] = Field(default=None, alias="expectedType")
     # Addresses reachable through the link to this device. More than one means
     # further devices sit behind it; it never multiplies this device.
     learned_mac_count: int = Field(default=0, alias="learnedMacCount")

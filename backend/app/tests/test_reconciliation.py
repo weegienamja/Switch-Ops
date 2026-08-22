@@ -685,3 +685,58 @@ def test_physical_lab_upstream_never_becomes_an_observed_router():
         assert assertion.object_identified is False
         assert "Test ISP" not in assertion.object_label
         assert assertion.device_type is None
+
+
+# --- suppression ("ignore this interface") ---------------------------------
+
+
+def test_muting_an_interface_stops_it_asking_for_attention(store):
+    interfaces = [iface("Gi0/4", "TEST-AP-01 AP", status="notconnect")]
+    assert only(run(interfaces)).status == "expected-not-observed"
+
+    stored = [store.set_expected(
+        device_id="sw", interface="Gi0/4", expected_name="TEST-AP-01 AP",
+        suppressed=True, now=NOW,
+    )]
+    summary = run(interfaces, stored=stored)
+    result = only(summary)
+    assert result.status == "not-applicable"
+    assert result.headline == "Muted"
+    assert summary.attention is False
+    assert summary.expected_not_observed == 0
+
+
+def test_muting_stops_events_and_resolves_an_open_one(store):
+    interfaces = [iface("Gi0/4", "TEST-AP-01 AP", status="notconnect")]
+    first = run(interfaces)
+    opened = reconciliation_events(device_id="sw", summary=first, store=store, observed_at=NOW)
+    assert [event.event_type for event in opened] == ["expected_device_missing"]
+
+    stored = [store.set_expected(
+        device_id="sw", interface="Gi0/4", expected_name="TEST-AP-01 AP",
+        suppressed=True, now=NOW,
+    )]
+    muted = run(interfaces, stored=stored)
+    closed = reconciliation_events(
+        device_id="sw", summary=muted, store=store, observed_at=NOW + timedelta(minutes=1)
+    )
+    assert [event.event_type for event in closed] == ["topology_reconciliation_resolved"]
+
+    for index in range(5):
+        assert reconciliation_events(
+            device_id="sw", summary=muted, store=store,
+            observed_at=NOW + timedelta(minutes=index + 2),
+        ) == []
+
+
+def test_muting_still_records_what_is_observed(store):
+    """Muting hides the prompt, not the evidence."""
+    interfaces = [iface("Gi0/1", "Uplink to Test Gateway")]
+    stored = [store.set_expected(
+        device_id="sw", interface="Gi0/1", expected_name="Uplink to Test Gateway",
+        suppressed=True, now=NOW,
+    )]
+    result = only(run(interfaces, macs=[mac("Gi0/1")], stored=stored))
+    assert result.status == "not-applicable"
+    assert result.observed is not None
+    assert result.observed.evidence_class == "observed"

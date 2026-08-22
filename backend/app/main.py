@@ -843,6 +843,7 @@ def put_topology_intent(
         expected_model=req.expected_model,
         source="user-intent",
         note=req.note,
+        suppressed=req.suppressed,
     )
     return ExpectedTopologyResponse(
         deviceId=deviceId,

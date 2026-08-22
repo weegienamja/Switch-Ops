@@ -252,6 +252,8 @@ def _endpoint_from_cdp(
         evidence=evidence,
         evidenceLevel="direct",
         identitySource="cdp",
+        expectedName=interface.name.strip() or None,
+        expectedType=None,
         learnedMacCount=learned_count,
         role=role,
     )
@@ -275,9 +277,15 @@ def _endpoint_from_learned_macs(
     """
     learned_count = len(learned)
     described = _meaningful_expected_description(interface.name)
-    category, vendor, model, stage, description_evidence = (
+    # The description describes what is *expected*, so it is recorded on the
+    # expected facet and never becomes this node's identity. Without a
+    # neighbour announcing itself, an attached device is simply unidentified.
+    expected_category, _vendor, _model, _stage, _description_evidence = (
         classify_device(interface.name) if described else ("unknown", None, None, "unknown", [])
     )
+    category: DeviceType = "unknown"
+    vendor = model = None
+    stage = "unknown"
 
     evidence = [
         f"{learned_count} address(es) learned through {interface.port}",
@@ -285,20 +293,16 @@ def _endpoint_from_learned_macs(
     ]
     identity_source: IdentitySource = "none"
     if described:
-        identity_source = "interface-description"
         evidence.append(
-            f"identity taken from the interface description {interface.name.strip()!r}, not from the device itself"
+            f"the interface description reads {interface.name.strip()!r}; that is "
+            "documentation of what is expected, not an identification of what is attached"
         )
-        evidence.extend(description_evidence)
     if learned_count > 1:
         evidence.append(
             "several addresses are reachable through this link, so further devices sit behind it"
         )
 
-    if described:
-        name = interface.name.strip()
-    else:
-        name = f"Unknown device on {interface.port}"
+    name = "Unidentified device"
 
     # A single learned address can be attributed to the endpoint. Several
     # cannot: attributing one of many would be a guess.
@@ -309,14 +313,9 @@ def _endpoint_from_learned_macs(
         else f"endpoint-{switch_id}-{_slug(interface.port)}"
     )
 
-    # Identity confidence, not existence confidence. The link carries the
-    # existence claim.
-    if stage in {"model", "vendor"}:
-        confidence = "medium"
-    elif described:
-        confidence = "medium" if learned_count == 1 else "low"
-    else:
-        confidence = "low"
+    # Identity confidence, not existence confidence. Nothing identifies this
+    # device, so identity confidence is low however good the link is.
+    confidence = "low"
 
     return NetworkDevice(
         id=device_id,
@@ -342,6 +341,8 @@ def _endpoint_from_learned_macs(
         evidence=evidence,
         evidenceLevel="observed-on-port",
         identitySource=identity_source,
+        expectedName=interface.name.strip() if described else None,
+        expectedType=expected_category if described else None,
         learnedMacCount=learned_count,
         role=role,
     )
@@ -502,6 +503,8 @@ def build_topology(
                 ],
                 evidenceLevel="expected",
                 identitySource="interface-description",
+                expectedName=interface.name.strip(),
+                expectedType=category,
                 learnedMacCount=0,
                 role=role,
             )
