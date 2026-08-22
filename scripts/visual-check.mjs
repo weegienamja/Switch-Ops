@@ -46,7 +46,15 @@ const VIEWS = [
   { label: "Visual network", slug: "network" },
   { label: "What changed", slug: "events" },
   { label: "Lab Guide", slug: "guide" },
-  { label: "Change control", slug: "change-control" },
+  {
+    label: "Change control",
+    slug: "change-control",
+    // Exercise the dry-run planner so its output is inspected too. This is a
+    // read-only allowlisted operation.
+    prepare: `[...document.querySelectorAll("button")]
+      .find((button) => /generate dry-run plan/i.test(button.textContent || ""))?.click(), true`,
+    settle: 2500,
+  },
 ];
 
 /** Overlays reached from the header rather than the tab bar. */
@@ -274,6 +282,10 @@ async function main() {
           continue;
         }
         await new Promise((resolve) => setTimeout(resolve, 700));
+        if (view.prepare) {
+          await page.evaluate(view.prepare);
+          await new Promise((resolve) => setTimeout(resolve, view.settle || 900));
+        }
         const before = consoleMessages.length;
         const audit = await page.evaluate(AUDIT_SCRIPT);
         const shot = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
