@@ -1215,7 +1215,7 @@ def post_interface_operation(port: str, req: OperationRequest):
             lambda c: run_operation(
                 c,
                 kind=req.kind,
-                interface=canonical,
+                interface=short,
                 value=req.value,
                 actor="operator",
                 on_progress=progress,

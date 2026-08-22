@@ -218,6 +218,7 @@ def test_controlled_operation_api_streams_progress_and_never_auto_saves(monkeypa
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "success"
+        assert body["interface"] == "Gi0/6"
         assert body["requiresSave"] is True
         assert "write memory" not in body["commands"]
         assert "operation_progress" in published
