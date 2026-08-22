@@ -136,6 +136,35 @@ export type DeviceType =
   | "camera"
   | "unknown";
 
+/**
+ * How strongly an observation supports a claim about what sits on a link.
+ * Mirrors backend/app/models.py — keep the two in step.
+ */
+export type EvidenceLevel =
+  | "direct"
+  | "observed-on-port"
+  | "learned-behind"
+  | "expected"
+  | "unknown";
+
+export type IdentitySource =
+  | "cdp"
+  | "interface-description"
+  | "mac-oui"
+  | "switch-telemetry"
+  | "none";
+
+export type InterfaceRole = "uplink" | "access" | "unknown";
+
+export interface CdpNeighbor {
+  remoteName: string;
+  localInterface: string;
+  remoteInterface?: string | null;
+  platform?: string | null;
+  capabilities: string[];
+  ip?: string | null;
+}
+
 export interface DeviceCapability {
   name: string;
   available: boolean;
@@ -159,6 +188,11 @@ export interface NetworkDevice {
   capabilities: DeviceCapability[];
   lastSeen?: string | null;
   evidence: string[];
+  evidenceLevel: EvidenceLevel;
+  identitySource: IdentitySource;
+  /** Addresses reachable through this link. >1 means devices sit behind it. */
+  learnedMacCount: number;
+  role: InterfaceRole;
 }
 
 export interface NetworkInterface {
@@ -175,6 +209,8 @@ export interface NetworkInterface {
   poeState: string;
   poeWatts: number;
   protected: boolean;
+  role: InterfaceRole;
+  learnedMacCount: number;
 }
 
 export interface NetworkLink {
@@ -188,6 +224,8 @@ export interface NetworkLink {
   poe: boolean;
   confidence: "low" | "medium" | "high";
   evidence: string[];
+  evidenceLevel: EvidenceLevel;
+  learnedMacCount: number;
 }
 
 export interface TopologyModel {

@@ -12,6 +12,7 @@ from .command_registry import (
 )
 from .errors import CommandNotAllowedError
 from .models import GuideOperation, GuideRunResult
+from .parsers.cdp import parse_cdp
 from .parsers.cpu import parse_cpu
 from .parsers.environment import parse_environment
 from .parsers.errors import parse_interface_errors
@@ -199,23 +200,17 @@ def _parse_spanning_tree(text: str) -> dict[str, Any]:
     return {"localSwitchIsRoot": local_is_root, "root": root_id, "ports": ports}
 
 
-def _parse_cdp(text: str) -> list[dict[str, str | None]]:
-    neighbors: list[dict[str, str | None]] = []
-    blocks = re.split(r"-+\s*\n", text)
-    for block in blocks:
-        device = re.search(r"Device ID:\s*(.+)", block, re.IGNORECASE)
-        if not device:
-            continue
-        local = re.search(r"Interface:\s*([^,\n]+)", block, re.IGNORECASE)
-        remote = re.search(r"Port ID \(outgoing port\):\s*([^\n]+)", block, re.IGNORECASE)
-        platform = re.search(r"Platform:\s*([^,\n]+)", block, re.IGNORECASE)
-        neighbors.append({
-            "deviceId": device.group(1).strip(),
-            "localInterface": local.group(1).strip() if local else None,
-            "remoteInterface": remote.group(1).strip() if remote else None,
-            "platform": platform.group(1).strip() if platform else None,
-        })
-    return neighbors
+def _cdp_summary(text: str) -> list[dict[str, str | None]]:
+    """Shape CDP neighbours for the guide result, reusing the shared parser."""
+    return [
+        {
+            "deviceId": neighbor.remote_name,
+            "localInterface": neighbor.local_interface or None,
+            "remoteInterface": neighbor.remote_interface,
+            "platform": neighbor.platform,
+        }
+        for neighbor in parse_cdp(text)
+    ]
 
 
 def _explain_interface_status(status: str) -> str:
@@ -360,7 +355,7 @@ def run_guide_operation(
         else:
             explanation = "No spanning-tree root could be determined from the returned output."
     elif operation_id == "neighbors":
-        neighbors = _parse_cdp(outputs["show_cdp_neighbors_detail"])
+        neighbors = _cdp_summary(outputs["show_cdp_neighbors_detail"])
         result = {"neighbors": neighbors}
         explanation = f"CDP reported {len(neighbors)} neighbour(s). An empty result can simply mean no adjacent device is advertising CDP."
     elif operation_id == "temperature":

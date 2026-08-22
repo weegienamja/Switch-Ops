@@ -193,6 +193,46 @@ DeviceType = Literal[
 ]
 
 
+# How strongly the observation supports a claim about what sits on a link.
+#
+# direct            the neighbour announced itself on the wire (CDP/LLDP)
+# observed-on-port  something is demonstrably attached (link up + learned MACs)
+#                   but the switch cannot prove it is the *only* hop
+# learned-behind    a MAC reachable through this interface, possibly several
+#                   devices away; never proof of physical attachment
+# expected          inferred from an interface description; nothing observed
+# unknown           insufficient evidence
+EvidenceLevel = Literal[
+    "direct",
+    "observed-on-port",
+    "learned-behind",
+    "expected",
+    "unknown",
+]
+
+# Where a device's *identity* (not its existence) came from.
+IdentitySource = Literal[
+    "cdp",
+    "interface-description",
+    "mac-oui",
+    "switch-telemetry",
+    "none",
+]
+
+InterfaceRole = Literal["uplink", "access", "unknown"]
+
+
+class CdpNeighbor(BaseModel):
+    remote_name: str = Field(alias="remoteName")
+    local_interface: str = Field(default="", alias="localInterface")
+    remote_interface: Optional[str] = Field(default=None, alias="remoteInterface")
+    platform: Optional[str] = None
+    capabilities: List[str] = Field(default_factory=list)
+    ip: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
+
+
 class DeviceCapability(BaseModel):
     name: str
     available: bool = True
@@ -218,6 +258,12 @@ class NetworkDevice(BaseModel):
     capabilities: List[DeviceCapability] = Field(default_factory=list)
     last_seen: Optional[datetime] = Field(default=None, alias="lastSeen")
     evidence: List[str] = Field(default_factory=list)
+    evidence_level: EvidenceLevel = Field(default="unknown", alias="evidenceLevel")
+    identity_source: IdentitySource = Field(default="none", alias="identitySource")
+    # Addresses reachable through the link to this device. More than one means
+    # further devices sit behind it; it never multiplies this device.
+    learned_mac_count: int = Field(default=0, alias="learnedMacCount")
+    role: InterfaceRole = "unknown"
 
     model_config = {"populate_by_name": True}
 
@@ -236,6 +282,8 @@ class NetworkInterface(BaseModel):
     poe_state: str = Field(default="", alias="poeState")
     poe_watts: float = Field(default=0.0, alias="poeWatts")
     protected: bool = False
+    role: InterfaceRole = "unknown"
+    learned_mac_count: int = Field(default=0, alias="learnedMacCount")
 
     model_config = {"populate_by_name": True}
 
@@ -251,6 +299,8 @@ class NetworkLink(BaseModel):
     poe: bool = False
     confidence: Literal["low", "medium", "high"]
     evidence: List[str] = Field(default_factory=list)
+    evidence_level: EvidenceLevel = Field(default="unknown", alias="evidenceLevel")
+    learned_mac_count: int = Field(default=0, alias="learnedMacCount")
 
     model_config = {"populate_by_name": True}
 

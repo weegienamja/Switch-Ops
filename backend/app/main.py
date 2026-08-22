@@ -61,6 +61,7 @@ from .models import (
     TelemetrySnapshotSummary,
     WriteActionResult,
 )
+from .parsers.cdp import parse_cdp
 from .parsers.config_parser import parse_running_config, redact_config
 from .parsers.cpu import parse_cpu
 from .parsers.environment import parse_environment
@@ -207,6 +208,7 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         "errors": "show_interfaces_counters_errors",
         "memory": "show_memory_statistics",
         "macTable": "show_mac_address_table",
+        "neighbors": "show_cdp_neighbors_detail",
         "logs": "show_logging",
     }
     outputs: dict[str, str] = {}
@@ -264,6 +266,11 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
     logs = _parse_section(
         "logs", parse_logs, outputs["logs"], LogsResponse(entries=[]), section_errors
     )
+    # CDP is the only direct-neighbour evidence available on this platform. An
+    # empty result is normal and must not be treated as a failure.
+    cdp_neighbors = _parse_section(
+        "neighbors", parse_cdp, outputs["neighbors"], [], section_errors
+    )
 
     observed_at = datetime.now(timezone.utc)
     credential_status = get_credential_store().status()
@@ -285,6 +292,7 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         interfaces=interfaces,
         mac_entries=mac_entries,
         poe_ports=poe.ports,
+        cdp_neighbors=cdp_neighbors,
         observed_at=observed_at,
         source_namespace="mock" if settings.mock_mode else "physical",
     )
