@@ -611,6 +611,7 @@ class CdpNeighbor(BaseModel):
 
 class LldpNeighbor(BaseModel):
     remote_name: str = Field(alias="remoteName")
+    chassis_id: Optional[str] = Field(default=None, alias="chassisId")
     local_interface: str = Field(default="", alias="localInterface")
     remote_interface: Optional[str] = Field(default=None, alias="remoteInterface")
     system_description: Optional[str] = Field(default=None, alias="systemDescription")

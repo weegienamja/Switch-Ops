@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import MerakiSettingsSection from "./MerakiSettingsSection";
 import type {
   ConnectionTestResult,
   InterfacePolicyResponse,
@@ -218,6 +219,8 @@ export default function SettingsPanel({
             ) : null}
             {test ? <ConnectionTestReport result={test} /> : null}
           </Section>
+
+          <MerakiSettingsSection />
 
           <Section title="Operation mode">
             <div className="settings-modes">

@@ -93,6 +93,16 @@ from .models import (
     InterfacePolicyUpdate,
     WriteLockStatus,
 )
+from .meraki_client import MerakiApiError
+from .meraki_models import (
+    MerakiConnectionTestResult,
+    MerakiCredentialRequest,
+    MerakiNetwork,
+    MerakiOrganization,
+    MerakiRefreshResult,
+    MerakiSelection,
+    MerakiSetupStatus,
+)
 from .interface_policy import device_key, get_interface_policy_store
 from .operations import (
     OPERATIONS,
@@ -135,6 +145,8 @@ from .telemetry_store import get_telemetry_store
 from .topology import build_topology, switch_device_id
 from .tools.backup import backup_running_config
 from .tools.read_only import run_and_audit
+from .unified_models import OperatorIdentityDecisionRequest, UnifiedLabState
+from .unified_service import get_unified_lab_service
 
 
 logger = logging.getLogger("switchops")
@@ -148,16 +160,18 @@ async def _lifespan(_app: FastAPI):
     get_write_lock().lock()
     get_save_tracker().reset()
     _start_live_operations()
+    get_unified_lab_service().start()
     try:
         yield
     finally:
+        get_unified_lab_service().stop()
         _stop_live_operations()
         get_write_lock().lock()
 
 
 app = FastAPI(
     title="SwitchOps",
-    version="0.6.0",
+    version="0.7.0",
     description="Local-only network operations sidecar. Allowlisted commands only.",
     docs_url="/docs" if settings.enable_api_docs else None,
     redoc_url=None,
@@ -614,7 +628,7 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         reconciliation=reconciliation.model_dump(by_alias=True, mode="json"),
     )
 
-    return DashboardResponse(
+    dashboard = DashboardResponse(
         summary=summary,
         interfaces=InterfaceStatusResponse(interfaces=interfaces),
         poe=poe,
@@ -638,6 +652,13 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         configurationHistory=configuration_history,
         sectionErrors=section_errors,
     )
+    try:
+        get_unified_lab_service().update_catalyst(dashboard)
+    except Exception as exc:
+        # Unified Lab is an additive read-only view. Its persistence or
+        # reconciliation can never make the Catalyst dashboard unavailable.
+        logger.warning("Unified Catalyst normalization failed (%s)", type(exc).__name__)
+    return dashboard
 
 
 # --- system endpoints -----------------------------------------------------
@@ -1030,6 +1051,136 @@ def setup_credentials(req: CredentialSetupRequest):
 def clear_credentials():
     get_credential_store().clear()
     return setup_status()
+
+
+# --- optional read-only Meraki evidence source ----------------------------
+
+
+@app.get(
+    "/api/meraki/setup/status",
+    response_model=MerakiSetupStatus,
+    response_model_by_alias=True,
+)
+def meraki_setup_status():
+    return get_unified_lab_service().setup_status()
+
+
+@app.post(
+    "/api/meraki/setup/credentials",
+    response_model=MerakiSetupStatus,
+    response_model_by_alias=True,
+)
+def meraki_setup_credentials(req: MerakiCredentialRequest):
+    register_secret(req.api_key)
+    try:
+        return get_unified_lab_service().save_api_key(req.api_key)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=503,
+            detail="Windows Credential Manager is unavailable; the API key was not stored.",
+        ) from None
+
+
+@app.delete(
+    "/api/meraki/setup/credentials",
+    response_model=MerakiSetupStatus,
+    response_model_by_alias=True,
+)
+def clear_meraki_credentials():
+    return get_unified_lab_service().clear_api_key()
+
+
+@app.post(
+    "/api/meraki/setup/test",
+    response_model=MerakiConnectionTestResult,
+    response_model_by_alias=True,
+)
+def test_meraki_connection():
+    return get_unified_lab_service().test_connection()
+
+
+def _meraki_read(action: Callable[[], T]) -> T:
+    try:
+        return action()
+    except RuntimeError:
+        raise HTTPException(status_code=412, detail="Meraki is not configured.") from None
+    except MerakiApiError as exc:
+        status = 429 if exc.code == "rate-limited" else 502
+        raise HTTPException(
+            status_code=status,
+            detail="The allowlisted Meraki read operation failed.",
+        ) from None
+
+
+@app.get(
+    "/api/meraki/organizations",
+    response_model=list[MerakiOrganization],
+    response_model_by_alias=True,
+)
+def get_meraki_organizations():
+    return _meraki_read(lambda: get_unified_lab_service().organizations())
+
+
+@app.get(
+    "/api/meraki/networks",
+    response_model=list[MerakiNetwork],
+    response_model_by_alias=True,
+)
+def get_meraki_networks(
+    organizationId: str = Query(min_length=1, max_length=128),
+):
+    return _meraki_read(
+        lambda: get_unified_lab_service().networks(organizationId)
+    )
+
+
+@app.put(
+    "/api/meraki/selection",
+    response_model=MerakiSetupStatus,
+    response_model_by_alias=True,
+)
+def put_meraki_selection(selection: MerakiSelection):
+    return get_unified_lab_service().save_selection(selection)
+
+
+@app.post(
+    "/api/meraki/refresh",
+    response_model=MerakiRefreshResult,
+    response_model_by_alias=True,
+)
+def refresh_meraki_evidence():
+    health = get_unified_lab_service().refresh_meraki()
+    accepted = health.state not in {"not-configured", "unavailable"}
+    return MerakiRefreshResult(
+        accepted=accepted,
+        summary=(
+            "Meraki evidence refresh completed."
+            if accepted
+            else "Meraki evidence refresh did not complete; Catalyst remains available."
+        ),
+        sourceHealth=health,
+    )
+
+
+@app.get(
+    "/api/unified-lab/state",
+    response_model=UnifiedLabState,
+    response_model_by_alias=True,
+)
+def get_unified_lab_state():
+    return get_unified_lab_service().state()
+
+
+@app.post(
+    "/api/unified-lab/identity-decision",
+    response_model=UnifiedLabState,
+    response_model_by_alias=True,
+)
+def decide_unified_identity(req: OperatorIdentityDecisionRequest):
+    try:
+        return get_unified_lab_service().decide_identity(req.link_id, req.decision)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 # --- read-only switch endpoints -------------------------------------------

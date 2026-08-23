@@ -30,6 +30,7 @@ def test_lldp_detail_normalises_direct_neighbor_evidence():
     neighbors = parse_lldp_detail(LLDP_DETAIL)
     assert len(neighbors) == 1
     assert neighbors[0].remote_name == "TEST-GATEWAY-01-HQ"
+    assert neighbors[0].chassis_id == "0200.0000.000B"
     assert neighbors[0].local_interface == "Gi0/1"
     assert neighbors[0].remote_interface == "port-1"
     assert neighbors[0].ip == "192.0.2.19"

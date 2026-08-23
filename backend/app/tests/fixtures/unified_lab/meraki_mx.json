@@ -1,0 +1,28 @@
+{
+  "fixture": "synthetic-unified-lab-v1",
+  "observedAt": "2026-01-15T12:00:02Z",
+  "device": {
+    "serial": "SYNTH-MX-0001",
+    "name": "synthetic-mx68cw",
+    "model": "MX68CW",
+    "mac": "00:00:5e:00:53:68",
+    "networkId": "N_SYNTHETIC_001",
+    "productType": "appliance"
+  },
+  "availability": "online",
+  "uplinks": [
+    {
+      "interface": "wan1",
+      "status": "active",
+      "address": "198.51.100.20"
+    }
+  ],
+  "ports": [
+    {
+      "number": 3,
+      "enabled": true,
+      "type": "trunk",
+      "vlan": 20
+    }
+  ]
+}

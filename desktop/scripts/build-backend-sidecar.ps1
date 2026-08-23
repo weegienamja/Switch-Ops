@@ -56,6 +56,9 @@ try {
         --collect-submodules paramiko `
         --collect-submodules keyring `
         --collect-data netaddr `
+        --exclude-module keyring.testing `
+        --exclude-module pytest `
+        --exclude-module _pytest `
         --workpath "build\pyinstaller" `
         --specpath "build\spec" `
         sidecar.py

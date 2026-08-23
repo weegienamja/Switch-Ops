@@ -55,6 +55,7 @@ def parse_lldp_detail(text: str) -> list[LldpNeighbor]:
         name = _SYSTEM_NAME.search(block) or _CHASSIS.search(block)
         if not name:
             continue
+        chassis = _CHASSIS.search(block)
         remote = _PORT.search(block)
         description = _DESCRIPTION.search(block)
         capabilities = _CAPABILITIES.search(block)
@@ -62,6 +63,7 @@ def parse_lldp_detail(text: str) -> list[LldpNeighbor]:
         neighbors.append(
             LldpNeighbor(
                 remoteName=name.group(1).strip(),
+                chassisId=chassis.group(1).strip() if chassis else None,
                 localInterface=_short_interface(local.group(1)),
                 remoteInterface=remote.group(1).strip() if remote else None,
                 systemDescription=(

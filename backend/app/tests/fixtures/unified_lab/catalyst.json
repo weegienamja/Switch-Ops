@@ -1,0 +1,26 @@
+{
+  "fixture": "synthetic-unified-lab-v1",
+  "observedAt": "2026-01-15T12:00:00Z",
+  "switch": {
+    "hostname": "synthetic-catalyst-01",
+    "serial": "SYNTH-CAT-0001",
+    "model": "C3560CG-8PC-S",
+    "managementAddress": "192.0.2.10"
+  },
+  "lldpNeighbors": [
+    {
+      "localInterface": "Gi0/4",
+      "remoteName": "synthetic-mr44",
+      "chassisMac": "00:00:5e:00:53:44",
+      "remoteInterface": "eth0",
+      "managementAddress": "192.0.2.44",
+      "modelHint": "MR44"
+    }
+  ],
+  "interfaceDescriptions": [
+    {
+      "interface": "Gi0/3",
+      "description": "synthetic mx uplink hint only"
+    }
+  ]
+}

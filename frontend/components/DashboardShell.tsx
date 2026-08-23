@@ -26,6 +26,7 @@ import type {
   TopologyModel,
 } from "@/lib/types";
 import type { InterfaceStatusResponse } from "@/lib/api";
+import type { UnifiedLabState } from "@/lib/unifiedTypes";
 import { fadeUp } from "@/lib/animation";
 import AdvancedOperationsPanel from "./AdvancedOperationsPanel";
 import AuditTimeline from "./AuditTimeline";
@@ -44,6 +45,7 @@ import LoadingState from "./LoadingState";
 import LogsPanel from "./LogsPanel";
 import LiveStatusBadge from "./LiveStatusBadge";
 import MacTable from "./MacTable";
+import MerakiTopologyOverlay from "./MerakiTopologyOverlay";
 import NetworkEventTimeline from "./NetworkEventTimeline";
 import NetworkTwin from "./NetworkTwin";
 import ObservationHistoryPanel from "./ObservationHistoryPanel";
@@ -55,8 +57,9 @@ import SettingsPanel from "./SettingsPanel";
 import SetupWizard from "./SetupWizard";
 import SummaryCards from "./SummaryCards";
 import SwitchHero from "./SwitchHero";
+import UnifiedLabPanel from "./UnifiedLabPanel";
 
-type View = "overview" | "network" | "events" | "guide" | "change";
+type View = "overview" | "unified" | "network" | "events" | "guide" | "change";
 
 interface DashboardData {
   setup: SetupStatus;
@@ -80,10 +83,12 @@ interface DashboardData {
   configurationHistory: ConfigurationHistoryResponse;
   discovery: DiscoveryStatus;
   sectionErrors: Record<string, string>;
+  unified: UnifiedLabState | null;
 }
 
 const VIEWS: Array<{ id: View; label: string; description: string }> = [
   { id: "overview", label: "Overview", description: "Current and historical health" },
+  { id: "unified", label: "Unified inventory", description: "Catalyst + Meraki evidence" },
   { id: "network", label: "Visual network", description: "Your device, port by port" },
   { id: "events", label: "What changed", description: "Meaningful network events" },
   { id: "guide", label: "Command guide", description: "Read-only guided inspection" },
@@ -106,6 +111,8 @@ export default function DashboardShell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeView, setActiveView] = useState<View>("overview");
   const [selectedPort, setSelectedPort] = useState("");
+  const [unifiedBusy, setUnifiedBusy] = useState<string | null>(null);
+  const [unifiedError, setUnifiedError] = useState<string | null>(null);
   const live = useLiveOperations(Boolean(data?.setup && (data.setup.configured || data.setup.mockMode)));
   const liveMerged = useMemo(() => {
     if (!data?.topology || !data.interfaces || !data.poe) return null;
@@ -126,18 +133,17 @@ export default function DashboardShell() {
         api.dashboard(),
         api.guideOperations(),
       ]);
-      let history: TelemetryHistoryResponse | null = null;
-      try {
-        history = await api.telemetryHistory(dashboard.topology.rootDeviceId, 24);
-      } catch {
-        // History is a local enhancement; current switch telemetry remains usable.
-      }
-      let intent: ExpectedRelationship[] = [];
-      try {
-        intent = (await api.topologyIntent(dashboard.topology.rootDeviceId)).relationships;
-      } catch {
-        // Recorded intent is optional; reconciliation falls back to descriptions.
-      }
+      const [historyResult, intentResult, unifiedResult] = await Promise.allSettled([
+        api.telemetryHistory(dashboard.topology.rootDeviceId, 24),
+        api.topologyIntent(dashboard.topology.rootDeviceId),
+        api.unifiedLabState(),
+      ]);
+      const history: TelemetryHistoryResponse | null =
+        historyResult.status === "fulfilled" ? historyResult.value : null;
+      const intent: ExpectedRelationship[] =
+        intentResult.status === "fulfilled" ? intentResult.value.relationships : [];
+      const unified: UnifiedLabState | null =
+        unifiedResult.status === "fulfilled" ? unifiedResult.value : null;
       setData({
         setup,
         summary: dashboard.summary,
@@ -160,6 +166,7 @@ export default function DashboardShell() {
         configurationHistory: dashboard.configurationHistory,
         discovery: dashboard.discovery,
         sectionErrors: dashboard.sectionErrors,
+        unified,
       });
       setSelectedPort((current) =>
         dashboard.topology.interfaces.some((item) => item.port === current)
@@ -178,6 +185,36 @@ export default function DashboardShell() {
   useEffect(() => {
     void loadAll();
   }, []);
+
+  async function refreshMeraki() {
+    setUnifiedBusy("refresh");
+    setUnifiedError(null);
+    try {
+      await api.refreshMeraki();
+      const unified = await api.unifiedLabState();
+      setData((current) => current ? { ...current, unified } : current);
+    } catch (cause) {
+      setUnifiedError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setUnifiedBusy(null);
+    }
+  }
+
+  async function decideIdentity(
+    linkId: string,
+    decision: "confirm" | "reject" | "clear",
+  ) {
+    setUnifiedBusy(linkId);
+    setUnifiedError(null);
+    try {
+      const unified = await api.decideUnifiedIdentity(linkId, decision);
+      setData((current) => current ? { ...current, unified } : current);
+    } catch (cause) {
+      setUnifiedError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setUnifiedBusy(null);
+    }
+  }
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorState message={error} onRetry={() => void loadAll()} />;
@@ -279,6 +316,24 @@ export default function DashboardShell() {
             </>
           ) : null}
 
+          {activeView === "unified" ? (
+            <motion.div variants={fadeUp}>
+              {unifiedError ? (
+                <div className="warning-banner warning-banner--inline">{unifiedError}</div>
+              ) : null}
+              {data.unified ? (
+                <UnifiedLabPanel
+                  state={data.unified}
+                  busy={unifiedBusy}
+                  onRefreshMeraki={() => void refreshMeraki()}
+                  onDecision={(linkId, decision) => void decideIdentity(linkId, decision)}
+                />
+              ) : (
+                <section className="card"><p className="empty-note unified-empty">Unified evidence is temporarily unavailable. Catalyst views are unaffected.</p></section>
+              )}
+            </motion.div>
+          ) : null}
+
           {activeView === "network" ? (
             <>
               <motion.div variants={fadeUp}>
@@ -294,6 +349,11 @@ export default function DashboardShell() {
                   onIntentChange={() => void loadAll(true)}
                 />
               </motion.div>
+              {data.unified ? (
+                <motion.div variants={fadeUp}>
+                  <MerakiTopologyOverlay state={data.unified} />
+                </motion.div>
+              ) : null}
               <motion.div variants={fadeUp}>
                 <AdvancedOperationsPanel key={selectedPort} selected={selectedInterface} live={live} />
               </motion.div>

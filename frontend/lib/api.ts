@@ -36,6 +36,15 @@ import type {
   OperationResult,
   WriteLockStatus,
 } from "./types";
+import type {
+  MerakiConnectionTestResult,
+  MerakiNetwork,
+  MerakiOrganization,
+  MerakiRefreshResult,
+  MerakiSelection,
+  MerakiSetupStatus,
+  UnifiedLabState,
+} from "./unifiedTypes";
 
 export interface InterfaceStatusResponse {
   interfaces: import("./types").InterfaceStatus[];
@@ -100,6 +109,40 @@ export const api = {
     }),
   clearCredentials: () =>
     fetchJson<SetupStatus>("/api/setup/credentials", { method: "DELETE" }),
+  merakiStatus: () =>
+    fetchJson<MerakiSetupStatus>("/api/meraki/setup/status"),
+  saveMerakiApiKey: (apiKey: string) =>
+    fetchJson<MerakiSetupStatus>("/api/meraki/setup/credentials", {
+      method: "POST",
+      body: JSON.stringify({ apiKey }),
+    }),
+  clearMerakiApiKey: () =>
+    fetchJson<MerakiSetupStatus>("/api/meraki/setup/credentials", { method: "DELETE" }),
+  testMerakiConnection: () =>
+    fetchJson<MerakiConnectionTestResult>("/api/meraki/setup/test", { method: "POST" }),
+  merakiOrganizations: () =>
+    fetchJson<MerakiOrganization[]>("/api/meraki/organizations"),
+  merakiNetworks: (organizationId: string) =>
+    fetchJson<MerakiNetwork[]>(
+      `/api/meraki/networks?organizationId=${encodeURIComponent(organizationId)}`,
+    ),
+  saveMerakiSelection: (selection: MerakiSelection) =>
+    fetchJson<MerakiSetupStatus>("/api/meraki/selection", {
+      method: "PUT",
+      body: JSON.stringify(selection),
+    }),
+  refreshMeraki: () =>
+    fetchJson<MerakiRefreshResult>("/api/meraki/refresh", { method: "POST" }),
+  unifiedLabState: () =>
+    fetchJson<UnifiedLabState>("/api/unified-lab/state"),
+  decideUnifiedIdentity: (
+    linkId: string,
+    decision: "confirm" | "reject" | "clear",
+  ) =>
+    fetchJson<UnifiedLabState>("/api/unified-lab/identity-decision", {
+      method: "POST",
+      body: JSON.stringify({ linkId, decision }),
+    }),
   summary: () => fetchJson<SwitchSummary>("/api/switch/summary"),
   dashboard: () => fetchJson<DashboardResponse>("/api/switch/dashboard"),
   interfaces: () =>

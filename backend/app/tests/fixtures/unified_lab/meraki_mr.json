@@ -1,0 +1,27 @@
+{
+  "fixture": "synthetic-unified-lab-v1",
+  "observedAt": "2026-01-15T12:00:03Z",
+  "device": {
+    "serial": "SYNTH-MR-0001",
+    "name": "synthetic-mr44",
+    "model": "MR44",
+    "mac": "00:00:5e:00:53:44",
+    "lanIp": "192.0.2.44",
+    "networkId": "N_SYNTHETIC_001",
+    "productType": "wireless"
+  },
+  "availability": "online",
+  "lldpCdp": {
+    "sourcePort": "eth0",
+    "reportedNeighbor": "synthetic-catalyst-01",
+    "reportedNeighborPort": "Gi0/4"
+  },
+  "clients": [
+    {
+      "mac": "02:00:00:00:00:01",
+      "recentDeviceSerial": "SYNTH-MR-0001",
+      "ssid": "synthetic-lab",
+      "lastSeen": "2026-01-15T11:59:00Z"
+    }
+  ]
+}

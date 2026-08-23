@@ -10,9 +10,9 @@ raw CLI endpoint.
 Normal users do not need Python, Node.js, Rust, pnpm, or a source checkout.
 
 1. Open the repository's [Releases](https://github.com/weegienamja/Switch-Ops/releases) page.
-2. Open **SwitchOps v0.5.0 - Discovery & Identity**.
-3. Download `SwitchOps_0.5.0_x64-setup.exe` (NSIS) or
-   `SwitchOps_0.5.0_x64_en-US.msi` (MSI).
+2. Open **SwitchOps v0.6.0 - Change Assurance**.
+3. Download `SwitchOps_0.6.0_x64-setup.exe` (NSIS) or
+   `SwitchOps_0.6.0_x64_en-US.msi` (MSI).
 4. Install and launch SwitchOps.
 5. Enter the management IP or hostname, username, password, and optional
    enable secret for your own Cisco IOS switch.
@@ -46,7 +46,7 @@ Windows SmartScreen to show its standard publisher warning.
 
 ## v0.5.0: Discovery & Identity
 
-The current public release adds an evidence-aware identity and attachment model.
+v0.5.0 added an evidence-aware identity and attachment model.
 
 - Full nodes in the default **Observed** topology require current evidence of
   existence. An interface description alone stays on the port as expected
@@ -70,11 +70,10 @@ The current public release adds an evidence-aware identity and attachment model.
   right visual authority. Expected-only relationships are compact port records,
   not peers of currently observed endpoints.
 
-## v0.6.0 source: Change Assurance
+## v0.6.0: Change Assurance
 
-The current source tree adds durable, evidence-backed assurance around the
-existing bounded operation executor. It is not described as a published GitHub
-release unless a v0.6.0 tag and release actually exist.
+The current public release adds durable, evidence-backed assurance around the
+existing bounded operation executor.
 
 - Every plan targets one device interface and contains exactly one symbolic
   operation: admin up/down, PoE auto/off, or a sanitized description.
@@ -96,6 +95,40 @@ release unless a v0.6.0 tag and release actually exist.
   immutable.
 - A verified change affects running configuration only. Startup configuration
   remains unchanged until the operator separately unlocks and confirms Save.
+
+## v0.7.0 source: Unified Lab
+
+The current source tree adds an optional, read-only Meraki Dashboard evidence
+source alongside the existing Catalyst observation. It does not turn Meraki
+evidence into IOS write authority and does not contain a Meraki write path.
+
+- **Unified Inventory** retains Catalyst and Meraki provider records, source
+  health, freshness, compact claims, and structured provenance.
+- Exact serials and globally administered device/chassis MACs can confirm an
+  identity. Management addresses and reciprocal LLDP/CDP are supporting
+  evidence. Names and models are weak hints only. Strong disagreement merges
+  nothing.
+- Identity, attachment, relationship, availability, name, model, VLAN, and
+  port context reconcile independently as `AGREED`, `PROVIDER_ONLY`, `STALE`,
+  `AMBIGUOUS`, `CONFLICT`, or `UNKNOWN`.
+- Ambiguous identity candidates remain separate until the operator confirms or
+  rejects the relationship locally. A strong conflict cannot be overridden.
+- The Meraki boundary exposes only named GET operations for organization and
+  network selection, inventory, availability, MX uplinks/ports, LLDP/CDP,
+  applicable MS port status, and recent clients. There is no URL/endpoint
+  proxy.
+- Raw Dashboard payloads are discarded after normalization. Device serials,
+  hardware MACs, management addresses, and recent-client identifiers are
+  protected with a per-install local HMAC key. Recent-client usage, usernames,
+  IP addresses, and raw MAC addresses are not retained.
+- The Visual Network keeps its Catalyst geometry and adds an explicitly
+  labelled Meraki overlay. Change Control remains essentially unchanged.
+
+Configure the optional source in **Settings > Meraki evidence source**. The API
+key is accepted only when Windows Credential Manager is available; there is no
+file or environment fallback for it. See
+[docs/V0.7-UNIFIED-LAB.md](docs/V0.7-UNIFIED-LAB.md) for the evidence contract
+and security boundary.
 
 ## Interface write policy
 
@@ -144,23 +177,27 @@ and preserve existing v0.4.1 topology intent.
 
 ## Local data and privacy
 
-The packaged backend binds only to `127.0.0.1:8765`. It has no cloud service,
-analytics uploader, or remote telemetry destination.
+The packaged backend binds only to `127.0.0.1:8765`. It has no SwitchOps cloud
+service, analytics uploader, or remote telemetry destination. When the operator
+explicitly configures the optional Meraki source, the local backend makes only
+its allowlisted read requests to `api.meraki.com`.
 
 Runtime data is stored below `%LOCALAPPDATA%\SwitchOps`:
 
-- `data/` — local SQLite telemetry, durable change sessions, audits,
-  configuration history, topology intent, host-key pin, and the per-device
-  interface policy;
+- `data/` — local SQLite telemetry, durable change sessions, normalized
+  Unified Lab snapshots, local identity decisions, audits, configuration
+  history, topology intent, host-key pin, and the per-device interface policy;
 - `backups/` — running-configuration backups created on demand or before a
   bounded change;
 - `logs/` — redacted local application logs.
 
-Credentials use Windows Credential Manager when available. If the OS credential
-backend is unavailable, SwitchOps uses an access-restricted local fallback file
-and reports that storage choice in Settings. Passwords and enable secrets are
-never returned by the API. Configuration history and backups can contain
-sensitive network configuration and must be protected as private local data.
+IOS credentials use Windows Credential Manager when available. If that backend
+is unavailable, the IOS store uses an access-restricted local fallback file and
+reports the choice in Settings. The optional Meraki API key is stricter: it is
+stored only in Windows Credential Manager and is rejected if that store is
+unavailable. Secrets are never returned by the API. Configuration history,
+backups, selected provider scope, and normalized network evidence can contain
+sensitive local information and must be protected as private local data.
 
 Clearing credentials removes the stored login but does not delete telemetry,
 backups, policy, or configuration history. To reset all local application data,

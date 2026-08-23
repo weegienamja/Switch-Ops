@@ -3,7 +3,7 @@
 ## Supported versions
 
 Security fixes are provided for the latest published SwitchOps release. The
-currently supported release line is 0.4.1.
+currently supported public release line is 0.6.0.
 
 ## Report a vulnerability
 
@@ -30,11 +30,23 @@ behavior, and observed behavior. Redact all device-specific values.
 - Operations back up, verify, audit, and roll back where the bounded inverse is
   available. Startup configuration is never saved automatically.
 - Production builds disable fixture mode and do not bundle sample IOS output.
+- The optional Meraki integration accepts its API key only through Windows
+  Credential Manager. It implements named, allowlisted Dashboard API GET
+  operations, validates pagination origin, and has no generic proxy or write
+  method.
+- Meraki evidence cannot grant IOS write authority. A Meraki outage, rate limit,
+  malformed response, or persistence failure leaves the Catalyst-only paths
+  available.
+- Cross-provider serials, hardware MACs, management addresses, and recent-client
+  addresses are protected with a per-install HMAC before persistence. Raw
+  Meraki responses and privacy-rich client fields are discarded.
 
 ## Operator responsibilities
 
-Switch configuration backups, telemetry, audit records, host-key pins, and
-interface policy are sensitive local data under `%LOCALAPPDATA%\SwitchOps`.
+Switch configuration backups, telemetry, audit records, host-key pins,
+interface policy, selected Meraki scope, normalized provider evidence, and
+local identity decisions are sensitive local data under
+`%LOCALAPPDATA%\SwitchOps`.
 Protect the Windows account and disk, restrict switch SSH to a trusted
 management network, use a least-privileged device account where practical, and
 review backups before sharing them.

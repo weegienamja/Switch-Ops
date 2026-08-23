@@ -1,6 +1,36 @@
 # Changelog
 
-## 0.6.0 - Unreleased
+## 0.7.0 - Unreleased
+
+### Unified Lab
+
+- Added provider-neutral entities, compact claims, structured provenance,
+  source health, freshness, identity links, conflicts, and independent
+  `AGREED`, `PROVIDER_ONLY`, `STALE`, `AMBIGUOUS`, `CONFLICT`, and `UNKNOWN`
+  reconciliation states.
+- Added deterministic cross-provider identity rules. Exact serials and
+  globally administered chassis/device MACs can confirm identity; management
+  addresses, reciprocal adjacency, names, and models remain candidates. A
+  strong disagreement prevents merging.
+- Added a Windows Credential Manager-only Meraki API-key store, local
+  organization/network selection, and an explicit GET-only operation catalog.
+  The client validates paths and pagination origin, bounds retry/backoff and
+  `Retry-After`, and retains safe partial results.
+- Added immediate normalization for Meraki device inventory and availability,
+  MX uplinks and ports, MR status, LLDP/CDP, applicable MS port state, and
+  pseudonymous recent-client attachments. Raw provider responses, client
+  addresses, usage, usernames, and IP addresses are not persisted.
+- Added durable normalized provider snapshots and local operator decisions;
+  Meraki failure never removes or blocks the Catalyst-only experience.
+- Added Unified Inventory, provider/source health, per-attribute state,
+  identity candidates and local confirm/reject controls, conflicts, a richer
+  evidence inspector, and a separately labelled Meraki overlay for Visual
+  Network. Change Control remains on the existing Catalyst authorization path.
+- Added entirely synthetic Catalyst, MX68CW, and MR44 fixtures plus boundary,
+  privacy, normalization, identity, reconciliation, persistence, API, and UI
+  tests.
+
+## 0.6.0 - 2026-08-23
 
 ### Change Assurance
 

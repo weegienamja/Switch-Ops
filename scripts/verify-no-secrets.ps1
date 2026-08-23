@@ -9,6 +9,8 @@ $patterns = @(
     @{ Name = 'enable-secret-env'; Regex = 'SWITCH_ENABLE_SECRET\s*=\s*(?!__REPLACE)\S{4,}' },
     @{ Name = 'ios-enable-secret'; Regex = 'enable secret\s+\d+\s+(?!__REPLACE|<redacted>)[\$A-Za-z0-9./]{6,}' },
     @{ Name = 'ios-user-secret'; Regex = 'username\s+\w+\s+privilege\s+\d+\s+secret\s+\d+\s+(?!__REPLACE|<redacted>)[\$A-Za-z0-9./]{6,}' }
+    @{ Name = 'meraki-api-key-env'; Regex = 'MERAKI(?:_DASHBOARD)?_API_KEY\s*=\s*(?!__REPLACE)\S{8,}' }
+    @{ Name = 'meraki-api-key-literal'; Regex = 'X-Cisco-Meraki-API-Key["'']?\s*[:=]\s*["''][A-Za-z0-9._-]{16,}["'']' }
 )
 
 $exclude = @(
