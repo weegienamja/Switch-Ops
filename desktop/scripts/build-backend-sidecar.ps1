@@ -36,14 +36,13 @@ if (-not (Test-Path (Join-Path $venvDir "Scripts\python.exe"))) {
     if ($LASTEXITCODE -ne 0) { throw "Python 3.11 virtual environment creation failed" }
 }
 
-$py  = Join-Path $venvDir "Scripts\python.exe"
-$pip = Join-Path $venvDir "Scripts\pip.exe"
+$py = Join-Path $venvDir "Scripts\python.exe"
 
-& $pip install --upgrade pip | Out-Null
+& $py -m pip install --upgrade pip | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed with exit code $LASTEXITCODE" }
-& $pip install -r (Join-Path $backendDir "requirements.txt")
+& $py -m pip install -r (Join-Path $backendDir "requirements.txt")
 if ($LASTEXITCODE -ne 0) { throw "backend dependency install failed with exit code $LASTEXITCODE" }
-& $pip install pyinstaller==6.22.2
+& $py -m pip install pyinstaller==6.22.2
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller install failed with exit code $LASTEXITCODE" }
 
 Push-Location $backendDir
