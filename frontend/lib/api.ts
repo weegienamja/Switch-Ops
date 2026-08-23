@@ -29,6 +29,8 @@ import type {
   RuntimeInfo,
   ConfigSaveResult,
   ConfigSaveState,
+  ChangeSession,
+  ChangeSessionList,
   LiveSnapshot,
   OperationKind,
   OperationResult,
@@ -188,6 +190,27 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ kind, value: value || null }),
     }),
+  createChangeSession: (port: string, kind: OperationKind, value?: string) =>
+    fetchJson<ChangeSession>("/api/change-sessions", {
+      method: "POST",
+      body: JSON.stringify({
+        steps: [{ interface: port, kind, value: value || null }],
+      }),
+    }),
+  preflightChangeSession: (sessionId: string) =>
+    fetchJson<ChangeSession>(
+      `/api/change-sessions/${encodeURIComponent(sessionId)}/preflight`,
+      { method: "POST" },
+    ),
+  executeChangeSession: (sessionId: string) =>
+    fetchJson<ChangeSession>(
+      `/api/change-sessions/${encodeURIComponent(sessionId)}/execute`,
+      { method: "POST" },
+    ),
+  changeSession: (sessionId: string) =>
+    fetchJson<ChangeSession>(`/api/change-sessions/${encodeURIComponent(sessionId)}`),
+  changeSessions: (limit = 50) =>
+    fetchJson<ChangeSessionList>(`/api/change-sessions?limit=${limit}`),
   configState: () => fetchJson<ConfigSaveState>("/api/config/state"),
   refreshConfigState: () =>
     fetchJson<ConfigSaveState>("/api/config/state/refresh", { method: "POST" }),

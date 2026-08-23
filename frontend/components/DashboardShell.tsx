@@ -30,6 +30,7 @@ import { fadeUp } from "@/lib/animation";
 import AdvancedOperationsPanel from "./AdvancedOperationsPanel";
 import AuditTimeline from "./AuditTimeline";
 import ConfigBackupPanel from "./ConfigBackupPanel";
+import ChangeHistoryPanel from "./ChangeHistoryPanel";
 import ConfigurationHistoryPanel from "./ConfigurationHistoryPanel";
 import DeploymentPlanPanel from "./DeploymentPlanPanel";
 import DiscoveryStatusPanel from "./DiscoveryStatusPanel";
@@ -370,14 +371,21 @@ export default function DashboardShell() {
                   <div className="eyebrow">How a change happens here</div>
                   <ol className="change-flow">
                     <li><strong>Learn</strong><span>Understand the port in the command guide</span></li>
-                    <li><strong>Plan</strong><span>Describe the intent and validate it</span></li>
-                    <li><strong>Review</strong><span>Read the proposed IOS and the impact</span></li>
-                    <li><strong>Apply</strong><span>Use bounded controls in Visual network</span></li>
+                    <li><strong>Plan</strong><span>Declare one bounded operation and its expected effects</span></li>
+                    <li><strong>Preflight</strong><span>Check policy, control path, rollback and current evidence</span></li>
+                    <li><strong>Execute</strong><span>Unlock explicitly and run the trusted transaction</span></li>
+                    <li><strong>Assure</strong><span>Compare before/after evidence and retain the outcome</span></li>
                   </ol>
                 </div>
               </motion.div>
               <motion.div variants={fadeUp}>
+                <AdvancedOperationsPanel key={`change-${selectedPort}`} selected={selectedInterface} live={live} />
+              </motion.div>
+              <motion.div variants={fadeUp}>
                 <DeploymentPlanPanel interfaces={currentInterfaces.interfaces} />
+              </motion.div>
+              <motion.div variants={fadeUp}>
+                <ChangeHistoryPanel active={live.changeSession} />
               </motion.div>
               <div className="grid grid--12">
                 <motion.div className="col-7" variants={fadeUp}>

@@ -10,9 +10,9 @@ raw CLI endpoint.
 Normal users do not need Python, Node.js, Rust, pnpm, or a source checkout.
 
 1. Open the repository's [Releases](https://github.com/weegienamja/Switch-Ops/releases) page.
-2. Open **SwitchOps v0.4.1 - Live Operations**.
-3. Download `SwitchOps_0.4.1_x64-setup.exe` (NSIS) or
-   `SwitchOps_0.4.1_x64_en-US.msi` (MSI).
+2. Open **SwitchOps v0.5.0 - Discovery & Identity**.
+3. Download `SwitchOps_0.5.0_x64-setup.exe` (NSIS) or
+   `SwitchOps_0.5.0_x64_en-US.msi` (MSI).
 4. Install and launch SwitchOps.
 5. Enter the management IP or hostname, username, password, and optional
    enable secret for your own Cisco IOS switch.
@@ -44,11 +44,9 @@ Windows SmartScreen to show its standard publisher warning.
   configuration is separate, explicit, and confirmed; SwitchOps never saves
   automatically.
 
-## v0.5.0 source: Discovery & Identity
+## v0.5.0: Discovery & Identity
 
-The current source tree adds an evidence-aware identity and attachment model.
-It has not been described here as a published GitHub release unless a v0.5.0
-tag and release actually exist.
+The current public release adds an evidence-aware identity and attachment model.
 
 - Full nodes in the default **Observed** topology require current evidence of
   existence. An interface description alone stays on the port as expected
@@ -71,6 +69,33 @@ tag and release actually exist.
 - **Observed**, **Reconciled**, and **Expected** network modes give intent the
   right visual authority. Expected-only relationships are compact port records,
   not peers of currently observed endpoints.
+
+## v0.6.0 source: Change Assurance
+
+The current source tree adds durable, evidence-backed assurance around the
+existing bounded operation executor. It is not described as a published GitHub
+release unless a v0.6.0 tag and release actually exist.
+
+- Every plan targets one device interface and contains exactly one symbolic
+  operation: admin up/down, PoE auto/off, or a sanitized description.
+- Planning and preflight are read-only and do not require the process-local
+  unlock. Preflight explains attachments, learned-behind entities, uplink and
+  control-path evidence, topology uncertainty, rollback availability, and
+  running/startup divergence.
+- Confirmed local-host or gateway-path evidence blocks disruptive operations
+  before IOS configuration. Discovery can block a write but can never grant
+  write authority or change interface policy.
+- Execution rechecks all evidence while holding the existing write and policy
+  gates, then uses the trusted v0.5 bounded executor for backup, IOS response
+  classification, direct verification, audit, and bounded rollback.
+- Normalized before/after snapshots distinguish declared effects from unrelated
+  changes. Unrelated differences produce warnings without claiming causality;
+  missing final proof produces an honest `INDETERMINATE` result.
+- Sessions and blocked plans are retained in private local history. Interrupted
+  in-flight records recover as `INDETERMINATE`, and terminal audit records are
+  immutable.
+- A verified change affects running configuration only. Startup configuration
+  remains unchanged until the operator separately unlocks and confirms Save.
 
 ## Interface write policy
 
@@ -124,8 +149,9 @@ analytics uploader, or remote telemetry destination.
 
 Runtime data is stored below `%LOCALAPPDATA%\SwitchOps`:
 
-- `data/` — local SQLite telemetry, audits, configuration history, topology
-  intent, host-key pin, and the per-device interface policy;
+- `data/` — local SQLite telemetry, durable change sessions, audits,
+  configuration history, topology intent, host-key pin, and the per-device
+  interface policy;
 - `backups/` — running-configuration backups created on demand or before a
   bounded change;
 - `logs/` — redacted local application logs.

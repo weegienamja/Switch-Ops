@@ -239,6 +239,158 @@ export interface OperationProgress {
   result?: OperationResult;
 }
 
+export type ChangeSessionStatus =
+  | "planned"
+  | "preflight"
+  | "blocked"
+  | "ready"
+  | "executing"
+  | "verifying"
+  | "rolling_back"
+  | "rolled_back"
+  | "succeeded"
+  | "succeeded_with_warnings"
+  | "indeterminate";
+
+export interface ChangeStep {
+  interface: string;
+  kind: OperationKind;
+  value?: string | null;
+}
+
+export interface ExpectedChangeEffect {
+  category: "configuration" | "interface" | "topology" | "health";
+  field: string;
+  expectation: string;
+  required: boolean;
+}
+
+export interface ChangePlan {
+  id: string;
+  deviceId: string;
+  targetInterface: string;
+  steps: ChangeStep[];
+  declaredIntent: {
+    summary: string;
+    expectedPostconditions: ExpectedChangeEffect[];
+    unacceptableEffects: string[];
+  };
+  createdAt: string;
+}
+
+export interface PreflightCheck {
+  code: string;
+  label: string;
+  status: "pass" | "warn" | "info" | "block";
+  detail: string;
+  evidence: string[];
+}
+
+export interface BlastRadius {
+  targetInterface: string;
+  attachedEndpoints: number;
+  learnedBehind: number;
+  expectedRelationship?: string | null;
+  controlPath: "clear" | "possible" | "confirmed" | "unknown";
+  controlPathDetail: string;
+  confidenceLimitations: string[];
+}
+
+export interface AssuranceInterfaceSnapshot {
+  port: string;
+  present: boolean;
+  adminState: string;
+  operState: string;
+  description: string;
+  vlan: string;
+  speed: string;
+  duplex: string;
+  poeAdmin: string;
+  poeOper: string;
+  errorTotal: number;
+  learnedMacCount: number;
+}
+
+export interface AssuranceSnapshot {
+  capturedAt: string;
+  deviceId: string;
+  targetInterface: string;
+  configuration: {
+    runningFingerprint: string;
+    startupFingerprint: string;
+    runningDiffersFromStartup: boolean;
+    rollbackRepresentable: boolean;
+  };
+  target: AssuranceInterfaceSnapshot;
+  otherInterfaces: AssuranceInterfaceSnapshot[];
+  topology: {
+    relationships: string[];
+    attachedEntityIds: string[];
+    learnedBehindEntityIds: string[];
+    expectedRelationship?: string | null;
+    reconciliationState?: string | null;
+    targetRole: string;
+    localHostCorrelated: boolean;
+    otherTopologyFingerprint: string;
+  };
+  health: {
+    connectionState: string;
+    deviceHealth: string;
+    targetHealth: string;
+    targetErrorTotal: number;
+  };
+  evidence: {
+    topologyObservedAt?: string | null;
+    freshness: string;
+    evidenceIds: string[];
+  };
+}
+
+export interface ChangePreflight {
+  evaluatedAt: string;
+  outcome: "ready" | "blocked";
+  checks: PreflightCheck[];
+  impact: BlastRadius;
+  snapshot?: AssuranceSnapshot | null;
+}
+
+export interface ChangeDifference {
+  scope: "target" | "unrelated" | "configuration" | "topology" | "health";
+  field: string;
+  before?: unknown;
+  after?: unknown;
+  assessment: "expected" | "warning" | "info";
+  detail: string;
+  interface?: string | null;
+}
+
+export interface ChangeComparison {
+  evaluatedAt: string;
+  directPostcondition: "met" | "not_met" | "unknown";
+  differences: ChangeDifference[];
+  warnings: string[];
+  summary: string;
+}
+
+export interface ChangeSession {
+  id: string;
+  plan: ChangePlan;
+  status: ChangeSessionStatus;
+  preflight?: ChangePreflight | null;
+  beforeSnapshot?: AssuranceSnapshot | null;
+  afterSnapshot?: AssuranceSnapshot | null;
+  comparison?: ChangeComparison | null;
+  operationResult?: OperationResult | null;
+  operationStages: OperationStage[];
+  outcomeDetail: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChangeSessionList {
+  sessions: ChangeSession[];
+}
+
 export interface WriteLockStatus {
   capability: boolean;
   unlocked: boolean;

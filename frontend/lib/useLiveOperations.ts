@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, backendEventStreamUrl } from "./api";
 import type {
   ConfigSaveState,
+  ChangeSession,
   LiveConnection,
   LiveFreshness,
   LiveInterfaceState,
@@ -45,6 +46,7 @@ export function useLiveOperations(enabled: boolean) {
   const [connection, setConnection] = useState<LiveConnection>(OFFLINE);
   const [streamState, setStreamState] = useState<StreamState>("connecting");
   const [operation, setOperation] = useState<OperationProgress | null>(null);
+  const [changeSession, setChangeSession] = useState<ChangeSession | null>(null);
   const [lock, setLock] = useState<WriteLockStatus>(LOCKED);
   const [config, setConfig] = useState<ConfigSaveState>(UNKNOWN_CONFIG);
   const [lastEventAt, setLastEventAt] = useState<string | null>(null);
@@ -122,6 +124,7 @@ export function useLiveOperations(enabled: boolean) {
         result,
       }),
     );
+    listen<ChangeSession>("change_session", setChangeSession);
     listen<WriteLockStatus>("control_lock", setLock);
     listen<ConfigSaveState>("config_state", setConfig);
     listen<{ lldp: LldpDiscoveryStatus }>("discovery_state", (payload) =>
@@ -175,6 +178,13 @@ export function useLiveOperations(enabled: boolean) {
     return result;
   }, []);
 
+  const runChangeSession = useCallback(async (sessionId: string) => {
+    const result = await api.executeChangeSession(sessionId);
+    setChangeSession(result);
+    if (result.operationResult?.requiresSave) setConfig(await api.configState());
+    return result;
+  }, []);
+
   const refreshConfig = useCallback(async () => {
     const next = await api.refreshConfigState();
     setConfig(next);
@@ -187,6 +197,7 @@ export function useLiveOperations(enabled: boolean) {
     connection,
     streamState,
     operation,
+    changeSession,
     lock,
     config,
     lastEventAt,
@@ -195,6 +206,7 @@ export function useLiveOperations(enabled: boolean) {
     unlock,
     lockNow,
     runOperation,
+    runChangeSession,
     save,
     refreshConfig,
   };

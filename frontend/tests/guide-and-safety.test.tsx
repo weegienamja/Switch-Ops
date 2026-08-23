@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import AdvancedOperationsPanel from "@/components/AdvancedOperationsPanel";
 import LabGuide from "@/components/LabGuide";
 import type { LiveOperationsController } from "@/lib/useLiveOperations";
-import type { GuideOperation, InterfaceStatus, NetworkInterface } from "@/lib/types";
+import type { ChangeSession, GuideOperation, InterfaceStatus, NetworkInterface } from "@/lib/types";
 
 const interfaceStatus: InterfaceStatus = {
   port: "Gi0/4",
@@ -68,16 +68,67 @@ function liveController(
     connection: { state: "live", queueDepth: 0 },
     streamState: "open",
     operation: null,
+    changeSession: null,
     lock: { capability: false, unlocked: false },
     config: { runningModified: false, pendingOperations: 0, detail: "Configurations match." },
     lastEventAt: null,
     unlock: vi.fn(),
     lockNow: vi.fn(),
     runOperation: vi.fn(),
+    runChangeSession: vi.fn(),
     save: vi.fn(),
     refreshConfig: vi.fn(),
     ...overrides,
   } as LiveOperationsController;
+}
+
+function changeSession(
+  status: ChangeSession["status"] = "ready",
+  controlPath: "clear" | "confirmed" = "clear",
+): ChangeSession {
+  return {
+    id: "change-test",
+    plan: {
+      id: "plan-test",
+      deviceId: "switch-synthetic",
+      targetInterface: "Gi0/4",
+      steps: [{ interface: "Gi0/4", kind: "admin_down" }],
+      declaredIntent: {
+        summary: "Administratively disable Gi0/4.",
+        expectedPostconditions: [
+          { category: "interface", field: "adminState", expectation: "down", required: true },
+        ],
+        unacceptableEffects: ["Any unrelated interface changes."],
+      },
+      createdAt: "2026-08-23T12:00:00Z",
+    },
+    status,
+    preflight: {
+      evaluatedAt: "2026-08-23T12:00:01Z",
+      outcome: status === "blocked" ? "blocked" : "ready",
+      checks: [
+        {
+          code: "control_path",
+          label: "Control path",
+          status: controlPath === "confirmed" ? "block" : "pass",
+          detail: controlPath === "confirmed" ? "The local control path is on this port." : "No control-path evidence found.",
+          evidence: [],
+        },
+      ],
+      impact: {
+        targetInterface: "Gi0/4",
+        attachedEndpoints: 1,
+        learnedBehind: 0,
+        controlPath,
+        controlPathDetail: controlPath === "confirmed" ? "Current evidence confirms the control path." : "No current evidence places the control path here.",
+        confidenceLimitations: [],
+      },
+    },
+    operationStages: [],
+    outcomeDetail: status === "blocked" ? "Preflight blocked execution." : "Preflight passed.",
+    createdAt: "2026-08-23T12:00:00Z",
+    updatedAt: "2026-08-23T12:00:01Z",
+  };
 }
 
 describe("Lab Guide stays read-only learning", () => {
@@ -113,7 +164,7 @@ describe("Lab Guide stays read-only learning", () => {
 });
 
 describe("advanced operations", () => {
-  it("keeps all physical write controls disabled when write mode is off", () => {
+  it("allows read-only planning while write mode is off but offers no execution", () => {
     render(
       <AdvancedOperationsPanel
         selected={selected}
@@ -121,10 +172,12 @@ describe("advanced operations", () => {
       />,
     );
     const actionButtons = screen.getAllByRole("button").filter((button) =>
-      /Enable port|Disable port|PoE Auto|PoE Off|Review/i.test(button.textContent || ""),
+      /Review enable|Review disable|Review PoE auto|Review PoE off|Review/i.test(button.textContent || ""),
     );
     expect(actionButtons.length).toBeGreaterThan(0);
-    expect(actionButtons.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    expect(actionButtons.some((button) => !(button as HTMLButtonElement).disabled)).toBe(true);
+    expect(screen.queryByRole("button", { name: /Execute reviewed change/i })).toBeNull();
+    expect(screen.getByText(/change plans and preflight evidence remain available/i)).toBeTruthy();
   });
 
   it("states the generalized policy boundary without naming a private port layout", () => {
@@ -140,7 +193,7 @@ describe("advanced operations", () => {
     expect(document.body.textContent).not.toMatch(/Gi0\/1, Gi0\/2 and Vlan1/);
   });
 
-  it("never offers an apply action for the protected interfaces", () => {
+  it("allows protected-interface assessment but never offers execution", () => {
     render(
       <AdvancedOperationsPanel
         selected={{ ...selected, port: "Gi0/1", protected: true, policyState: "PROTECTED" }}
@@ -148,7 +201,40 @@ describe("advanced operations", () => {
       />,
     );
     expect(screen.getByText(/protected by the local device policy/i)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Enable port" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Disable port" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Review enable" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Review disable" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: /Execute reviewed change/i })).toBeNull();
+  });
+
+  it("shows ready preflight evidence but keeps Execute disabled while locked", () => {
+    render(
+      <AdvancedOperationsPanel
+        selected={selected}
+        live={liveController({
+          lock: { capability: true, unlocked: false },
+          changeSession: changeSession("ready"),
+        })}
+      />,
+    );
+    expect(screen.getByText("READY")).toBeTruthy();
+    expect(screen.getByText(/No current evidence places the control path here/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Execute reviewed change/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Unlock control before execution/)).toBeTruthy();
+  });
+
+  it("surfaces a confirmed control-path blocker and never offers Execute", () => {
+    render(
+      <AdvancedOperationsPanel
+        selected={selected}
+        live={liveController({
+          lock: { capability: true, unlocked: true },
+          changeSession: changeSession("blocked", "confirmed"),
+        })}
+      />,
+    );
+    expect(screen.getByText("BLOCKED")).toBeTruthy();
+    expect(screen.getAllByText(/Current evidence confirms the control path/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Execute reviewed change/i })).toBeNull();
+    expect(screen.getByText(/No IOS configuration was attempted/)).toBeTruthy();
   });
 });

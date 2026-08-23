@@ -1,6 +1,35 @@
 # Changelog
 
-## 0.5.0 - Unreleased
+## 0.6.0 - Unreleased
+
+### Change Assurance
+
+- Added durable, single-device, single-step change sessions above the existing
+  bounded operation executor. Plans support only administrative up/down, PoE
+  auto/off, and sanitized interface descriptions; arbitrary CLI remains absent.
+- Added unlock-free, read-only preflight with explicit PASS, WARN, INFO, and
+  BLOCK evidence for device state, interface policy, rollback representation,
+  discovery freshness, observed attachments, uplink indicators, topology
+  uncertainty, control-path correlation, and running/startup divergence.
+- Added evidence-backed blast-radius explanations without invented risk scores.
+  Confirmed local-host or gateway paths block disruptive admin-down and PoE-off
+  plans before any IOS configuration is attempted.
+- Added normalized before/after snapshots for target and unrelated interfaces,
+  configuration fingerprints, topology, health, and evidence timestamps. Raw
+  configurations and MAC addresses are not stored in the change-session DB.
+- Added conservative comparison outcomes: verified direct changes can succeed,
+  unrelated observations produce warnings without causal claims, verified
+  primitive rollback is reported as rolled back, and lost proof is explicitly
+  indeterminate.
+- Added crash recovery and immutable terminal audit records in a private local
+  `change-sessions.sqlite` history store.
+- Added Change Control review, preflight, execution, assurance, and durable
+  history UI. Planning stays available while writes are locked or policy-blocked;
+  execution still requires every backend write gate.
+- Kept startup saves separate and explicit. Change sessions modify and verify
+  running configuration only and never invoke an automatic save.
+
+## 0.5.0 - 2026-08-23
 
 ### Discovery and identity
 

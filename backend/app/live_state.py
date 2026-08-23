@@ -203,6 +203,10 @@ class LiveState:
             "detail": "LLDP has not been collected yet.",
         }
         self.topology: Optional[dict[str, Any]] = None
+        # Cached deep-observation context used only for read-only Change
+        # Assurance impact analysis. It never authorizes an interface.
+        self.health: Optional[dict[str, Any]] = None
+        self.reconciliation: Optional[dict[str, Any]] = None
 
     # -- updates ----------------------------------------------------------
 
@@ -274,6 +278,16 @@ class LiveState:
             self.topology = payload
         self.hub.publish("topology_state", payload)
 
+    def apply_assurance_context(
+        self,
+        *,
+        health: dict[str, Any],
+        reconciliation: dict[str, Any],
+    ) -> None:
+        with self._lock:
+            self.health = health
+            self.reconciliation = reconciliation
+
     # -- reads ------------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
@@ -286,6 +300,10 @@ class LiveState:
                 "operationInProgress": self.operation_in_progress,
                 "discovery": {"lldp": dict(self.lldp)},
                 "topology": dict(self.topology) if self.topology else None,
+                "health": dict(self.health) if self.health else None,
+                "reconciliation": (
+                    dict(self.reconciliation) if self.reconciliation else None
+                ),
             }
 
 

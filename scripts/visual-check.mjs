@@ -43,7 +43,14 @@ const VIEWPORTS = [
 /** Tab label -> screenshot slug. Labels match the nav buttons. */
 const VIEWS = [
   { label: "Overview", slug: "overview" },
-  { label: "Visual network", slug: "network" },
+  {
+    label: "Visual network",
+    slug: "network",
+    // Keep a selected physical interface for the later Change Control view so
+    // the assurance planner itself, not only its empty state, is rendered.
+    prepare: `document.querySelector("[data-port]")?.click(), true`,
+    settle: 500,
+  },
   { label: "What changed", slug: "events" },
   { label: "Command guide", slug: "guide" },
   {
@@ -51,8 +58,13 @@ const VIEWS = [
     slug: "change-control",
     // Exercise the dry-run planner so its output is inspected too. This is a
     // read-only allowlisted operation.
-    prepare: `[...document.querySelectorAll("button")]
-      .find((button) => /generate dry-run plan/i.test(button.textContent || ""))?.click(), true`,
+    prepare: `(() => {
+      [...document.querySelectorAll("button")]
+        .find((button) => /review disable/i.test(button.textContent || ""))?.click();
+      [...document.querySelectorAll("button")]
+        .find((button) => /generate dry-run plan/i.test(button.textContent || ""))?.click();
+      return true;
+    })()`,
     settle: 2500,
   },
 ];

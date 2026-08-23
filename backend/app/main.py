@@ -22,6 +22,8 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .audit_store import get_audit_store
+from .change_assurance import get_change_assurance_service
+from .change_models import ChangePlanRequest, ChangeSession, ChangeSessionList
 from .command_registry import assert_interface_readable, short_interface
 from .configuration_history import get_configuration_history_store
 from .connection_test import run_connection_test
@@ -91,7 +93,7 @@ from .models import (
     InterfacePolicyUpdate,
     WriteLockStatus,
 )
-from .interface_policy import get_interface_policy_store
+from .interface_policy import device_key, get_interface_policy_store
 from .operations import (
     OPERATIONS,
     assert_interface_operable,
@@ -155,7 +157,7 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="SwitchOps",
-    version="0.5.0",
+    version="0.6.0",
     description="Local-only network operations sidecar. Allowlisted commands only.",
     docs_url="/docs" if settings.enable_api_docs else None,
     redoc_url=None,
@@ -243,6 +245,22 @@ _UNSUPPORTED_IOS_OUTPUT = re.compile(
 def _current_device_host() -> str | None:
     host = get_credential_store().status().get("switch_host")
     return str(host) if host else None
+
+
+def _assurance_context() -> dict:
+    payload = get_live_state().snapshot()
+    payload["connection"] = get_device_session().status()
+    return payload
+
+
+def _current_change_device_id() -> str:
+    host = _current_device_host()
+    if not host:
+        raise CommandNotAllowedError("Configure a device before creating a change plan.")
+    # Bind durable plans to the configured connection target without ever
+    # persisting the clear-text address. Cached discovery identity is not an
+    # authorization scope and may outlive a credential/device switch.
+    return f"device-{device_key(host)[:16]}"
 
 
 def _annotate_interface_policy(interfaces: list) -> None:
@@ -590,6 +608,11 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
     if section_errors:
         unavailable = ", ".join(section_errors)
         summary.summary = f"{summary.summary} Partial telemetry: {unavailable} unavailable."
+
+    live_state.apply_assurance_context(
+        health=summary.health.model_dump(by_alias=True, mode="json"),
+        reconciliation=reconciliation.model_dump(by_alias=True, mode="json"),
+    )
 
     return DashboardResponse(
         summary=summary,
@@ -1451,6 +1474,149 @@ def get_operations_catalog():
         "arbitraryCli": False,
         "automaticSave": False,
     }
+
+
+# --- Change Assurance ----------------------------------------------------
+
+
+def _publish_change_session(session: ChangeSession) -> None:
+    live = get_live_state()
+    payload = session.model_dump(by_alias=True, mode="json")
+    live.hub.publish("change_session", payload)
+    step = session.plan.steps[0]
+    if session.status in {"executing", "verifying", "rolling_back"} or session.operation_result:
+        live.hub.publish(
+            "operation_progress",
+            {
+                "kind": step.kind,
+                "interface": session.plan.target_interface,
+                "stages": [stage.model_dump(mode="json") for stage in session.operation_stages],
+                "status": "running"
+                if session.status in {"executing", "verifying", "rolling_back"}
+                else session.operation_result.status,
+            },
+        )
+
+
+@app.post(
+    "/api/change-sessions",
+    response_model=ChangeSession,
+    response_model_by_alias=True,
+)
+def post_change_session(req: ChangePlanRequest):
+    session = get_change_assurance_service().create_plan(
+        req,
+        device_id=_current_change_device_id(),
+    )
+    get_live_state().hub.publish(
+        "change_session", session.model_dump(by_alias=True, mode="json")
+    )
+    return session
+
+
+@app.get(
+    "/api/change-sessions",
+    response_model=ChangeSessionList,
+    response_model_by_alias=True,
+)
+def get_change_sessions(limit: int = Query(default=50, ge=1, le=200)):
+    return ChangeSessionList(
+        sessions=get_change_assurance_service().store.recent(limit=limit)
+    )
+
+
+@app.get(
+    "/api/change-sessions/{session_id}",
+    response_model=ChangeSession,
+    response_model_by_alias=True,
+)
+def get_change_session(session_id: str):
+    session = get_change_assurance_service().store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Change session not found.")
+    return session
+
+
+@app.post(
+    "/api/change-sessions/{session_id}/preflight",
+    response_model=ChangeSession,
+    response_model_by_alias=True,
+)
+def post_change_preflight(session_id: str):
+    service = get_change_assurance_service()
+    try:
+        return on_device(
+            "change-preflight",
+            lambda client: service.run_preflight(
+                session_id,
+                client,
+                context=_assurance_context(),
+                listener=_publish_change_session,
+            ),
+            priority=JobPriority.DIAGNOSTIC,
+            timeout=240.0,
+        )
+    except SwitchOpsError:
+        session = service.block_preflight_unavailable(session_id)
+        _publish_change_session(session)
+        return session
+
+
+@app.post(
+    "/api/change-sessions/{session_id}/execute",
+    response_model=ChangeSession,
+    response_model_by_alias=True,
+)
+def post_change_execute(session_id: str):
+    # An unlock is deliberately unnecessary for planning/preflight and is
+    # checked only at the irreversible operator choice to execute.
+    get_write_lock().require_unlocked()
+    service = get_change_assurance_service()
+    existing = service.store.get(session_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Change session not found.")
+    step = existing.plan.steps[0]
+    live = get_live_state()
+    collector = get_collector()
+    live.operation_in_progress = f"{step.kind}:{existing.plan.target_interface}"
+    if collector is not None:
+        collector.pause()
+    try:
+        try:
+            session = on_device(
+                f"change-{step.kind}",
+                lambda client: service.execute(
+                    session_id,
+                    client,
+                    context_provider=_assurance_context,
+                    listener=_publish_change_session,
+                ),
+                priority=JobPriority.TRANSACTION,
+                timeout=300.0,
+            )
+        except SwitchOpsError:
+            session = service.block_before_execution(
+                session_id,
+                "Execution was blocked before IOS configuration because the control session or a mandatory write gate was unavailable.",
+            )
+            _publish_change_session(session)
+        result = session.operation_result
+        if result is not None and result.requires_save:
+            get_save_tracker().record_change(result.at)
+        if result is not None:
+            live.hub.publish(
+                "operation_complete", result.model_dump(by_alias=True, mode="json")
+            )
+        live.hub.publish(
+            "config_state",
+            get_save_tracker().state().model_dump(by_alias=True, mode="json"),
+        )
+        return session
+    finally:
+        live.operation_in_progress = None
+        if collector is not None:
+            collector.resume()
+            collector.collect_fast()
 
 
 @app.post(

@@ -75,7 +75,11 @@ class WriteLock:
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        # Change Assurance holds this guard across its before snapshot,
+        # primitive operation, and after snapshot. The primitive deliberately
+        # re-enters the same guard, so an RLock preserves one continuous
+        # authorisation window without creating a bypass around run_operation.
+        self._lock = threading.RLock()
         self._unlocked = False
         self._unlocked_at: Optional[datetime] = None
 
@@ -788,31 +792,32 @@ def get_save_tracker() -> ConfigSaveTracker:
     return _save_tracker
 
 
+def configuration_fingerprint(text: str) -> str:
+    """SHA-256 of configuration content after removing volatile IOS lines."""
+    import hashlib
+
+    lines = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("!"):
+            continue
+        if stripped.startswith(("Current configuration", "Using ", "Building configuration")):
+            continue
+        if stripped.startswith("ntp clock-period"):
+            continue
+        lines.append(stripped)
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
 def config_fingerprints(client: SwitchClient, actor: str = "system") -> tuple[str, str]:
     """SHA-256 of the normalised running and startup configurations.
 
     Volatile lines are stripped so a timestamp does not read as a change, and
     only the digests ever leave this function.
     """
-    import hashlib
-
-    def digest(text: str) -> str:
-        lines = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            # Drop the banner and the counters IOS regenerates on every read.
-            if not stripped or stripped.startswith("!"):
-                continue
-            if stripped.startswith(("Current configuration", "Using ", "Building configuration")):
-                continue
-            if stripped.startswith("ntp clock-period"):
-                continue
-            lines.append(stripped)
-        return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
-
     running = run_and_audit(client, symbol="show_running_config", actor=actor)
     startup = run_and_audit(client, symbol="show_startup_config", actor=actor)
-    return digest(running), digest(startup)
+    return configuration_fingerprint(running), configuration_fingerprint(startup)
 
 
 def save_running_config(client: SwitchClient, actor: str = "operator") -> tuple[bool, str]:
