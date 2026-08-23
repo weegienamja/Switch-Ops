@@ -25,6 +25,16 @@ from backend.app.models import InterfaceStatus, PoePort
 NOW = datetime(2026, 8, 22, 18, 0, tzinfo=timezone.utc)
 
 
+def wait_for(predicate, *, timeout: float = 5.0) -> None:
+    """Wait for an asynchronous collector assertion without timing races."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    pytest.fail("asynchronous collector condition did not complete in time")
+
+
 def iface(port: str, status: str = "connected", **kw) -> InterfaceStatus:
     return InterfaceStatus(
         port=port,
@@ -259,7 +269,7 @@ def wired(monkeypatch):
 def test_the_fast_tier_reads_only_one_command(wired):
     collector, _session, _state, commands = wired
     collector.collect_fast()
-    time.sleep(0.4)
+    wait_for(lambda: len(commands) == 1)
     assert commands == ["show_interfaces_status"], (
         "the fast tier must stay one command; anything else changes its cost profile"
     )
@@ -287,7 +297,7 @@ def test_pausing_stops_collection_during_a_transaction(wired):
     time.sleep(0.6)
     assert commands == [], "collectors ran while a transaction held the device"
     collector.resume()
-    time.sleep(0.6)
+    wait_for(lambda: bool(commands))
     assert commands, "collectors did not resume"
 
 
@@ -295,9 +305,9 @@ def test_the_medium_tier_rotates_rather_than_running_everything(wired):
     """`show processes cpu` costs 147 ms and spikes the switch's own CPU to
     63%, so it earns a slot in the rotation rather than a tick."""
     collector, _session, _state, commands = wired
-    for _ in range(4):
+    for expected_count in range(1, 5):
         collector.collect_medium()
-        time.sleep(0.25)
+        wait_for(lambda: len(commands) == expected_count)
     assert "show_power_inline" in commands
     assert "show_processes_cpu" in commands
     # One command per medium tick, not four.
@@ -309,7 +319,7 @@ def test_slow_tier_parses_and_emits_discovery_without_extra_commands(wired):
     received: list[dict] = []
     collector.on_slow_discovery = lambda payload, _at: received.append(payload)
     collector.collect_slow()
-    time.sleep(0.6)
+    wait_for(lambda: len(received) == 1)
     assert commands == [
         "show_mac_address_table",
         "show_ip_arp",
@@ -329,7 +339,7 @@ def test_a_failing_tier_does_not_stop_the_loop(wired):
         raise RuntimeError("collection failed")
 
     collector._submit("live-fast", explode, JobPriority.FAST)
-    time.sleep(0.3)
+    wait_for(lambda: not collector.session.has_pending("live-fast"))
     # The collector is still usable.
     assert collector._submit("live-fast", lambda c: c.run("show_interfaces_status"), JobPriority.FAST)
 
@@ -343,7 +353,7 @@ def test_a_failed_slow_poll_ages_discovery_without_stopping_collection(wired):
         raise RuntimeError("synthetic slow collection failure")
 
     collector._submit("live-slow", explode, JobPriority.SLOW)
-    time.sleep(0.3)
+    wait_for(lambda: len(failures) == 1)
 
     assert len(failures) == 1
     assert failures[0].tzinfo is not None
