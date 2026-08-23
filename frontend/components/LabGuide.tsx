@@ -19,7 +19,7 @@ export default function LabGuide({
   interfaces: InterfaceStatus[];
 }) {
   const [selectedId, setSelectedId] = useState(operations[0]?.id || "");
-  const [selectedInterface, setSelectedInterface] = useState("Gi0/4");
+  const [selectedInterface, setSelectedInterface] = useState(interfaces[0]?.port || "");
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<GuideRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -49,16 +49,16 @@ export default function LabGuide({
   }
 
   if (!selected) {
-    return <div className="card"><p className="empty-note">The Lab Guide catalog is unavailable.</p></div>;
+    return <div className="card"><p className="empty-note">The command guide catalog is unavailable.</p></div>;
   }
 
   return (
     <section className="lab-guide" aria-labelledby="lab-guide-title">
       <aside className="card lab-guide__rail">
         <div className="eyebrow">Learn with your hardware</div>
-        <h2 id="lab-guide-title">Lab Guide</h2>
+        <h2 id="lab-guide-title">Command guide</h2>
         <p>Choose a question. SwitchOps selects a fixed safe operation and explains the parsed result.</p>
-        <nav aria-label="Lab Guide operations">
+        <nav aria-label="Command guide operations">
           {grouped.map(({ category, operations: categoryOperations }) => (
             <div key={category} className="guide-group">
               <h3>{category}</h3>
@@ -114,7 +114,12 @@ export default function LabGuide({
           </div>
         </details>
 
-        <button type="button" className="btn btn--primary guide-run" onClick={run} disabled={running}>
+        <button
+          type="button"
+          className="btn btn--primary guide-run"
+          onClick={run}
+          disabled={running || (selected.requiresInterface && !selectedInterface)}
+        >
           <span className="guide-run__icon" aria-hidden>▶</span>
           {running ? "Running read-only check…" : "Run read-only check"}
         </button>

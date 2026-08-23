@@ -56,7 +56,6 @@ try {
         --collect-submodules netmiko `
         --collect-submodules paramiko `
         --collect-submodules keyring `
-        --add-data "$(Join-Path $backendDir 'app\sample_outputs');app/sample_outputs" `
         --workpath "build\pyinstaller" `
         --specpath "build\spec" `
         sidecar.py

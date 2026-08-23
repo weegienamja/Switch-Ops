@@ -8,7 +8,7 @@
  * automation dependency to the product.
  *
  * Usage (frontend static export + backend must already be running):
- *   node scripts/visual-check.mjs --url http://127.0.0.1:3100 --out .visual
+ *   node scripts/visual-check.mjs --url http://localhost:3000 --out .visual
  *
  * Nothing here ships in the desktop app or the Python sidecar.
  */
@@ -24,7 +24,7 @@ const args = Object.fromEntries(
   }, []),
 );
 
-const BASE_URL = args.url || "http://127.0.0.1:3100";
+const BASE_URL = args.url || "http://localhost:3000";
 const OUT_DIR = args.out || ".visual";
 const PORT = Number(args.port || 9222);
 
@@ -45,7 +45,7 @@ const VIEWS = [
   { label: "Overview", slug: "overview" },
   { label: "Visual network", slug: "network" },
   { label: "What changed", slug: "events" },
-  { label: "Lab Guide", slug: "guide" },
+  { label: "Command guide", slug: "guide" },
   {
     label: "Change control",
     slug: "change-control",

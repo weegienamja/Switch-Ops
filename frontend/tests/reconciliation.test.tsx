@@ -16,7 +16,7 @@ import type {
   TopologyModel,
 } from "@/lib/types";
 
-const DEVICE_ID = "switch-physical-operatorlab-sw1";
+const DEVICE_ID = "switch-physical-synthetic-sw1";
 
 function assertion(overrides: Partial<TopologyAssertion> & { subject: string }): TopologyAssertion {
   return {
@@ -165,7 +165,7 @@ function device(overrides: Partial<NetworkDevice> & { id: string }): NetworkDevi
 
 function link(overrides: Partial<NetworkLink> & { id: string; toDeviceId: string; fromInterface: string }): NetworkLink {
   return {
-    fromDeviceId: "switch-lab",
+    fromDeviceId: "switch-synthetic",
     status: "up",
     speed: "a-1000",
     poe: false,
@@ -179,10 +179,10 @@ function link(overrides: Partial<NetworkLink> & { id: string; toDeviceId: string
 
 const TOPOLOGY: TopologyModel = {
   generatedAt: "2026-08-22T16:00:00Z",
-  rootDeviceId: "switch-lab",
+  rootDeviceId: "switch-synthetic",
   devices: [
     device({
-      id: "switch-lab",
+      id: "switch-synthetic",
       type: "switch",
       name: "SWITCHOPS-TEST-SW1",
       model: "WS-C3560CG-8PC-S",
@@ -216,8 +216,8 @@ const TOPOLOGY: TopologyModel = {
     }),
   ],
   interfaces: Array.from({ length: 10 }, (_, index) => ({
-    id: `switch-lab:Gi0/${index + 1}`,
-    deviceId: "switch-lab",
+    id: `switch-synthetic:Gi0/${index + 1}`,
+    deviceId: "switch-synthetic",
     port: `Gi0/${index + 1}`,
     description: index === 0 ? "Uplink to Test Gateway" : index === 3 ? "TEST-AP-01 AP" : "Spare",
     adminState: "up" as const,

@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from .device_session import DeviceSessionManager, JobPriority, get_device_session
+from .credential_store import get_credential_store
+from .interface_policy import get_interface_policy_store
 from .models import InterfaceStatus, PoePort
 from .parsers.interfaces import parse_interface_status
 from .discovery import inspect_lldp
@@ -96,6 +98,7 @@ class LiveInterface:
     poe_state: str = ""
     poe_watts: float = 0.0
     protected: bool = False
+    policy_state: str = "UNMANAGED"
 
     def comparable(self) -> tuple:
         """The fields whose change is worth telling somebody about."""
@@ -214,6 +217,7 @@ class LiveState:
                     duplex=item.duplex,
                     vlan=item.vlan,
                     protected=item.protected,
+                    policy_state=item.policy_state,
                 )
                 existing = self.interfaces.get(item.port)
                 if existing is not None:
@@ -366,6 +370,8 @@ class LiveCollector:
         def run(client: SwitchClient) -> None:
             output = run_and_audit(client, symbol="show_interfaces_status", actor="live-fast")
             parsed = parse_interface_status(output)
+            host = get_credential_store().status().get("switch_host")
+            get_interface_policy_store().annotate(host, parsed)
             at = datetime.now(timezone.utc)
             changes = self.state.apply_interfaces(parsed, at=at)
             self.state.hub.publish("interface_state", {

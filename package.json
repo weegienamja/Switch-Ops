@@ -1,8 +1,8 @@
 {
   "name": "switchops",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
-  "description": "SwitchOps — local desktop network operations dashboard for the SWITCHOPS-TEST-SW1 Cisco Catalyst.",
+  "description": "SwitchOps — local desktop operations dashboard for Cisco IOS Catalyst switches.",
   "scripts": {
     "dev": "pnpm --filter @switchops/frontend dev",
     "build": "pnpm --filter @switchops/frontend build",

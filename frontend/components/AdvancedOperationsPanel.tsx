@@ -10,10 +10,6 @@ type Pending =
   | { kind: "save" }
   | { kind: "operation"; operation: OperationKind; label: string; value?: string };
 
-const WRITABLE_PORTS = new Set([
-  "Gi0/3", "Gi0/4", "Gi0/5", "Gi0/6", "Gi0/7", "Gi0/8",
-]);
-
 const PROGRESS_STEPS = [
   ["precheck", "Precheck"],
   ["backup", "Backup"],
@@ -38,8 +34,9 @@ export default function AdvancedOperationsPanel({
   const [diagnostic, setDiagnostic] = useState<string | null>(null);
 
   const port = selected?.port || "";
-  const protectedPort = Boolean(selected?.protected);
-  const writable = Boolean(port && WRITABLE_PORTS.has(port) && !protectedPort);
+  const policyState = selected?.policyState || "UNMANAGED";
+  const protectedPort = policyState === "PROTECTED";
+  const writable = Boolean(port && policyState === "OPERABLE");
   const operation = live.operation?.interface === port ? live.operation : null;
   const controlsReady = live.lock.capability && live.lock.unlocked && writable && !busy;
 
@@ -133,16 +130,16 @@ export default function AdvancedOperationsPanel({
         <div className="ops-lock" role="note">
           <strong>Read-only installation</strong>
           <span>
-            Controlled writes are disabled by backend configuration. Diagnostics remain
-            read-only and available. Gi0/1, Gi0/2 and Vlan1 stay protected in every mode.
+            Controlled writes are disabled in the local device policy. Diagnostics remain
+            read-only and available. Protected and unmanaged interfaces cannot be changed.
           </span>
         </div>
       ) : live.lock.unlocked ? (
         <div className="ops-lock ops-lock--open" role="note">
           <strong>Unlocked for this session</strong>
           <span>
-            Only fixed operations are available. Gi0/1, Gi0/2 and Vlan1 remain protected.
-            Restarting SwitchOps locks control again.
+            Only fixed operations are available. Protected and unmanaged interfaces remain
+            read-only. Restarting SwitchOps locks control again.
           </span>
           <button className="btn btn--ghost" disabled={busy} onClick={lockNow}>
             Lock now
@@ -187,13 +184,13 @@ export default function AdvancedOperationsPanel({
 
       {protectedPort ? (
         <div className="ops-boundary">
-          This management interface is protected. Physical controls are unavailable; the
+          This interface is protected by the local device policy. Physical controls are unavailable; the
           backend also refuses every write attempt to it.
         </div>
       ) : port && !writable ? (
         <div className="ops-boundary">
-          {port} is outside the controlled-write allowlist. Read-only diagnostics are still
-          available.
+          {port} is unmanaged. It must be deliberately marked OPERABLE in Settings before
+          bounded write controls become available. Read-only diagnostics still work.
         </div>
       ) : null}
 
@@ -311,7 +308,7 @@ export default function AdvancedOperationsPanel({
             {pending.kind === "unlock" ? (
               <ul className="ops-confirm__list">
                 <li>Only predefined operations are available; there is no arbitrary CLI.</li>
-                <li>Protected management interfaces remain locked.</li>
+                <li>Protected and unmanaged interfaces remain read-only.</li>
                 <li>The unlock lasts only for this SwitchOps process.</li>
               </ul>
             ) : pending.kind === "save" ? (

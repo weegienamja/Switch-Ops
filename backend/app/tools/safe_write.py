@@ -1,13 +1,15 @@
-"""Safe write actions. Disabled unless ``settings.enable_write_actions``."""
+"""Legacy bounded write helper using the same local policy gates as operations."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 import time
 from typing import Optional
 
 from ..audit_store import get_audit_store
 from ..command_registry import build_write_action
-from ..config import get_settings
+from ..credential_store import get_credential_store
 from ..errors import WriteActionsDisabledError
+from ..interface_policy import get_interface_policy_store
 from ..models import WriteActionResult
 from ..switch_client import SwitchClient, MockSwitchClient
 from .backup import backup_running_config
@@ -34,11 +36,36 @@ def execute_safe_write(
     value: Optional[str] = None,
     actor: str = "user",
 ) -> WriteActionResult:
-    settings = get_settings()
-    if not settings.enable_write_actions:
+    # Keep the session-level approval stable too. The local import avoids a
+    # module cycle while ensuring this legacy helper cannot bypass the lock.
+    from ..operations import get_write_lock
+
+    policy = get_interface_policy_store()
+    if not policy.controlled_writes_enabled():
         raise WriteActionsDisabledError(
-            "Write actions are disabled. Set ENABLE_WRITE_ACTIONS=true to enable."
+            "Controlled writes are disabled in local SwitchOps settings."
         )
+    host = get_credential_store().status().get("switch_host")
+    guard = policy.operation_guard(host, interface) if interface else nullcontext()
+    with get_write_lock().operation_guard():
+        with guard:
+            return _execute_safe_write_authorized(
+                client,
+                action=action,
+                interface=interface,
+                value=value,
+                actor=actor,
+            )
+
+
+def _execute_safe_write_authorized(
+    client: SwitchClient,
+    *,
+    action: str,
+    interface: Optional[str] = None,
+    value: Optional[str] = None,
+    actor: str = "user",
+) -> WriteActionResult:
 
     plan = build_write_action(action, interface=interface, value=value)
 

@@ -29,10 +29,8 @@ function PlanStage({
 }
 
 export default function DeploymentPlanPanel({ interfaces }: { interfaces: InterfaceStatus[] }) {
-  const safeInterfaces = interfaces.filter((item) => !item.protected);
-  const [interfaceName, setInterfaceName] = useState(
-    safeInterfaces.find((item) => item.port === "Gi0/4")?.port || safeInterfaces[0]?.port || "Gi0/4",
-  );
+  const safeInterfaces = interfaces.filter((item) => item.policyState === "OPERABLE");
+  const [interfaceName, setInterfaceName] = useState(safeInterfaces[0]?.port || "");
   const [vlan, setVlan] = useState(1);
   const [enabled, setEnabled] = useState(true);
   const [poe, setPoe] = useState<"auto" | "never">("auto");
@@ -115,7 +113,14 @@ export default function DeploymentPlanPanel({ interfaces }: { interfaces: Interf
         </label>
       </div>
 
-      <button type="button" className="btn btn--primary" disabled={planning} onClick={() => void generatePlan()}>
+      {!safeInterfaces.length ? (
+        <div className="plan-boundary" role="note">
+          <strong>No operable interfaces</strong>
+          <span>Mark a physical interface OPERABLE in Settings before creating a port plan.</span>
+        </div>
+      ) : null}
+
+      <button type="button" className="btn btn--primary" disabled={planning || !interfaceName} onClick={() => void generatePlan()}>
         {planning ? "Checking current state…" : "Generate dry-run plan"}
       </button>
       {error ? <p className="guide-result guide-result--error" role="alert">{error}</p> : null}

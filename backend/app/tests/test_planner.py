@@ -6,7 +6,14 @@ from backend.app.planner import build_access_point_plan
 
 
 INTERFACES = [
-    InterfaceStatus(port=f"Gi0/{number}", status="notconnect", vlan="1")
+    InterfaceStatus(
+        port=f"Gi0/{number}",
+        status="notconnect",
+        vlan="1",
+        policyState=(
+            "PROTECTED" if number == 1 else "OPERABLE" if number <= 8 else "UNMANAGED"
+        ),
+    )
     for number in range(1, 11)
 ]
 POE_PORTS = [PoePort(interface=f"Gi0/{number}", oper="off") for number in range(1, 9)]

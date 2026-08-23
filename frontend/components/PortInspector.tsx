@@ -74,7 +74,11 @@ export default function PortInspector({
         </div>
         <div className="port-inspector__badges">
           <span className={`badge state-${STATE_WORD[state]}`}>{state}</span>
-          {selected?.protected ? <span className="badge badge--cyan">protected</span> : null}
+          {selected ? (
+            <span className={`badge ${selected.policyState === "PROTECTED" ? "badge--cyan" : selected.policyState === "OPERABLE" ? "badge--amber" : ""}`}>
+              {(selected.policyState || "UNMANAGED").toLowerCase()}
+            </span>
+          ) : null}
           {selected?.role === "uplink" ? <span className="badge">uplink</span> : null}
         </div>
       </div>

@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { api } from "@/lib/api";
+import type { ConnectionTestResult } from "@/lib/types";
 
 export default function SetupWizard({
   onComplete,
@@ -8,14 +9,15 @@ export default function SetupWizard({
   onComplete: () => void;
 }) {
   const [form, setForm] = useState({
-    switchHost: "192.0.2.190",
-    switchUsername: "operator",
+    switchHost: "",
+    switchUsername: "",
     switchPassword: "",
     switchEnableSecret: "",
     switchDeviceType: "cisco_ios",
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [test, setTest] = useState<ConnectionTestResult | null>(null);
 
   function update<K extends keyof typeof form>(key: K, value: string) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -25,11 +27,18 @@ export default function SetupWizard({
     e.preventDefault();
     setBusy(true);
     setError(null);
+    setTest(null);
     try {
       await api.saveCredentials(form);
-      onComplete();
-    } catch (e: any) {
-      setError(e?.message || String(e));
+      const result = await api.testConnection();
+      setTest(result);
+      if (result.ok) {
+        onComplete();
+      } else {
+        setError(`${result.summary} Your credentials remain stored locally so you can retry.`);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(false);
     }
@@ -43,16 +52,16 @@ export default function SetupWizard({
       <div className="container" style={{ maxWidth: 640 }}>
         <header className="header">
           <div className="header__brand">
-            <div className="header__logo">JLS</div>
+            <div className="header__logo">SO</div>
             <div>
               <div className="header__title">SwitchOps</div>
-              <div className="header__subtitle">setup wizard</div>
+              <div className="header__subtitle">No Catalyst configured</div>
             </div>
           </div>
         </header>
 
         <form className="card" onSubmit={submit}>
-          <h3 className="card__title">Switch credentials</h3>
+          <h3 className="card__title">Add a Cisco IOS switch</h3>
           <div className="card__subtitle" style={{ marginBottom: 18 }}>
             Local-only. Credentials never leave this machine. Legacy SSH compatibility is
             isolated to the SwitchOps backend process.
@@ -60,8 +69,8 @@ export default function SetupWizard({
 
           {(
             [
-              ["switchHost", "Switch host", "192.0.2.190"],
-              ["switchUsername", "Username", "operator"],
+              ["switchHost", "Management IP or hostname", "192.0.2.10"],
+              ["switchUsername", "Username", "network-operator"],
               ["switchPassword", "Password", "•••"],
               ["switchEnableSecret", "Enable secret", "•••"],
               ["switchDeviceType", "Device type", "cisco_ios"],
@@ -97,12 +106,21 @@ export default function SetupWizard({
             </div>
           )}
 
+          {test ? (
+            <div
+              className={`settings-alert ${test.ok ? "settings-alert--good" : "settings-alert--bad"}`}
+            >
+              <strong>{test.ok ? "Connection verified" : "Connection failed"}</strong>
+              <span>{test.summary}</span>
+            </div>
+          ) : null}
+
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div className="mono" style={{ fontSize: 11, color: "var(--text-dim)" }}>
               Saved password is never displayed back.
             </div>
             <button className="btn btn--primary" type="submit" disabled={busy}>
-              {busy ? "Saving…" : "Save and connect"}
+              {busy ? "Saving and testing…" : "Save and test connection"}
             </button>
           </div>
         </form>

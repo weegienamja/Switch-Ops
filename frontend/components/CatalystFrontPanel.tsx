@@ -3,8 +3,6 @@
 import type { NetworkInterface, TelemetrySnapshotSummary, TopologyModel } from "@/lib/types";
 import { interfaceDeltaFor } from "@/lib/explanations";
 
-const PORTS = Array.from({ length: 10 }, (_, index) => `Gi0/${index + 1}`);
-
 export type PortState = "connected" | "notconnect" | "disabled" | "unknown";
 
 export function portState(networkInterface: NetworkInterface | undefined): PortState {
@@ -37,10 +35,14 @@ function shortSpeed(speed: string): string | null {
   return null;
 }
 
+function interfaceOrder(left: NetworkInterface, right: NetworkInterface): number {
+  return left.port.localeCompare(right.port, undefined, { numeric: true, sensitivity: "base" });
+}
+
 /**
- * Simplified WS-C3560CG-8PC-S front panel: 8 PoE access ports plus the
- * 2 uplink-style interfaces. Ports carry `data-port` so the topology canvas
- * can draw a wire from a device to the physical port it is plugged into.
+ * A model-neutral Catalyst front panel based on interfaces actually observed.
+ * Ports carry `data-port` so the topology canvas can draw an evidence link to
+ * the physical interface reported by the device.
  */
 export default function CatalystFrontPanel({
   topology,
@@ -56,40 +58,28 @@ export default function CatalystFrontPanel({
   model?: string;
 }) {
   const byPort = new Map(topology.interfaces.map((item) => [item.port, item]));
+  const ports = topology.interfaces
+    .filter((item) => /^(Fa|Gi|Te|Twe|Fo|Hu)/.test(item.port))
+    .sort(interfaceOrder);
 
   return (
     <div className="switch-chassis">
       <div className="switch-chassis__identity">
         <span className="switch-chassis__maker">CISCO CATALYST</span>
-        <strong>{model || "3560-CG"}</strong>
-        <span>compact PoE switch</span>
+        <strong>{model || "IOS switch"}</strong>
+        <span>{ports.length} observed physical interfaces</span>
       </div>
       <div className="switch-chassis__ports" role="group" aria-label="Physical switch ports">
         <div className="switch-chassis__bank">
-          <span className="switch-chassis__bank-label">PoE access · 1–8</span>
+          <span className="switch-chassis__bank-label">Observed physical interfaces</span>
           <div className="switch-chassis__bank-grid">
-            {PORTS.slice(0, 8).map((port) => (
+            {ports.map((item) => (
               <FrontPort
-                key={port}
-                port={port}
-                networkInterface={byPort.get(port)}
-                selected={selectedPort === port}
-                delta={interfaceDeltaFor(port, telemetry.interfaceDeltas)?.errorDelta}
-                onSelect={onSelectPort}
-              />
-            ))}
-          </div>
-        </div>
-        <div className="switch-chassis__bank switch-chassis__bank--uplink">
-          <span className="switch-chassis__bank-label">Uplink · 9–10</span>
-          <div className="switch-chassis__bank-grid">
-            {PORTS.slice(8).map((port) => (
-              <FrontPort
-                key={port}
-                port={port}
-                networkInterface={byPort.get(port)}
-                selected={selectedPort === port}
-                delta={interfaceDeltaFor(port, telemetry.interfaceDeltas)?.errorDelta}
+                key={item.port}
+                port={item.port}
+                networkInterface={byPort.get(item.port)}
+                selected={selectedPort === item.port}
+                delta={interfaceDeltaFor(item.port, telemetry.interfaceDeltas)?.errorDelta}
                 onSelect={onSelectPort}
               />
             ))}
@@ -100,7 +90,7 @@ export default function CatalystFrontPanel({
         <span><i className="port-led port-led--up" aria-hidden /> LINK — connected</span>
         <span><i className="port-led port-led--waiting" aria-hidden /> WAIT — no link</span>
         <span><i className="port-led port-led--disabled" aria-hidden /> OFF — disabled</span>
-        <span><i className="port-led port-led--protected" aria-hidden /> protected from changes</span>
+        <span><i className="port-led port-led--protected" aria-hidden /> protected by local policy</span>
       </div>
     </div>
   );
@@ -133,7 +123,7 @@ function FrontPort({
     description ? `described as ${description}` : "no description",
     speed ? `${speed === "1G" ? "1 gigabit" : speed} link` : null,
     poeActive ? "supplying Power over Ethernet" : null,
-    networkInterface?.protected ? "protected from configuration changes" : null,
+    networkInterface ? `${(networkInterface.policyState || "UNMANAGED").toLowerCase()} write policy` : null,
     errorDelta > 0 ? `${errorDelta} new errors since the previous observation` : null,
   ]
     .filter(Boolean)
@@ -150,8 +140,8 @@ function FrontPort({
       title={`${port} · ${description || STATE_DESCRIPTION[state]}`}
     >
       <span className="front-port__label">
-        {port.replace("Gi0/", "")}
-        {networkInterface?.protected ? (
+        {port}
+        {networkInterface?.policyState === "PROTECTED" ? (
           <i className="front-port__protected" aria-hidden title="protected">
             ▪
           </i>

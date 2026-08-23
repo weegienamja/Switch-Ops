@@ -2,7 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import type { ConnectionTestResult, RuntimeInfo, SetupStatus } from "@/lib/types";
+import type {
+  ConnectionTestResult,
+  InterfacePolicyResponse,
+  InterfacePolicyState,
+  InterfaceStatus,
+  RuntimeInfo,
+  SetupStatus,
+} from "@/lib/types";
 
 /** Plain-English names for the credential backends. Never show "keyring". */
 const STORAGE_LABEL: Record<SetupStatus["storage"], string> = {
@@ -33,14 +40,21 @@ function friendlyPath(path: string | undefined): string {
 
 export default function SettingsPanel({
   setup,
+  interfaces = [],
   onClose,
   onChange,
 }: {
   setup: SetupStatus;
+  interfaces?: InterfaceStatus[];
   onClose: () => void;
   onChange: () => void;
 }) {
   const [info, setInfo] = useState<RuntimeInfo | null>(null);
+  const [policy, setPolicy] = useState<InterfacePolicyResponse | null>(null);
+  const [policyDrafts, setPolicyDrafts] = useState<Record<string, InterfacePolicyState>>({});
+  const [policyBusy, setPolicyBusy] = useState<string | null>(null);
+  const [policyError, setPolicyError] = useState<string | null>(null);
+  const [confirmWrites, setConfirmWrites] = useState(false);
   const [test, setTest] = useState<ConnectionTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
@@ -59,10 +73,54 @@ export default function SettingsPanel({
       .catch(() => {
         // Settings still works without the extra runtime facts.
       });
+    void api
+      .interfacePolicy()
+      .then((value) => {
+        if (!cancelled) acceptPolicy(value);
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setPolicyError(cause instanceof Error ? cause.message : String(cause));
+        }
+      });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  function acceptPolicy(value: InterfacePolicyResponse) {
+    setPolicy(value);
+    setPolicyDrafts(
+      Object.fromEntries(value.interfaces.map((entry) => [entry.interface, entry.state])),
+    );
+  }
+
+  async function setControlledWrites(enabled: boolean) {
+    setPolicyBusy("control");
+    setPolicyError(null);
+    try {
+      acceptPolicy(await api.setControlledWrites(enabled));
+      setConfirmWrites(false);
+    } catch (cause) {
+      setPolicyError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPolicyBusy(null);
+    }
+  }
+
+  async function applyInterfacePolicy(interfaceName: string) {
+    const state = policyDrafts[interfaceName];
+    if (!state) return;
+    setPolicyBusy(interfaceName);
+    setPolicyError(null);
+    try {
+      acceptPolicy(await api.setInterfacePolicy(interfaceName, state));
+    } catch (cause) {
+      setPolicyError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPolicyBusy(null);
+    }
+  }
 
   useEffect(() => {
     dialogRef.current?.focus();
@@ -164,28 +222,119 @@ export default function SettingsPanel({
           <Section title="Operation mode">
             <div className="settings-modes">
               <ModeCard
-                label="Real hardware"
-                state={setup.mockMode ? "Inactive" : "Active"}
-                tone={setup.mockMode ? "neutral" : "good"}
-              />
-              <ModeCard
-                label="Mock mode"
-                state={setup.mockMode ? "On" : "Off"}
-                tone={setup.mockMode ? "info" : "neutral"}
+                label="Device connection"
+                state={setup.configured ? "Configured" : "Not configured"}
+                tone={setup.configured ? "good" : "neutral"}
               />
               <ModeCard
                 label="Write operations"
-                state={setup.enableWriteActions ? "Enabled" : "Disabled"}
-                tone={setup.enableWriteActions ? "warn" : "good"}
+                state={policy?.controlledWritesEnabled ? "Enabled" : "Disabled"}
+                tone={policy?.controlledWritesEnabled ? "warn" : "good"}
               />
             </div>
             <p className="settings-explain">
-              {setup.mockMode
-                ? "SwitchOps is showing recorded sample output. No device is being contacted."
-                : setup.enableWriteActions
-                  ? "SwitchOps may inspect this device and apply allowlisted changes. Gi0/1, Gi0/2 and Vlan1 remain protected."
-                  : "SwitchOps is currently allowed to inspect this device but not change its configuration."}
+              {policy?.controlledWritesEnabled
+                ? "Bounded changes can be unlocked for this process, but only on interfaces explicitly marked OPERABLE."
+                : "SwitchOps may inspect this device, but controlled writes are globally disabled."}
             </p>
+          </Section>
+
+          <Section title="Interface write policy">
+            <p className="settings-explain">
+              Policy is stored only on this PC and is scoped to a one-way hash of the configured
+              device address. New devices and interfaces start UNMANAGED. The backend enforces
+              these states even if the interface is manipulated in the UI.
+            </p>
+            {policy && !policy.valid ? (
+              <p className="settings-alert settings-alert--bad" role="alert">
+                The local policy is invalid and SwitchOps has failed closed to read-only.
+                {policy.loadError ? ` ${policy.loadError}` : ""}
+              </p>
+            ) : null}
+            <div className="settings-danger__row interface-policy-control">
+              <div>
+                <strong>Controlled writes</strong>
+                <span>
+                  {policy?.controlledWritesEnabled
+                    ? "Enabled locally. Each process still starts locked."
+                    : "Off by default. All device changes are blocked."}
+                </span>
+              </div>
+              {policy?.controlledWritesEnabled ? (
+                <button
+                  className="btn btn--danger"
+                  disabled={policyBusy === "control"}
+                  onClick={() => void setControlledWrites(false)}
+                >
+                  Disable controlled writes
+                </button>
+              ) : confirmWrites ? (
+                <div className="settings-actions">
+                  <button className="btn btn--ghost" onClick={() => setConfirmWrites(false)}>
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn--danger"
+                    disabled={policyBusy === "control" || !policy?.valid}
+                    onClick={() => void setControlledWrites(true)}
+                  >
+                    Confirm enable
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="btn"
+                  disabled={!policy?.valid}
+                  onClick={() => setConfirmWrites(true)}
+                >
+                  Review enabling writes
+                </button>
+              )}
+            </div>
+            {confirmWrites && !policy?.controlledWritesEnabled ? (
+              <p className="settings-alert settings-alert--bad" role="alert">
+                Enabling this capability permits bounded configuration changes after a separate
+                session unlock. It does not make UNMANAGED or PROTECTED interfaces operable.
+              </p>
+            ) : null}
+            <div className="interface-policy-list">
+              {(policy?.interfaces || []).map((entry) => {
+                const observed = interfaces.find((item) => item.port === entry.interface);
+                const draft = policyDrafts[entry.interface] || entry.state;
+                const physical = /^(Fa|Gi|Te|Twe|Fo|Hu)/.test(entry.interface);
+                return (
+                  <div className="interface-policy-row" key={entry.interface}>
+                    <div>
+                      <strong>{entry.interface}</strong>
+                      <span>{observed?.name || observed?.status || "Known to local policy"}</span>
+                    </div>
+                    <select
+                      aria-label={`Policy for ${entry.interface}`}
+                      value={draft}
+                      onChange={(event) =>
+                        setPolicyDrafts((current) => ({
+                          ...current,
+                          [entry.interface]: event.target.value as InterfacePolicyState,
+                        }))
+                      }
+                    >
+                      <option value="UNMANAGED">UNMANAGED</option>
+                      <option value="PROTECTED">PROTECTED</option>
+                      <option value="OPERABLE" disabled={!physical}>OPERABLE</option>
+                    </select>
+                    <button
+                      className="btn btn--ghost"
+                      disabled={draft === entry.state || policyBusy === entry.interface || !policy?.valid}
+                      onClick={() => void applyInterfacePolicy(entry.interface)}
+                    >
+                      {policyBusy === entry.interface ? "Applying…" : "Apply"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            {!policy && !policyError ? <p className="settings-explain">Loading local policy…</p> : null}
+            {policyError ? <p className="settings-alert settings-alert--bad" role="alert">{policyError}</p> : null}
           </Section>
 
           <Section title="Security">

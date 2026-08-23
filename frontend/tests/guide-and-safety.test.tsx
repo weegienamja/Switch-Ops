@@ -14,6 +14,7 @@ const interfaceStatus: InterfaceStatus = {
   speed: "auto",
   type: "10/100/1000BaseTX",
   protected: false,
+  policyState: "OPERABLE",
 };
 
 const operations: GuideOperation[] = [
@@ -41,7 +42,7 @@ const operations: GuideOperation[] = [
 
 const selected: NetworkInterface = {
   id: "if-gi04",
-  deviceId: "switch-lab",
+  deviceId: "switch-synthetic",
   port: "Gi0/4",
   description: "Lab access point",
   adminState: "up",
@@ -53,6 +54,7 @@ const selected: NetworkInterface = {
   poeState: "off",
   poeWatts: 0,
   protected: false,
+  policyState: "OPERABLE",
   role: "access",
   learnedMacCount: 0,
 };
@@ -125,7 +127,7 @@ describe("advanced operations", () => {
     expect(actionButtons.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
   });
 
-  it("states the write state in words and names the protected interfaces", () => {
+  it("states the generalized policy boundary without naming a private port layout", () => {
     render(
       <AdvancedOperationsPanel
         selected={selected}
@@ -134,17 +136,18 @@ describe("advanced operations", () => {
     );
     expect(screen.getByText("CONTROL LOCKED")).toBeTruthy();
     expect(screen.getByText("Read-only installation")).toBeTruthy();
-    expect(screen.getByText(/Gi0\/1, Gi0\/2 and Vlan1 stay protected/)).toBeTruthy();
+    expect(screen.getByText(/Protected and unmanaged interfaces cannot be changed/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/Gi0\/1, Gi0\/2 and Vlan1/);
   });
 
   it("never offers an apply action for the protected interfaces", () => {
     render(
       <AdvancedOperationsPanel
-        selected={{ ...selected, port: "Gi0/1", protected: true }}
+        selected={{ ...selected, port: "Gi0/1", protected: true, policyState: "PROTECTED" }}
         live={liveController({ lock: { capability: true, unlocked: true } })}
       />,
     );
-    expect(screen.getByText(/management interface is protected/i)).toBeTruthy();
+    expect(screen.getByText(/protected by the local device policy/i)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Enable port" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Disable port" }) as HTMLButtonElement).disabled).toBe(true);
   });

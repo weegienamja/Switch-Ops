@@ -127,6 +127,22 @@ export interface TelemetrySnapshotSummary {
   retentionDays: number;
 }
 
+export type InterfacePolicyState = "PROTECTED" | "OPERABLE" | "UNMANAGED";
+
+export interface InterfacePolicyEntry {
+  interface: string;
+  state: InterfacePolicyState;
+}
+
+export interface InterfacePolicyResponse {
+  deviceConfigured: boolean;
+  deviceKey?: string | null;
+  valid: boolean;
+  loadError?: string | null;
+  controlledWritesEnabled: boolean;
+  interfaces: InterfacePolicyEntry[];
+}
+
 export type LiveConnectionState =
   | "offline"
   | "connecting"
@@ -163,6 +179,7 @@ export interface LiveInterfaceState {
   poe_state: string;
   poe_watts: number;
   protected: boolean;
+  policy_state?: InterfacePolicyState;
 }
 
 export interface LiveSnapshot {
@@ -529,6 +546,7 @@ export interface NetworkInterface {
   poeState: string;
   poeWatts: number;
   protected: boolean;
+  policyState?: InterfacePolicyState;
   role: InterfaceRole;
   learnedMacCount: number;
 }
@@ -565,6 +583,7 @@ export interface InterfaceStatus {
   speed: string;
   type: string;
   protected: boolean;
+  policyState?: InterfacePolicyState;
   notes?: string | null;
 }
 

@@ -62,11 +62,11 @@ class CredentialStore:
     # --- public API ------------------------------------------------------
 
     def storage_backend(self) -> Storage:
-        if self._has_keyring_creds():
+        if self._credentials_complete(self._load_keyring()):
             return "keyring"
-        if CRED_FILE.exists():
+        if self._credentials_complete(self._load_file()):
             return "file"
-        if os.environ.get("SWITCH_PASSWORD"):
+        if self._credentials_complete(self._load_env()):
             return "env"
         return "none"
 
@@ -87,6 +87,8 @@ class CredentialStore:
         }
 
     def save(self, creds: SwitchCredentials) -> Storage:
+        if not self._credentials_complete(creds):
+            raise ValueError("Host, username, and password are required.")
         register_secret(creds.switch_password)
         register_secret(creds.switch_enable_secret)
         if self._keyring is not None:
@@ -103,7 +105,18 @@ class CredentialStore:
 
     def load(self, *, safe: bool = False) -> Optional[SwitchCredentials]:
         """Load credentials. If ``safe``, return placeholders for secrets."""
-        creds = self._load_keyring() or self._load_file() or self._load_env()
+        creds = next(
+            (
+                candidate
+                for candidate in (
+                    self._load_keyring(),
+                    self._load_file(),
+                    self._load_env(),
+                )
+                if self._credentials_complete(candidate)
+            ),
+            None,
+        )
         if creds is None:
             return None
         register_secret(creds.switch_password)
@@ -133,13 +146,14 @@ class CredentialStore:
 
     # --- keyring ---------------------------------------------------------
 
-    def _has_keyring_creds(self) -> bool:
-        if self._keyring is None:
-            return False
-        try:
-            return bool(self._keyring.get_password(SERVICE_NAME, "switch_password"))
-        except Exception:  # pragma: no cover
-            return False
+    @staticmethod
+    def _credentials_complete(creds: Optional[SwitchCredentials]) -> bool:
+        return bool(
+            creds
+            and creds.switch_host.strip()
+            and creds.switch_username.strip()
+            and creds.switch_password
+        )
 
     def _save_keyring(self, creds: SwitchCredentials) -> None:
         assert self._keyring is not None
@@ -199,9 +213,13 @@ class CredentialStore:
         pwd = os.environ.get("SWITCH_PASSWORD")
         if not pwd or pwd.startswith("__REPLACE"):
             return None
+        host = os.environ.get("SWITCH_HOST", "").strip()
+        username = os.environ.get("SWITCH_USERNAME", "").strip()
+        if not host or not username:
+            return None
         return SwitchCredentials(
-            switch_host=os.environ.get("SWITCH_HOST", "192.0.2.190"),
-            switch_username=os.environ.get("SWITCH_USERNAME", "operator"),
+            switch_host=host,
+            switch_username=username,
             switch_password=pwd,
             switch_enable_secret=os.environ.get("SWITCH_ENABLE_SECRET", "") or "",
             switch_device_type=os.environ.get("SWITCH_DEVICE_TYPE", "cisco_ios"),

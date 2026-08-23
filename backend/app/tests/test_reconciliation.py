@@ -140,20 +140,20 @@ def test_link_up_with_no_learned_addresses_is_still_only_presence():
 
 def test_cdp_neighbour_supplies_the_observed_identity():
     interfaces = [iface("Gi0/1", "Uplink to Test Gateway")]
-    result = only(run(interfaces, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "TEST-GATEWAY-01-HQ", "Meraki TEST-GATEWAY-01")]))
+    result = only(run(interfaces, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "SYNTH-MX64-01", "Meraki MX64")]))
 
     assert result.observed.object_identified is True
     assert result.observed.source == "cdp"
-    assert result.observed.object_label == "TEST-GATEWAY-01-HQ"
+    assert result.observed.object_label == "SYNTH-MX64-01"
     assert result.observed.vendor == "Cisco Meraki"
-    assert result.observed.model == "TEST-GATEWAY-01"
+    assert result.observed.model == "MX64"
     # The description is still held, still labelled as intent.
     assert result.expected.source == "interface-description"
 
 
 def test_expected_virgin_router_with_observed_mx_is_topology_drift():
     interfaces = [iface("Gi0/1", "Uplink to Test Gateway")]
-    result = only(run(interfaces, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "TEST-GATEWAY-01-HQ", "Meraki TEST-GATEWAY-01")]))
+    result = only(run(interfaces, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "SYNTH-MX64-01", "Meraki MX64")]))
 
     assert result.status == "drift"
     assert result.drift_kind == "identity"
@@ -164,8 +164,8 @@ def test_expected_virgin_router_with_observed_mx_is_topology_drift():
 
 
 def test_matching_cdp_identity_is_aligned():
-    interfaces = [iface("Gi0/4", "TEST-AP-01 AP")]
-    result = only(run(interfaces, macs=[mac("Gi0/4")], neighbors=[cdp("Gi0/4", "TEST-AP-Lab", "TEST-AP-01")]))
+    interfaces = [iface("Gi0/4", "SYNTH-MR44-01 AP")]
+    result = only(run(interfaces, macs=[mac("Gi0/4")], neighbors=[cdp("Gi0/4", "SYNTH-MR44-Lab", "Meraki MR44")]))
     assert result.status == "aligned"
     assert result.drift_kind == "none"
 
@@ -202,7 +202,7 @@ def test_health_stays_healthy_while_reconciliation_reports_drift():
         deltas=[],
         evaluated_at=NOW,
     )
-    reconciliation = run(interfaces, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "TEST-GATEWAY-01-HQ", "Meraki TEST-GATEWAY-01")])
+    reconciliation = run(interfaces, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "SYNTH-MX64-01", "Meraki MX64")])
 
     assert summary.health.state == "HEALTHY"
     assert reconciliation.interfaces[0].status == "drift"
@@ -215,7 +215,7 @@ def test_health_stays_healthy_while_reconciliation_reports_drift():
 
 
 def test_expected_device_on_a_down_port_is_missing_not_offline():
-    interfaces = [iface("Gi0/4", "TEST-AP-01 AP", status="notconnect")]
+    interfaces = [iface("Gi0/4", "SYNTH-MR44-01 AP", status="notconnect")]
     result = only(run(interfaces))
 
     assert result.status == "expected-not-observed"
@@ -228,7 +228,7 @@ def test_expected_device_on_a_down_port_is_missing_not_offline():
 
 
 def test_stale_addresses_on_a_down_port_do_not_create_an_observation():
-    interfaces = [iface("Gi0/4", "TEST-AP-01 AP", status="notconnect")]
+    interfaces = [iface("Gi0/4", "SYNTH-MR44-01 AP", status="notconnect")]
     result = only(run(interfaces, macs=[mac("Gi0/4")]))
     assert result.observed is None
     assert result.status == "expected-not-observed"
@@ -250,12 +250,12 @@ def test_neighbour_identity_change_between_observations_is_reported():
     result = only(run(
         interfaces,
         macs=[mac("Gi0/1")],
-        neighbors=[cdp("Gi0/1", "TEST-GATEWAY-01-HQ", "Meraki TEST-GATEWAY-01")],
+        neighbors=[cdp("Gi0/1", "SYNTH-MX64-01", "Meraki MX64")],
         previous=previous,
     ))
     assert result.changed_since_previous is True
     assert "Test ISPHub5" in result.change_summary
-    assert "TEST-GATEWAY-01-HQ" in result.change_summary
+    assert "SYNTH-MX64-01" in result.change_summary
     assert result.historical is not None
     assert result.historical.evidence_class == "historical"
 
@@ -270,12 +270,12 @@ def test_link_coming_up_is_a_change_even_when_identity_is_unknown():
 
 def test_change_is_orthogonal_to_alignment():
     """An interface can match intent and still have changed."""
-    interfaces = [iface("Gi0/4", "TEST-AP-01 AP")]
+    interfaces = [iface("Gi0/4", "SYNTH-MR44-01 AP")]
     previous = {"Gi0/4": PreviousInterfaceState(connected=False, observed_at=EARLIER)}
     result = only(run(
         interfaces,
         macs=[mac("Gi0/4")],
-        neighbors=[cdp("Gi0/4", "TEST-AP-Lab", "TEST-AP-01")],
+        neighbors=[cdp("Gi0/4", "SYNTH-MR44-Lab", "Meraki MR44")],
         previous=previous,
     ))
     assert result.status == "aligned"
@@ -287,7 +287,7 @@ def test_change_is_orthogonal_to_alignment():
 
 def test_repeated_unchanged_drift_produces_one_event(store):
     interfaces = [iface("Gi0/1", "Uplink to Test Gateway")]
-    summary = run(interfaces, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "TEST-GATEWAY-01-HQ", "Meraki TEST-GATEWAY-01")])
+    summary = run(interfaces, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "SYNTH-MX64-01", "Meraki MX64")])
 
     first = reconciliation_events(device_id="sw", summary=summary, store=store, observed_at=NOW)
     assert [event.event_type for event in first] == ["topology_drift_detected"]
@@ -303,18 +303,18 @@ def test_repeated_unchanged_drift_produces_one_event(store):
 
 def test_drift_resolution_produces_exactly_one_resolution_event(store):
     drifting = [iface("Gi0/1", "Uplink to Test Gateway")]
-    drift_summary = run(drifting, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "TEST-GATEWAY-01-HQ", "Meraki TEST-GATEWAY-01")])
+    drift_summary = run(drifting, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "SYNTH-MX64-01", "Meraki MX64")])
     reconciliation_events(device_id="sw", summary=drift_summary, store=store, observed_at=NOW)
 
     # Intent updated to match what is actually there.
     stored = [store.set_expected(
-        device_id="sw", interface="Gi0/1", expected_name="TEST-GATEWAY-01-HQ",
+        device_id="sw", interface="Gi0/1", expected_name="SYNTH-MX64-01",
         expected_device_type="router", expected_vendor="Cisco Meraki",
-        expected_model="TEST-GATEWAY-01", now=NOW,
+        expected_model="MX64", now=NOW,
     )]
     aligned_summary = run(
         drifting, macs=[mac("Gi0/1")],
-        neighbors=[cdp("Gi0/1", "TEST-GATEWAY-01-HQ", "Meraki TEST-GATEWAY-01")], stored=stored,
+        neighbors=[cdp("Gi0/1", "SYNTH-MX64-01", "Meraki MX64")], stored=stored,
     )
     assert aligned_summary.interfaces[0].status == "aligned"
 
@@ -345,7 +345,7 @@ def test_uncertain_identity_never_generates_events(store):
 
 def test_changing_drift_shape_produces_a_fresh_event(store):
     interfaces = [iface("Gi0/1", "Uplink to Test Gateway")]
-    first = run(interfaces, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "TEST-GATEWAY-01-HQ", "Meraki TEST-GATEWAY-01")])
+    first = run(interfaces, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "SYNTH-MX64-01", "Meraki MX64")])
     reconciliation_events(device_id="sw", summary=first, store=store, observed_at=NOW)
 
     second = run(interfaces, macs=[mac("Gi0/1")], neighbors=[cdp("Gi0/1", "OtherBox", "Acme 1000")])
@@ -385,22 +385,22 @@ def test_many_addresses_behind_an_uplink_stay_learned_behind():
 def test_user_intent_outranks_the_interface_description(store):
     interfaces = [iface("Gi0/1", "Uplink to Test Gateway")]
     stored = [store.set_expected(
-        device_id="sw", interface="Gi0/1", expected_name="TEST-GATEWAY-01-HQ",
+        device_id="sw", interface="Gi0/1", expected_name="SYNTH-MX64-01",
         expected_device_type="router", now=NOW,
     )]
     result = only(run(interfaces, macs=[mac("Gi0/1")], stored=stored))
     assert result.expected.source == "user-intent"
-    assert result.expected.object_label == "TEST-GATEWAY-01-HQ"
+    assert result.expected.object_label == "SYNTH-MX64-01"
     assert result.expected.confidence == "high"
 
 
 def test_updating_intent_resolves_the_drift(store):
     interfaces = [iface("Gi0/1", "Uplink to Test Gateway")]
-    neighbors = [cdp("Gi0/1", "TEST-GATEWAY-01-HQ", "Meraki TEST-GATEWAY-01")]
+    neighbors = [cdp("Gi0/1", "SYNTH-MX64-01", "Meraki MX64")]
     assert only(run(interfaces, macs=[mac("Gi0/1")], neighbors=neighbors)).status == "drift"
 
     stored = [store.set_expected(
-        device_id="sw", interface="Gi0/1", expected_name="TEST-GATEWAY-01-HQ",
+        device_id="sw", interface="Gi0/1", expected_name="SYNTH-MX64-01",
         expected_device_type="router", expected_vendor="Cisco Meraki", now=NOW,
     )]
     resolved = only(run(interfaces, macs=[mac("Gi0/1")], neighbors=neighbors, stored=stored))
@@ -411,7 +411,7 @@ def test_updating_intent_flags_the_switch_description_as_stale(store):
     """Local intent changes; the device's own documentation does not."""
     interfaces = [iface("Gi0/1", "Uplink to Test Gateway")]
     stored = [store.set_expected(
-        device_id="sw", interface="Gi0/1", expected_name="TEST-GATEWAY-01-HQ", now=NOW,
+        device_id="sw", interface="Gi0/1", expected_name="SYNTH-MX64-01", now=NOW,
     )]
     result = only(run(interfaces, macs=[mac("Gi0/1")], stored=stored))
     assert result.documentation_stale is True
@@ -427,12 +427,12 @@ def test_intent_store_writes_no_ios(store, monkeypatch):
         raise AssertionError("recording intent attempted to contact the switch")
 
     monkeypatch.setattr(switch_client, "get_switch_client", explode)
-    store.set_expected(device_id="sw", interface="Gi0/4", expected_name="TEST-AP", now=NOW)
+    store.set_expected(device_id="sw", interface="Gi0/4", expected_name="SYNTH-MR44-01", now=NOW)
     assert [r.interface for r in store.list_expected("sw")] == ["Gi0/4"]
 
 
 def test_clearing_intent_falls_back_to_the_description(store):
-    store.set_expected(device_id="sw", interface="Gi0/1", expected_name="TEST-GATEWAY-01-HQ", now=NOW)
+    store.set_expected(device_id="sw", interface="Gi0/1", expected_name="SYNTH-MX64-01", now=NOW)
     assert store.clear_expected(device_id="sw", interface="Gi0/1") is True
     assert store.list_expected("sw") == []
 
@@ -445,10 +445,10 @@ def test_clearing_intent_falls_back_to_the_description(store):
 
 
 def test_expected_device_seen_elsewhere_is_location_drift():
-    interfaces = [iface("Gi0/4", "TEST-AP-01 AP", status="notconnect")]
+    interfaces = [iface("Gi0/4", "SYNTH-MR44-01 AP", status="notconnect")]
     sighting = ExternalSighting(
-        label="TEST-AP-01",
-        observedLocation="TEST-GATEWAY-01 port 11",
+        label="SYNTH-MR44-01",
+        observedLocation="SYNTH-MX64-01 port 11",
         source="meraki-api",
         confidence="high",
         observedAt=NOW,
@@ -457,21 +457,21 @@ def test_expected_device_seen_elsewhere_is_location_drift():
     assert result.status == "drift"
     assert result.drift_kind == "location"
     assert result.headline == "Location drift"
-    assert "TEST-GATEWAY-01 port 11" in result.explanation
+    assert "SYNTH-MX64-01 port 11" in result.explanation
     assert "different place" in result.explanation
 
 
 def test_without_an_external_source_the_same_case_is_only_missing():
     """SwitchOps must not invent a location it cannot see."""
-    interfaces = [iface("Gi0/4", "TEST-AP-01 AP", status="notconnect")]
+    interfaces = [iface("Gi0/4", "SYNTH-MR44-01 AP", status="notconnect")]
     result = only(run(interfaces))
     assert result.status == "expected-not-observed"
     assert result.drift_kind == "none"
-    assert "TEST-GATEWAY-01" not in result.explanation
+    assert "SYNTH-MX64-01" not in result.explanation
 
 
 def test_an_unrelated_sighting_does_not_claim_location_drift():
-    interfaces = [iface("Gi0/4", "TEST-AP-01 AP", status="notconnect")]
+    interfaces = [iface("Gi0/4", "SYNTH-MR44-01 AP", status="notconnect")]
     sighting = ExternalSighting(label="Some Printer", observedLocation="elsewhere")
     assert only(run(interfaces, sightings=[sighting])).status == "expected-not-observed"
 
@@ -511,7 +511,7 @@ def test_locally_administered_addresses_are_flagged_as_uninferable():
     """Randomised addresses close off vendor inference; say so, guess nothing."""
     assert is_locally_administered("0200.0000.0009") is True
     assert is_locally_administered("0200.0000.0007") is True
-    assert is_locally_administered("0200.0000.000E") is False
+    assert is_locally_administered("0000.5e00.530E") is False
 
     interfaces = [iface("Gi0/3", "Test Server")]
     result = only(run(interfaces, macs=[mac("Gi0/3", prefix="0e30.9b00.00")]))
@@ -560,14 +560,14 @@ def test_gateway_absent_from_arp_yields_no_path_claim():
 def test_intent_and_reconciliation_state_survive_restart(tmp_path):
     path = tmp_path / "intent.sqlite"
     first = TopologyIntentStore(db_path=path)
-    first.set_expected(device_id="sw", interface="Gi0/1", expected_name="TEST-GATEWAY-01-HQ", now=NOW)
+    first.set_expected(device_id="sw", interface="Gi0/1", expected_name="SYNTH-MX64-01", now=NOW)
     first.observe_reconciliation(
         device_id="sw", interface="Gi0/1", signature="drift|identity|A|B", status="drift", now=NOW
     )
 
     # New process, same file.
     second = TopologyIntentStore(db_path=path)
-    assert [r.expected_name for r in second.list_expected("sw")] == ["TEST-GATEWAY-01-HQ"]
+    assert [r.expected_name for r in second.list_expected("sw")] == ["SYNTH-MX64-01"]
     changed, previous, _first_seen = second.observe_reconciliation(
         device_id="sw", interface="Gi0/1", signature="drift|identity|A|B", status="drift", now=NOW
     )
@@ -604,7 +604,7 @@ def test_reconciliation_output_contains_no_hardware_addresses():
 def test_intent_store_persists_no_hardware_addresses(tmp_path):
     path = tmp_path / "intent.sqlite"
     store = TopologyIntentStore(db_path=path)
-    store.set_expected(device_id="sw", interface="Gi0/1", expected_name="TEST-GATEWAY-01-HQ", now=NOW)
+    store.set_expected(device_id="sw", interface="Gi0/1", expected_name="SYNTH-MX64-01", now=NOW)
     store.observe_reconciliation(
         device_id="sw", interface="Gi0/1",
         signature="uncertain|none|Unidentified device|Uplink to Test Gateway",
@@ -617,11 +617,11 @@ def test_intent_store_persists_no_hardware_addresses(tmp_path):
     assert not _re.search(rb"([0-9a-f]{2}:){5}[0-9a-f]{2}", raw, _re.IGNORECASE)
 
 
-# --- 20: the physical lab, as it actually is now ---------------------------
+# --- 20: the synthetic fixture, as it actually is now ---------------------------
 
 
-def _physical_lab():
-    """The real Catalyst after the Test ISP -> TEST-GATEWAY-01 migration.
+def _synthetic_fixture():
+    """A synthetic Catalyst fixture after the Test ISP -> SYNTH-MX64-01 migration.
 
     Descriptions still describe the old network; that is the whole point.
     """
@@ -629,7 +629,7 @@ def _physical_lab():
         iface("Gi0/1", "Uplink to Test Gateway", protected=True),
         iface("Gi0/2", "Test Workstation", protected=True),
         iface("Gi0/3", "Test Server"),
-        iface("Gi0/4", "TEST-AP-01 AP", status="notconnect"),
+        iface("Gi0/4", "SYNTH-MR44-01 AP", status="notconnect"),
         iface("Gi0/5", "TV", status="notconnect"),
         iface("Gi0/6", "Spare Access Port", status="disabled"),
         iface("Gi0/7", "Spare Access Port", status="disabled"),
@@ -639,9 +639,9 @@ def _physical_lab():
     ]
 
 
-def test_physical_lab_reconciles_the_way_the_evidence_allows():
+def test_synthetic_fixture_reconciles_the_way_the_evidence_allows():
     """No CDP on this switch, so upstream identity is genuinely unknowable."""
-    interfaces = _physical_lab()
+    interfaces = _synthetic_fixture()
     macs = [
         mac("Gi0/1", "01"), mac("Gi0/1", "02"),
         mac("Gi0/2", "03"),
@@ -666,24 +666,24 @@ def test_physical_lab_reconciles_the_way_the_evidence_allows():
 
     # Nothing anywhere claims the upstream is an MX, or that the AP is offline.
     blob = summary.model_dump_json()
-    assert "TEST-GATEWAY" not in blob
-    assert "Test ISP" in blob  # only as recorded intent
+    assert "SYNTH-MX64" not in blob
+    assert "Test Gateway" in blob  # only as recorded intent
     virgin = next(a for r in summary.interfaces if r.interface == "Gi0/1"
-                  for a in r.assertions if "Test ISP" in a.object_label)
+                  for a in r.assertions if "Test Gateway" in a.object_label)
     assert virgin.evidence_class == "expected"
 
 
-def test_physical_lab_upstream_never_becomes_an_observed_router():
+def test_synthetic_fixture_upstream_never_becomes_an_observed_router():
     """The v0.2.1 shape rendered Gi0/1 as an observed router named from the
     description. That must be impossible now."""
-    interfaces = _physical_lab()
+    interfaces = _synthetic_fixture()
     summary = run(interfaces, macs=[mac("Gi0/1", "01"), mac("Gi0/1", "02")])
     gi01 = next(r for r in summary.interfaces if r.interface == "Gi0/1")
     observed = [a for a in gi01.assertions if a.evidence_class == "observed"]
     assert observed
     for assertion in observed:
         assert assertion.object_identified is False
-        assert "Test ISP" not in assertion.object_label
+        assert "Test Gateway" not in assertion.object_label
         assert assertion.device_type is None
 
 
@@ -691,11 +691,11 @@ def test_physical_lab_upstream_never_becomes_an_observed_router():
 
 
 def test_muting_an_interface_stops_it_asking_for_attention(store):
-    interfaces = [iface("Gi0/4", "TEST-AP-01 AP", status="notconnect")]
+    interfaces = [iface("Gi0/4", "SYNTH-MR44-01 AP", status="notconnect")]
     assert only(run(interfaces)).status == "expected-not-observed"
 
     stored = [store.set_expected(
-        device_id="sw", interface="Gi0/4", expected_name="TEST-AP-01 AP",
+        device_id="sw", interface="Gi0/4", expected_name="SYNTH-MR44-01 AP",
         suppressed=True, now=NOW,
     )]
     summary = run(interfaces, stored=stored)
@@ -707,13 +707,13 @@ def test_muting_an_interface_stops_it_asking_for_attention(store):
 
 
 def test_muting_stops_events_and_resolves_an_open_one(store):
-    interfaces = [iface("Gi0/4", "TEST-AP-01 AP", status="notconnect")]
+    interfaces = [iface("Gi0/4", "SYNTH-MR44-01 AP", status="notconnect")]
     first = run(interfaces)
     opened = reconciliation_events(device_id="sw", summary=first, store=store, observed_at=NOW)
     assert [event.event_type for event in opened] == ["expected_device_missing"]
 
     stored = [store.set_expected(
-        device_id="sw", interface="Gi0/4", expected_name="TEST-AP-01 AP",
+        device_id="sw", interface="Gi0/4", expected_name="SYNTH-MR44-01 AP",
         suppressed=True, now=NOW,
     )]
     muted = run(interfaces, stored=stored)

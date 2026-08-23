@@ -1,16 +1,14 @@
 import pytest
 
 from app.command_registry import (
-    ALLOWLISTED_INTERFACES,
-    PROTECTED_INTERFACES,
     build_write_action,
+    is_physical_interface,
     normalize_interface,
     resolve_read_command,
     sanitize_description,
 )
 from app.errors import (
     CommandNotAllowedError,
-    ProtectedInterfaceError,
 )
 
 
@@ -34,6 +32,12 @@ def test_normalize_interface_short_form():
     assert normalize_interface("GigabitEthernet0/6") == "GigabitEthernet0/6"
 
 
+def test_normalize_interface_supports_general_catalyst_layouts():
+    assert normalize_interface("Gi1/0/48") == "GigabitEthernet1/0/48"
+    assert normalize_interface("Te2/1/1") == "TenGigabitEthernet2/1/1"
+    assert normalize_interface("Twe1/0/24") == "TwentyFiveGigE1/0/24"
+
+
 def test_normalize_vlan():
     assert normalize_interface("Vlan1") == "Vlan1"
 
@@ -47,13 +51,13 @@ def test_interface_injection_forms_are_rejected(value):
         normalize_interface(value)
 
 
-def test_protected_interfaces_rejected():
-    for iface in ("Gi0/1", "Gi0/2", "Vlan1"):
-        with pytest.raises(ProtectedInterfaceError):
-            build_write_action("disable_port", interface=iface)
+def test_vlan_is_readable_but_never_a_physical_write_target():
+    assert not is_physical_interface("Vlan1")
+    with pytest.raises(CommandNotAllowedError):
+        build_write_action("disable_port", interface="Vlan1")
 
 
-def test_allowlisted_interface_accepted():
+def test_validated_physical_interface_is_accepted_for_action_construction():
     plan = build_write_action("enable_port", interface="Gi0/6")
     assert plan.interface == "GigabitEthernet0/6"
     assert "interface GigabitEthernet0/6" in plan.commands
@@ -83,5 +87,6 @@ def test_unknown_write_action_rejected():
         build_write_action("delete_everything", interface="Gi0/6")
 
 
-def test_allowlists_and_protected_disjoint():
-    assert set(ALLOWLISTED_INTERFACES).isdisjoint(set(PROTECTED_INTERFACES))
+def test_action_construction_has_no_device_specific_port_layout():
+    plan = build_write_action("enable_port", interface="Gi7/0/48")
+    assert plan.interface == "GigabitEthernet7/0/48"

@@ -37,6 +37,7 @@ export function mergeLiveInterfaces(
       poeState: live.poe_state || item.poeState,
       poeWatts: live.poe_watts,
       protected: live.protected,
+      policyState: live.policy_state,
     };
   };
 
@@ -51,6 +52,7 @@ export function mergeLiveInterfaces(
           duplex: live.duplex,
           speed: live.speed,
           protected: live.protected,
+          policyState: live.policy_state,
         }
       : item;
   };

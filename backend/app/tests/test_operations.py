@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
 from app.operations import (
     classify_ios_response,
     config_fingerprints,
@@ -7,13 +11,48 @@ from app.operations import (
     run_operation,
     save_running_config,
 )
+from app.errors import WriteActionsDisabledError
 from app.switch_client import MockSwitchClient
+
+
+@pytest.fixture(autouse=True)
+def authorized_operation_policy(tmp_path, monkeypatch):
+    from app import operations as operations_mod
+    from app.interface_policy import InterfacePolicyStore
+    from app.operations import get_write_lock
+
+    host = "192.0.2.10"
+    store = InterfacePolicyStore(tmp_path / "interface-policy.json")
+    store.set_state(host, "Gi0/6", "OPERABLE")
+    store.set_controlled_writes(True)
+    credentials = SimpleNamespace(status=lambda: {"switch_host": host})
+    monkeypatch.setattr(operations_mod, "get_interface_policy_store", lambda: store)
+    monkeypatch.setattr(operations_mod, "get_credential_store", lambda: credentials)
+    get_write_lock().unlock()
+    yield
+    get_write_lock().lock()
 
 
 def test_ios_rejection_is_classified_from_returned_text():
     assert classify_ios_response("% Invalid input detected at '^' marker.")
     assert classify_ios_response("% Authorization failed")
     assert classify_ios_response("Building configuration...\n[OK]") is None
+
+
+def test_operation_helper_rechecks_ephemeral_session_lock():
+    from app.operations import get_write_lock
+
+    get_write_lock().lock()
+    with pytest.raises(WriteActionsDisabledError):
+        run_operation(MockSwitchClient(), kind="admin_up", interface="Gi0/6")
+
+
+def test_save_helper_rechecks_ephemeral_session_lock():
+    from app.operations import get_write_lock
+
+    get_write_lock().lock()
+    with pytest.raises(WriteActionsDisabledError):
+        save_running_config(MockSwitchClient())
 
 
 def test_mock_operation_changes_running_only_and_verifies():

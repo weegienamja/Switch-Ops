@@ -57,7 +57,7 @@ describe("health and partial states", () => {
 
   it("names a single observation honestly and refuses to draw a trend", () => {
     render(<ObservationHistoryPanel history={{
-      deviceId: "switch-lab",
+      deviceId: "switch-synthetic",
       observations: [{
         timestamp: "2026-08-22T04:00:00Z",
         reachable: true,
@@ -90,7 +90,7 @@ describe("health and partial states", () => {
       temperatureC: 49,
       poeUsedW: 0,
     }));
-    render(<ObservationHistoryPanel history={{ deviceId: "switch-lab", observations }} />);
+    render(<ObservationHistoryPanel history={{ deviceId: "switch-synthetic", observations }} />);
     expect(screen.getByText("3 observations · last 24h")).toBeTruthy();
     expect(document.querySelector(".trend__spark")).toBeTruthy();
     // Every observation stays visible as a discrete point.

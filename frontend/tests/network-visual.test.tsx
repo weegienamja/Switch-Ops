@@ -33,7 +33,7 @@ function device(overrides: Partial<NetworkDevice> & { id: string }): NetworkDevi
 
 function link(overrides: Partial<NetworkLink> & { id: string; toDeviceId: string; fromInterface: string }): NetworkLink {
   return {
-    fromDeviceId: "switch-lab",
+    fromDeviceId: "switch-synthetic",
     status: "up",
     speed: "a-1000",
     poe: false,
@@ -47,10 +47,10 @@ function link(overrides: Partial<NetworkLink> & { id: string; toDeviceId: string
 
 const topology: TopologyModel = {
   generatedAt: "2026-08-22T04:00:00Z",
-  rootDeviceId: "switch-lab",
+  rootDeviceId: "switch-synthetic",
   devices: [
     device({
-      id: "switch-lab",
+      id: "switch-synthetic",
       type: "switch",
       vendor: "Cisco",
       model: "WS-C3560CG-8PC-S",
@@ -102,8 +102,8 @@ const topology: TopologyModel = {
     }),
   ],
   interfaces: Array.from({ length: 10 }, (_, index) => ({
-    id: `switch-lab:Gi0/${index + 1}`,
-    deviceId: "switch-lab",
+    id: `switch-synthetic:Gi0/${index + 1}`,
+    deviceId: "switch-synthetic",
     port: `Gi0/${index + 1}`,
     description: index === 0 ? "Uplink to Test Gateway" : index === 1 ? "Test Workstation" : index === 3 ? "TEST-AP-01 AP" : "Spare",
     adminState: index > 4 ? ("down" as const) : ("up" as const),
@@ -115,6 +115,7 @@ const topology: TopologyModel = {
     poeState: "off",
     poeWatts: 0,
     protected: index < 2,
+    policyState: index < 2 ? ("PROTECTED" as const) : ("UNMANAGED" as const),
     role: index === 0 ? ("uplink" as const) : ("access" as const),
     learnedMacCount: index === 0 ? 5 : index === 1 ? 1 : 0,
   })),
@@ -185,7 +186,7 @@ describe("physical front panel", () => {
     expect(screen.getByRole("button", { name: /Gi0\/6, administratively disabled/ })).toBeTruthy();
     // Protection is stated in words, not just an icon.
     expect(
-      screen.getByRole("button", { name: /Gi0\/1.*protected from configuration changes/ }),
+      screen.getByRole("button", { name: /Gi0\/1.*protected write policy/ }),
     ).toBeTruthy();
   });
 });

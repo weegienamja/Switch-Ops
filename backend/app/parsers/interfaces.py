@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import List
 
-from ..command_registry import PROTECTED_INTERFACES, normalize_interface
+from ..command_registry import is_physical_interface, normalize_interface
 from ..models import InterfaceStatus
 
 _STATUS_VALUES = {
@@ -18,14 +18,6 @@ _STATUS_VALUES = {
     "faulty",
     "sfpabsent",
 }
-
-
-def _is_protected(short_port: str) -> bool:
-    try:
-        canonical = normalize_interface(short_port)
-    except Exception:
-        return False
-    return canonical in PROTECTED_INTERFACES
 
 
 def parse_interface_status(text: str) -> List[InterfaceStatus]:
@@ -91,7 +83,13 @@ def parse_interface_status(text: str) -> List[InterfaceStatus]:
             speed = slice_col(ln, "Speed")
             type_ = slice_col(ln, "Type")
 
-        if not port or not port.lower().startswith("gi"):
+        if not port:
+            continue
+        try:
+            canonical = normalize_interface(port)
+        except Exception:
+            continue
+        if not is_physical_interface(canonical):
             continue
         interfaces.append(
             InterfaceStatus(
@@ -102,7 +100,8 @@ def parse_interface_status(text: str) -> List[InterfaceStatus]:
                 duplex=duplex,
                 speed=speed,
                 type=type_,
-                protected=_is_protected(port),
+                protected=False,
+                policyState="UNMANAGED",
             )
         )
     return interfaces

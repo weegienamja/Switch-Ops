@@ -67,6 +67,13 @@ class CredentialSetupRequest(BaseModel):
             raise ValueError("Credential value is too long.")
         return value
 
+    @field_validator("switch_password")
+    @classmethod
+    def validate_required_password(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Switch password is required.")
+        return value
+
 
 # --- Runtime information ---------------------------------------------------
 
@@ -149,6 +156,7 @@ class ApiError(BaseModel):
 # --- Switch domain ---------------------------------------------------------
 
 HealthState = Literal["HEALTHY", "NOTICE", "ATTENTION", "CRITICAL"]
+InterfacePolicyState = Literal["PROTECTED", "OPERABLE", "UNMANAGED"]
 
 
 class HealthReason(BaseModel):
@@ -624,6 +632,7 @@ class NetworkInterface(BaseModel):
     poe_state: str = Field(default="", alias="poeState")
     poe_watts: float = Field(default=0.0, alias="poeWatts")
     protected: bool = False
+    policy_state: InterfacePolicyState = Field(default="UNMANAGED", alias="policyState")
     role: InterfaceRole = "unknown"
     learned_mac_count: int = Field(default=0, alias="learnedMacCount")
 
@@ -694,7 +703,10 @@ class InterfaceStatus(BaseModel):
     speed: str = ""
     type: str = ""
     protected: bool = False
+    policy_state: InterfacePolicyState = Field(default="UNMANAGED", alias="policyState")
     notes: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
 
 
 class InterfaceStatusResponse(BaseModel):
@@ -1022,6 +1034,30 @@ class WriteLockStatus(BaseModel):
     unlocked_at: Optional[datetime] = Field(default=None, alias="unlockedAt")
 
     model_config = {"populate_by_name": True}
+
+
+class InterfacePolicyEntry(BaseModel):
+    interface: str
+    state: InterfacePolicyState
+
+
+class InterfacePolicyResponse(BaseModel):
+    device_configured: bool = Field(alias="deviceConfigured")
+    device_key: Optional[str] = Field(default=None, alias="deviceKey")
+    valid: bool
+    load_error: Optional[str] = Field(default=None, alias="loadError")
+    controlled_writes_enabled: bool = Field(alias="controlledWritesEnabled")
+    interfaces: List[InterfacePolicyEntry] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
+class InterfacePolicyUpdate(BaseModel):
+    state: InterfacePolicyState
+
+
+class ControlledWritesUpdate(BaseModel):
+    enabled: bool
 
 
 class ConfigSaveState(BaseModel):

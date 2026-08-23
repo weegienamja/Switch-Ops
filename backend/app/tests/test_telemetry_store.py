@@ -36,7 +36,7 @@ def _record(
     macs: list[str] | None = None,
 ):
     return store.record_snapshot(
-        device_id="switch-lab",
+        device_id="switch-synthetic",
         reachable=True,
         cpu=CpuStatus(cpu5Sec=8),
         memory=MemoryStatus(processorTotal=100, processorUsed=40),
@@ -134,7 +134,7 @@ def test_history_is_ordered_and_filtered_by_device(tmp_path):
     _record(store, at=first, errors=0)
     _record(store, at=first + timedelta(minutes=5), errors=0)
 
-    history = store.history(device_id="switch-lab", since=first - timedelta(seconds=1))
+    history = store.history(device_id="switch-synthetic", since=first - timedelta(seconds=1))
     assert len(history.observations) == 2
     assert history.observations[0].timestamp < history.observations[1].timestamp
     assert history.observations[0].memory_used_pct == 40

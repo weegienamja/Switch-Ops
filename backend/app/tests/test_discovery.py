@@ -89,7 +89,7 @@ def _interface() -> InterfaceStatus:
     return InterfaceStatus(port="Gi0/2", status="connected", vlan="1")
 
 
-def _adapter(mac: str = "0200.0000.000D") -> LocalAdapter:
+def _adapter(mac: str = "0000.5e00.530E") -> LocalAdapter:
     return LocalAdapter(
         name="Ethernet",
         ip="192.0.2.22",
@@ -98,7 +98,7 @@ def _adapter(mac: str = "0200.0000.000D") -> LocalAdapter:
     )
 
 
-def _mac(mac: str = "0200.0000.000E", port: str = "Gi0/2") -> MacTableEntry:
+def _mac(mac: str = "0000.5e00.530E", port: str = "Gi0/2") -> MacTableEntry:
     return MacTableEntry(vlan="1", mac=mac, type="DYNAMIC", port=port)
 
 
@@ -107,7 +107,7 @@ def test_unique_local_adapter_correlation_confirms_the_pc_without_exposing_mac()
         management_ip="192.0.2.190",
         adapters=[_adapter()],
         mac_entries=[_mac()],
-        arp_entries=[ArpEntry(ip="192.0.2.22", mac="0200.0000.000E", interface="Vlan1")],
+        arp_entries=[ArpEntry(ip="192.0.2.22", mac="0000.5e00.530E", interface="Vlan1")],
         interfaces=[_interface()],
     )
     assert result.state == "confirmed"
@@ -133,7 +133,7 @@ def test_randomised_or_multi_address_local_paths_stay_ambiguous():
     randomised = correlate_local_endpoint(
         management_ip="192.0.2.190",
         adapters=[_adapter("0200.0000.0008")],
-        mac_entries=[_mac("0200.0000.0009")],
+        mac_entries=[_mac("0200.0000.0008")],
         arp_entries=[],
         interfaces=[_interface()],
     )
@@ -142,7 +142,7 @@ def test_randomised_or_multi_address_local_paths_stay_ambiguous():
     behind_other_devices = correlate_local_endpoint(
         management_ip="192.0.2.190",
         adapters=[_adapter()],
-        mac_entries=[_mac(), _mac("0200.0000.0003")],
+        mac_entries=[_mac(), _mac("0000.5e00.5303")],
         arp_entries=[],
         interfaces=[_interface()],
     )

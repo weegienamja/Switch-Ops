@@ -1,389 +1,161 @@
 # SwitchOps
 
-A polished local desktop dashboard for the SWITCHOPS-TEST-SW1 Cisco Catalyst WS-C3560CG-8PC-S, built around safe, allowlisted operations.
+SwitchOps is a Windows desktop application for observing a Cisco IOS Catalyst
+switch and applying a small catalog of explicitly authorized, bounded changes.
+It runs locally, keeps device data on the operator's PC, and does not provide a
+raw CLI endpoint.
 
-> **Local lab dashboard. Do not expose publicly.** Access locally or through a private VPN such as Tailscale. The target switch runs legacy SSH cryptography (Cisco IOS 12.2(55)EX2) and must never be reachable from the public internet.
+## Install the Windows app
 
-## What it is
+Normal users do not need Python, Node.js, Rust, pnpm, or a source checkout.
 
-SwitchOps is a Windows-first desktop application that:
+1. Open the repository's [Releases](https://github.com/weegienamja/Switch-Ops/releases) page.
+2. Open **SwitchOps v0.4.1 - Live Operations**.
+3. Download `SwitchOps_0.4.1_x64-setup.exe` (NSIS) or
+   `SwitchOps_0.4.1_x64_en-US.msi` (MSI).
+4. Install and launch SwitchOps.
+5. Enter the management IP or hostname, username, password, and optional
+   enable secret for your own Cisco IOS switch.
+6. Select **Save and test connection**. The credentials remain stored locally,
+   and the first dashboard appears only after a real connection succeeds.
 
-- Connects to the local Cisco Catalyst over SSH using Netmiko, with a legacy-SSH Paramiko fallback for the old KEX/cipher/MAC suites the switch requires.
-- Runs **only allowlisted read-only commands** for dashboard, guide, and planning observations.
-- Surfaces switch state — health, ports, PoE, environment, CPU, memory, MAC table, logs — in a polished dark "network operations" UI.
-- Logs every executed command into both SQLite and a JSONL audit log.
-- Backs up the running configuration on demand with timestamped filenames.
-- Ships a controlled safe-write mode (disabled by default) for a tiny set of mapped actions on spare ports.
-- Never accepts arbitrary CLI from the UI or any future LLM/MCP integration.
+The first launch has no configured device, topology, telemetry, or history.
+Production installers do not include the source-only sample-output fixtures and
+cannot be switched into fixture mode. Unsigned development releases may cause
+Windows SmartScreen to show its standard publisher warning.
 
-## SwitchOps v0.4.0 (current) - live operations
+## v0.4.1: Live Operations
 
-v0.4 turns the refresh-driven dashboard into a live, serialized operations
-console while retaining the v0.3 evidence and reconciliation model.
+- A persistent, serialized SSH worker owns the device session and reconnects
+  with bounded backoff. Host keys are pinned on first use and later changes are
+  refused.
+- Tiered collectors update interface state, PoE, health, MAC/ARP/CDP/LLDP
+  evidence, reconciliation, and retained local history without concurrent CLI
+  sessions.
+- Typed server-sent events update live state and bounded-operation progress.
+- Five predefined interface actions are available: administrative up/down,
+  PoE auto/off, and a sanitized description. There is no arbitrary command
+  input.
+- Each change performs a precheck, captures exact bounded state, creates a
+  local running-configuration backup, classifies IOS output, verifies the
+  requested property, audits the result, and rolls back when verification
+  fails.
+- Operations modify running configuration only. Saving to startup
+  configuration is separate, explicit, and confirmed; SwitchOps never saves
+  automatically.
 
-- **One persistent Catalyst session.** A dedicated worker owns SSH for the
-  process lifetime. All telemetry, diagnostics, and transactions enter one
-  priority queue; reconnects use bounded backoff and host-key changes still
-  fail closed.
-- **Measured live tiers.** Port status runs every 5 seconds, rotating PoE /
-  errors / environment / load checks every 20 seconds, and MAC / ARP / CDP /
-  LLDP discovery every 60 seconds. Slow clients drop old SSE messages rather
-  than blocking collection, and transactions pause collectors.
-- **Typed SSE UI.** The Visual network, Catalyst front panel, PoE state, live
-  connection badge, per-tier freshness, operation progress, write lock, and
-  running-vs-startup state update without a full page observation.
-- **Verified controlled writes.** Only five fixed actions exist: admin up/down,
-  PoE auto/off, and a sanitized description on Gi0/3-Gi0/8. Each transaction
-  prechecks, backs up, executes, classifies IOS output, verifies the property,
-  audits, and rolls back on failure. Gi0/1, Gi0/2, and Vlan1 remain immutable.
-- **No automatic save.** Successful operations change running configuration
-  only. Saving startup configuration is a separate confirmed UI action; real
-  autonomous validation never invokes it.
-- **Progressive identity.** CDP and LLDP remain direct announcements,
-  descriptions remain intent, and an exact local-NIC/MAC-table correlation can
-  label this PC without exposing its MAC. Existing SNMP configuration is
-  summarized by counts and versions only; v0.4 does not use or configure SNMP.
+## Interface write policy
 
-Real WS-C3560CG-8PC-S measurements drove the design. The original cold
-13-command observation took about 11.75 seconds; a persistent, prompt-anchored
-full observation takes about 1.93-1.98 seconds. `show interfaces status` fell
-from roughly 509 ms to 46 ms with byte-identical output. The live fast tier
-therefore costs about 0.9% device-session duty cycle at its 5-second default.
+SwitchOps does not contain a public, device-specific port allowlist.
 
-Hardware acceptance was performed on the lab switch: the temporary LLDP
-experiment found no TEST-GATEWAY-01 advertisement and restored the original running
-configuration, startup was unchanged, and a reversible Gi0/6 admin test
-verified `disabled -> notconnect -> disabled`. The final running/startup
-fingerprints match and write capability is disabled again.
+- `UNMANAGED` is the default for every new device and interface and cannot be
+  modified.
+- `PROTECTED` explicitly denies modification.
+- `OPERABLE` can be assigned only to a validated physical interface and is the
+  only state that can authorize a bounded interface operation.
+- The device is identified in the policy by a SHA-256 digest of its configured
+  address; the clear-text address is not stored in the policy file.
+- A management SVI whose address exactly matches the configured device address
+  is automatically marked `PROTECTED`.
+- Controlled writes are globally off by default. Enabling them requires a
+  deliberate confirmation in Settings.
+- Every process starts with device control locked. A separate session unlock is
+  required, and restarting SwitchOps locks it again.
 
-## SwitchOps v0.3.0 - topology reconciliation
+The FastAPI backend enforces every gate. UI state is never treated as
+authorization, and a missing, malformed, or invalid policy fails closed to
+read-only.
 
-The topology diagram is no longer the answer. It is one view of a comparison.
+## Evidence model
 
-**The problem.** A description configured on a switch is documentation, and it
-can be years out of date. v0.2.1 built the endpoint for a linked port from that
-description - its name, its type, its icon - and marked the result
-`source="observed"`. A label somebody typed in was being rendered as a
-discovered device.
+SwitchOps keeps observed facts separate from expected topology. Interface
+descriptions are intent, not proof that a named device is present. CDP and LLDP
+announcements are direct evidence; MAC learning proves reachability through a
+port but does not by itself identify the directly attached device. The UI
+reports `aligned`, `drift`, `expected-not-observed`, `unexpected`, `uncertain`,
+or `not-applicable` without converting uncertainty into a guess.
 
-**The fix.** Four kinds of claim are now held about an interface at once and
-compared, rather than one overwriting the others:
+## Local data and privacy
 
-| Class | Means |
-| --- | --- |
-| `observed` | Proven by telemetry read from a device just now. |
-| `expected` | Believed to be intended. Never a sighting. |
-| `historical` | Observed in an earlier snapshot; may no longer hold. |
-| `inferred` | Supported by evidence, not directly proven. |
-| `unknown` | Not enough evidence. |
+The packaged backend binds only to `127.0.0.1:8765`. It has no cloud service,
+analytics uploader, or remote telemetry destination.
 
-An interface description now only ever produces an *expected* assertion. The
-observed assertion for the same interface carries what the wire actually
-proved - which, on a switch where nothing announces itself, is presence
-without identity.
+Runtime data is stored below `%LOCALAPPDATA%\SwitchOps`:
 
-**Reconciliation statuses** - `aligned`, `drift` (identity or location),
-`expected-not-observed`, `unexpected`, `uncertain`, `not-applicable` - with
-"changed since the previous observation" kept deliberately orthogonal, because
-an interface can match intent perfectly and still have changed.
+- `data/` — local SQLite telemetry, audits, configuration history, topology
+  intent, host-key pin, and the per-device interface policy;
+- `backups/` — running-configuration backups created on demand or before a
+  bounded change;
+- `logs/` — redacted local application logs.
 
-**Health and reconciliation are independent.** A network can be entirely
-healthy and not match its documentation at all:
+Credentials use Windows Credential Manager when available. If the OS credential
+backend is unavailable, SwitchOps uses an access-restricted local fallback file
+and reports that storage choice in Settings. Passwords and enable secrets are
+never returned by the API. Configuration history and backups can contain
+sensitive network configuration and must be protected as private local data.
 
-```
-NETWORK HEALTH          HEALTHY
-TOPOLOGY RECONCILIATION Attention - 2 expected but not observed
-```
+Clearing credentials removes the stored login but does not delete telemetry,
+backups, policy, or configuration history. To reset all local application data,
+exit SwitchOps and remove `%LOCALAPPDATA%\SwitchOps` using the Windows account
+that created it.
 
-**Expected topology is editable and local.** `PUT /api/topology/intent/{port}`
-records what should be on an interface. It never touches the switch; when local
-intent and the device's own description disagree, that is reported as stale
-documentation rather than silently corrected.
+See [SECURITY.md](SECURITY.md) for the threat boundary, reporting process, and
+supported-version policy.
 
-**Events are raised from a change of situation**, not from the presence of one,
-so a discrepancy still true on the twentieth refresh stays a single event.
+## Compatibility and safety boundary
 
-See [docs/TOPOLOGY-RECONCILIATION.md](docs/TOPOLOGY-RECONCILIATION.md) for the
-architecture, including why no OUI vendor database was added and how a Meraki
-controller can later act as an evidence provider without SwitchOps becoming a
-second Meraki Dashboard.
+v0.4.1 targets Windows x64 and Cisco IOS devices supported by Netmiko's
+`cisco_ios` driver. Some older IOS releases require legacy SSH algorithms.
+SwitchOps enables those algorithms only inside its backend process; it does not
+weaken Windows or system-wide SSH configuration. Keep management SSH reachable
+only from a trusted management network.
 
-## SwitchOps v0.2.1
+The application intentionally does not provide Telnet, switch HTTP/HTTPS
+configuration, arbitrary CLI, automatic startup saves, SNMP configuration, or
+cloud control.
 
-A correctness and product-quality pass over the v0.2 foundation. No new subsystem.
+## Build from source (developers)
 
-**Topology correlation fixed.** v0.2 created one device node per learned MAC and
-copied the interface description onto each, so the Gi0/1 uplink rendered as
-several directly connected "Test ISP router" objects that do not exist. A MAC
-learned through an interface is not proof of a device attached to that
-interface, so the builder now emits **at most one endpoint node per interface**
-and counts the remaining addresses as learned-behind evidence.
+Prerequisites:
 
-**Explicit evidence vocabulary.** Every device and link carries an
-`evidenceLevel` — `direct`, `observed-on-port`, `learned-behind`, `expected` or
-`unknown` — and an `identitySource`, so a name taken from an interface
-description is never presented as a discovered identity. CDP is now collected in
-the dashboard sweep because a neighbour announcing itself is the only direct
-attachment evidence this platform can offer.
-
-**The Visual network is a picture, not cards.** The Catalyst front panel is the
-centre of the topology, upstream devices sit above it, endpoints below, and a
-measured cable runs from every device to the physical port it is plugged into.
-
-**Honest observation history.** "Last 24 hours / 1 samples" is now "Recent
-observations / 1 observation", with the collection model stated. Below three
-observations SwitchOps draws discrete markers instead of a chart; above it, a
-time-aware sparkline where gaps read as gaps.
-
-**Beginner learning separated from change control.** Enable port / Disable port
-/ Enable PoE / Write memory no longer sit at the bottom of the read-only Lab
-Guide. They live in a new **Change control** view with the dry-run planner,
-configuration history and backup. Raw IOS logs and the developer audit are
-behind Advanced disclosures rather than leading the What changed page.
-
-**Settings and Test connection.** Settings is a sectioned dialog written for a
-beginner — "Windows Credential Manager", not "keyring". `POST
-/api/setup/test-connection` runs a bounded read-only diagnostic (credentials →
-TCP 22 → SSH → host key → authentication → Cisco IOS → read-only operations),
-sends only allowlisted show commands, and deliberately claims nothing about
-Internet reachability, privilege level, or switch health.
-
-Physical write execution remains disabled.
-
-## SwitchOps v0.2 foundation
-
-Version 0.2 turns the physical lab into a visual, historical, self-explaining system:
-
-- Refresh-driven SQLite telemetry keeps 30 days of device/interface observations by default. Mock and physical histories have separate identities.
-- Health uses current state and counter deltas rather than treating an old cumulative error as an active fault.
-- A user-facing event timeline records observed link, administrative, speed, duplex, VLAN, PoE, error-counter, and learned-device changes.
-- A normalized evidence-aware topology supports observed, inferred, expected, and unknown devices without fabricated identification. (v0.2.1 tightened the correlation rules; see above.)
-- A clickable ten-port Catalyst front panel stays correlated with the topology and contextual beginner explanations.
-- Thirteen Lab Guide operations resolve only to fixed allowlisted read commands and return structured results.
-- Change-only configuration history stores private local versions, fingerprints, known-good markers, and redacted diffs.
-- Access-point port planning validates current state and renders a dry-run proposal. Applying it is intentionally impossible in v0.2.
-
-This was the v0.2 collection model. v0.4 replaces it with bounded tiered live
-collection while retaining the change-aware historical chart.
-
-## Switch under management
-
-| Field            | Value |
-| ---------------- | --- |
-| Hostname         | SWITCHOPS-TEST-SW1 |
-| Model            | Cisco Catalyst WS-C3560CG-8PC-S V03 |
-| IOS              | 12.2(55)EX2 |
-| Management IP    | 192.0.2.190/24 |
-| Default gateway  | 192.0.2.19 |
-| PoE budget       | 124 W |
-| LAN              | 192.0.2.18/24 |
-
-Protected interfaces (refuse all automation): `GigabitEthernet0/1` (router uplink), `GigabitEthernet0/2` (main PC), `Vlan1` (management).
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────┐
-│  Tauri v2 Windows shell (SwitchOps.exe) │
-│ ┌────────────────────────┐  ┌──────────────────┐ │
-│ │ Next.js dashboard UI   │  │ FastAPI sidecar  │ │
-│ │ React + Motion         │◀─│ 127.0.0.1:8765   │ │
-│ │ Dark NetOps theme      │  │ allowlisted only │ │
-│ └────────────────────────┘  └────────┬─────────┘ │
-└─────────────────────────────────────┬┴───────────┘
-                                      │ SSH (LAN only)
-                              ┌───────▼────────┐
-                              │  SWITCHOPS-TEST-SW1  │
-                              │ 192.0.2.190   │
-                              └────────────────┘
-```
-
-## Quick start (mock mode, no switch required)
-
-Sample IOS outputs in `backend/app/sample_outputs/` drive the full UI without touching the network. The desktop defaults to real mode, so mock mode must be selected explicitly.
-
-### Backend
+- Windows 10 or 11 x64 with WebView2
+- Python 3.11–3.13
+- Node.js 20+ and pnpm 9
+- Rust stable with the MSVC target and Windows build tools
 
 ```powershell
+pnpm install
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
-$env:SWITCH_MOCK_MODE = "true"
-.\.venv\Scripts\python.exe -m backend.app.main
+
+# Validate
+.\.venv\Scripts\python.exe -m pytest backend\app\tests -q
+pnpm --dir frontend test
+pnpm --dir frontend typecheck
+pnpm --dir frontend lint
+pnpm --dir frontend build
+cargo test --manifest-path desktop\src-tauri\Cargo.toml --locked
+
+# Package the sidecar and both Windows installers
+powershell -ExecutionPolicy Bypass -File desktop\scripts\build-backend-sidecar.ps1
+powershell -ExecutionPolicy Bypass -File desktop\scripts\package-windows.ps1
 ```
 
-The API listens on `http://127.0.0.1:8765`. Health: `GET /health`.
+Source-only tests can set `SWITCH_MOCK_MODE=true` to use the synthetic fixtures
+under `backend/app/sample_outputs/`. The packaged sidecar forces this setting
+off, and the desktop launcher also sets it to false.
 
-### Frontend
+Generated binaries and checksums are release artifacts and are ignored by Git;
+they must not be committed to `main`.
 
-```powershell
-pnpm install
-pnpm --filter @switchops/frontend dev
-```
+## Project layout
 
-Open `http://localhost:3000`.
+- `backend/` — FastAPI sidecar, SSH worker, parsers, policy, audit, and tests
+- `frontend/` — statically exported Next.js/React interface
+- `desktop/` — Tauri v2 shell, PyInstaller sidecar build, NSIS/MSI packaging
+- `docs/` — architecture and historical design notes
+- `scripts/` — privacy, secret, and rendered-UI validation helpers
 
-## Real switch mode
-
-1. Build the sidecar once, then launch the desktop in its default real mode:
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File desktop/scripts/build-backend-sidecar.ps1
-   Remove-Item Env:SWITCHOPS_DESKTOP_MODE -ErrorAction SilentlyContinue
-   pnpm desktop:dev
-   ```
-
-2. On first run, use the **Setup Wizard** to enter the switch host, username, password, optional enable secret, and the fixed `cisco_ios` device type.
-3. The backend stores them via Windows Credential Manager (preferred) or, if keyring is unavailable, a restricted local credentials file with a warning banner. Packaged runtime data lives below `%LOCALAPPDATA%\SwitchOps\SwitchOps`.
-
-For a safe desktop demo, replace the second and third commands above with:
-
-```powershell
-$env:SWITCHOPS_DESKTOP_MODE = "mock"
-pnpm desktop:dev
-```
-
-## Legacy SSH troubleshooting
-
-This switch ships with weak crypto. The backend asks Paramiko/Netmiko to allow:
-
-- KEX: `diffie-hellman-group1-sha1`
-- Ciphers: `aes128-cbc`, `3des-cbc`, `aes256-cbc`
-- MACs: `hmac-sha1`, `hmac-sha1-96`, `hmac-md5`, `hmac-md5-96`
-- Host key & pubkey: `ssh-rsa`
-
-If Netmiko fails with a KEX or cipher negotiation error, the backend automatically retries with an in-process Paramiko transport. The compatibility change is process-local; it does not weaken system-wide SSH settings.
-
-## Desktop packaging
-
-```powershell
-# 1. Package the FastAPI backend as a sidecar exe
-powershell -ExecutionPolicy Bypass -File desktop/scripts/build-backend-sidecar.ps1
-
-# 2. Build the Tauri Windows installer
-powershell -ExecutionPolicy Bypass -File desktop/scripts/package-windows.ps1
-```
-
-The result is `SwitchOps.exe` (and an MSI installer). It launches the bundled sidecar on `127.0.0.1`, waits for `/health`, then loads the dashboard.
-
-## Backend dev
-
-```powershell
-cd backend
-pip install -r requirements.txt
-pytest
-python -m app.main
-```
-
-## Frontend dev
-
-```powershell
-cd frontend
-pnpm install
-pnpm dev
-pnpm build
-```
-
-## Tests
-
-```powershell
-# backend
-.\.venv\Scripts\python.exe -m pytest backend -q
-
-# frontend unit tests, types, lint, production export
-cd frontend
-pnpm test
-pnpm typecheck
-pnpm lint
-pnpm build
-```
-
-### Rendered UI check
-
-Compilation passing is not evidence that the UI looks right.
-`scripts/visual-check.mjs` drives an already-installed Chrome or Edge over the
-DevTools protocol to screenshot every view at three widths and report console
-errors, failed requests and horizontal overflow. It adds no dependency and
-ships nothing.
-
-```powershell
-# with the backend and a static export already served
-node scripts/visual-check.mjs --url http://127.0.0.1:3100 --out .visual
-```
-
-## Security model
-
-- Credentials live in OS keyring or local `data/credentials.json` (git-ignored). Never in source.
-- The switch SSH host key is pinned on first use in the restricted runtime directory; later changes fail closed.
-- The backend binds to `127.0.0.1` only.
-- Every command is allowlisted by name; there is **no raw CLI endpoint**.
-- Write actions are gated by `ENABLE_WRITE_ACTIONS=true` and a per-action allowlist.
-- Device control also starts process-locked and must be explicitly unlocked in the UI.
-- Protected interfaces (`Gi0/1`, `Gi0/2`, `Vlan1`) are refused at the registry level.
-- Writes update running configuration only; startup save is separate, explicit, and confirmed.
-- Every command is logged to SQLite and JSONL, with secrets redacted.
-- `scripts/verify-no-secrets.ps1` scans for committed secrets before pushing.
-
-## API endpoints
-
-```
-GET  /health
-GET  /api/live/state
-GET  /api/live/stream                # typed server-sent events
-GET  /api/system/info               # non-secret runtime facts for Settings
-GET  /api/setup/status
-POST /api/setup/credentials
-POST /api/setup/test-connection    # bounded read-only diagnostic; changes nothing
-GET  /api/switch/dashboard
-GET  /api/switch/summary
-GET  /api/switch/interfaces
-GET  /api/switch/poe
-GET  /api/switch/errors
-GET  /api/switch/environment
-GET  /api/switch/cpu
-GET  /api/switch/memory
-GET  /api/switch/mac-table
-GET  /api/switch/logs
-GET  /api/switch/audit
-POST /api/switch/backup-config
-GET  /api/network/events
-GET  /api/telemetry/history
-GET  /api/topology/intent            # expected topology (SwitchOps-local)
-PUT  /api/topology/intent/{port}     # record intent; never writes to the switch
-DELETE /api/topology/intent/{port}   # fall back to the interface description
-GET  /api/guide/operations
-POST /api/guide/operations/{operation_id}/run
-GET  /api/configuration/history
-POST /api/configuration/history/{entry_id}/known-good
-POST /api/plans/access-point  # dry-run only; no execution capability
-
-GET  /api/control/lock
-POST /api/control/lock
-GET  /api/operations/catalog
-GET  /api/config/state
-POST /api/config/state/refresh
-
-# disabled unless ENABLE_WRITE_ACTIONS=true and control is unlocked
-POST /api/control/unlock
-POST /api/interfaces/{port}/operations
-POST /api/config/save                  # explicit confirmed save only
-```
-
-## Roadmap
-
-- **v0.2** — historical telemetry, delta health, events, digital twin, Lab Guide, configuration history, and non-executable planning.
-- **v0.2.1** — correct topology evidence correlation, a visual lab canvas, honest observation history, beginner/change-control separation, redesigned Settings, and a read-only connection test.
-- **v0.3.0** — topology reconciliation: observed / expected / historical / inferred held together and compared, health separated from drift, and SwitchOps-local expected topology.
-- **v0.4.0 (this release)** — persistent SSH, tiered telemetry, SSE, integrated live operations, verified transactions, LLDP, local-PC correlation, and secret-free SNMP inspection.
-- **Next** — longer-duration reconnect and UI soak testing, plus richer use of LLDP when adjacent equipment advertises it.
-- **Future** — optional SNMPv3 only when it adds value over the persistent SSH architecture. Never raw CLI.
-
-## Troubleshooting
-
-- **SSH KEX failure** — legacy options are auto-applied; ensure `SWITCH_LEGACY_SSH=true`. Confirm with the working OpenSSH one-liner in `docs/troubleshooting.md`.
-- **Credentials wrong** — Setup panel → Reset → re-enter.
-- **Enable secret wrong** — same flow; nothing is printed back.
-- **Switch unreachable** — `ping 192.0.2.190`, verify VLAN 1 IP, check cable on Gi0/2.
-- **CORS** — backend only allows `localhost:3000` and `tauri://localhost` by default.
-- **Sidecar not starting** — in a packaged run, check `%LOCALAPPDATA%\SwitchOps\SwitchOps\logs\server.log`; ensure port 8765 is free.
-- **Keyring unavailable** — backend falls back to a restricted credentials file under the runtime data directory. A warning banner shows in the UI.
-- **GitHub push blocked due to secret** — run `scripts/verify-no-secrets.ps1`; rewrite history with `git filter-repo` if a real secret leaked.
+Dependency manifests and lockfiles are committed for reproducible review. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for provenance and license
+verification notes.

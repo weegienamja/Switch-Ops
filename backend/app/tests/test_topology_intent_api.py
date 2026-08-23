@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from backend.app.main import app
 
 
-DEVICE = "switch-mock-operatorlab-sw1"
+DEVICE = "switch-mock-synthetic-sw1"
 
 
 @pytest.fixture
@@ -175,12 +175,12 @@ def test_recorded_intent_changes_the_next_reconciliation(client):
     client.put(
         "/api/topology/intent/Gi0-1",
         params={"deviceId": before["deviceId"]},
-        json={"expectedName": "Edge gateway", "expectedDeviceType": "router"},
+        json={"expectedName": "Perimeter router", "expectedDeviceType": "router"},
     )
 
     after = client.get("/api/switch/dashboard").json()["reconciliation"]
     gi01_after = next(i for i in after["interfaces"] if i["interface"] == "Gi0/1")
     assert gi01_after["expected"]["source"] == "user-intent"
-    assert gi01_after["expected"]["objectLabel"] == "Edge gateway"
+    assert gi01_after["expected"]["objectLabel"] == "Perimeter router"
     # The switch still reports its own, now-stale, description.
     assert gi01_after["documentationStale"] is True

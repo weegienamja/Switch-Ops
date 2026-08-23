@@ -20,9 +20,8 @@ the answer matches the intent. Note that enabling a port with no cable in it
 correctly leaves it notconnect - the postcondition is the *administrative*
 state, not the link.
 
-**Writes need two independent gates.** A deployment-level capability
-(ENABLE_WRITE_ACTIONS) decides whether this installation may offer writes at
-all, and an ephemeral session unlock decides whether it may right now. The
+**Writes need independent gates.** A persisted local opt-in, an explicit
+device/interface policy, and an ephemeral session unlock must all agree. The
 lock starts engaged on every launch and is never persisted, so a restart is
 always safe.
 """
@@ -33,16 +32,16 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from .audit_store import get_audit_store
 from .command_registry import (
-    assert_interface_writable,
     sanitize_description,
 )
-from .config import get_settings
+from .credential_store import get_credential_store
 from .errors import (
     CommandNotAllowedError,
     SwitchOpsError,
@@ -54,6 +53,7 @@ from .models import (
     OperationResult,
     OperationStage,
 )
+from .interface_policy import get_interface_policy_store
 from .parsers.interfaces import parse_interface_status
 from .parsers.poe import parse_poe
 from .switch_client import SwitchClient
@@ -80,8 +80,7 @@ class WriteLock:
         self._unlocked_at: Optional[datetime] = None
 
     def unlock(self) -> None:
-        settings = get_settings()
-        if not settings.enable_write_actions:
+        if not get_interface_policy_store().controlled_writes_enabled():
             raise WriteActionsDisabledError(
                 "Controlled writes are disabled for this installation."
             )
@@ -99,11 +98,13 @@ class WriteLock:
     @property
     def unlocked(self) -> bool:
         with self._lock:
-            return self._unlocked and get_settings().enable_write_actions
+            return (
+                self._unlocked
+                and get_interface_policy_store().controlled_writes_enabled()
+            )
 
     def require_unlocked(self) -> None:
-        settings = get_settings()
-        if not settings.enable_write_actions:
+        if not get_interface_policy_store().controlled_writes_enabled():
             raise WriteActionsDisabledError(
                 "Controlled writes are disabled for this installation."
             )
@@ -112,9 +113,22 @@ class WriteLock:
                 "Device control is locked. Unlock controlled writes for this session first."
             )
 
+    @contextmanager
+    def operation_guard(self):
+        """Keep the ephemeral session approval stable for one transaction."""
+        with self._lock:
+            if (
+                not self._unlocked
+                or not get_interface_policy_store().controlled_writes_enabled()
+            ):
+                raise WriteActionsDisabledError(
+                    "Device control is locked. Unlock controlled writes for this session first."
+                )
+            yield
+
     def status(self) -> dict[str, Any]:
         return {
-            "capability": get_settings().enable_write_actions,
+            "capability": get_interface_policy_store().controlled_writes_enabled(),
             "unlocked": self.unlocked,
             "unlockedAt": self._unlocked_at.isoformat() if self._unlocked_at else None,
         }
@@ -230,12 +244,9 @@ class _Stages:
 
 
 def assert_interface_operable(interface: str) -> str:
-    """Return an interface only when it is on the fixed write allowlist.
-
-    Enforced here, on the server, against the canonical form - so an alias like
-    `gi0/1`, `Gi0/01` or `GigabitEthernet0/1` cannot slip past by spelling.
-    """
-    return assert_interface_writable(interface)
+    """Require explicit OPERABLE state for the currently configured device."""
+    host = get_credential_store().status().get("switch_host")
+    return get_interface_policy_store().assert_operable(host, interface)
 
 
 @dataclass(frozen=True)
@@ -392,6 +403,31 @@ def _postcondition_met(
 
 
 def run_operation(
+    client: SwitchClient,
+    *,
+    kind: OperationKind,
+    interface: str,
+    value: Optional[str] = None,
+    actor: str = "operator",
+    on_progress: Optional[Callable[[list[OperationStage]], None]] = None,
+    backup_is_fresh: bool = False,
+) -> OperationResult:
+    """Hold every write gate stable while one bounded transaction runs."""
+    host = get_credential_store().status().get("switch_host")
+    with get_write_lock().operation_guard():
+        with get_interface_policy_store().operation_guard(host, interface):
+            return _run_operation_authorized(
+                client,
+                kind=kind,
+                interface=interface,
+                value=value,
+                actor=actor,
+                on_progress=on_progress,
+                backup_is_fresh=backup_is_fresh,
+            )
+
+
+def _run_operation_authorized(
     client: SwitchClient,
     *,
     kind: OperationKind,
@@ -781,6 +817,13 @@ def config_fingerprints(client: SwitchClient, actor: str = "system") -> tuple[st
 
 def save_running_config(client: SwitchClient, actor: str = "operator") -> tuple[bool, str]:
     """Persist running to startup. Only ever called from an explicit action."""
+    with get_write_lock().operation_guard():
+        return _save_running_config_authorized(client, actor)
+
+
+def _save_running_config_authorized(
+    client: SwitchClient, actor: str = "operator"
+) -> tuple[bool, str]:
     started = time.monotonic()
     output = client.run_raw_action(["write memory"])
     rejection = classify_ios_response(output)

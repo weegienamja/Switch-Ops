@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from .errors import (
     CommandNotAllowedError,
-    ProtectedInterfaceError,
 )
 
 
@@ -90,29 +89,30 @@ SAFE_WRITE_ACTIONS: Dict[str, List[str]] = {
 }
 
 
-# Interfaces that may be touched by safe-write actions.
-ALLOWLISTED_INTERFACES: Tuple[str, ...] = (
-    "GigabitEthernet0/3",
-    "GigabitEthernet0/4",
-    "GigabitEthernet0/5",
-    "GigabitEthernet0/6",
-    "GigabitEthernet0/7",
-    "GigabitEthernet0/8",
-)
+_PHYSICAL_PREFIXES = {
+    "fa": "FastEthernet",
+    "fastethernet": "FastEthernet",
+    "gi": "GigabitEthernet",
+    "gigabitethernet": "GigabitEthernet",
+    "te": "TenGigabitEthernet",
+    "tengigabitethernet": "TenGigabitEthernet",
+    "tw": "TwentyFiveGigE",
+    "twe": "TwentyFiveGigE",
+    "twentyfivegige": "TwentyFiveGigE",
+    "fo": "FortyGigabitEthernet",
+    "fortygigabitethernet": "FortyGigabitEthernet",
+    "hu": "HundredGigE",
+    "hundredgige": "HundredGigE",
+}
 
-
-# Interfaces that may *never* be touched.
-PROTECTED_INTERFACES: Tuple[str, ...] = (
-    "GigabitEthernet0/1",
-    "GigabitEthernet0/2",
-    "Vlan1",
-)
-
-# Interfaces that a bounded read-only guide may select for filtering parsed
-# results. The value is never interpolated into an IOS command.
-READABLE_INTERFACES: Tuple[str, ...] = tuple(
-    f"GigabitEthernet0/{number}" for number in range(1, 11)
-)
+_SHORT_PREFIXES = {
+    "FastEthernet": "Fa",
+    "GigabitEthernet": "Gi",
+    "TenGigabitEthernet": "Te",
+    "TwentyFiveGigE": "Twe",
+    "FortyGigabitEthernet": "Fo",
+    "HundredGigE": "Hu",
+}
 
 
 _DESCRIPTION_OK = set(
@@ -123,8 +123,11 @@ _DESCRIPTION_OK = set(
 
 
 def normalize_interface(name: str) -> str:
-    """Normalize ``Gi0/6``, ``gi0/6``, ``GigabitEthernet0/6`` to a canonical
-    long form. Vlan interfaces normalize to ``Vlan<n>``.
+    """Return a canonical, injection-safe Cisco interface name.
+
+    Physical interfaces may use two- or three-level numbering, such as
+    ``Gi0/6``, ``Gi1/0/48`` or ``Te1/1/1``. VLAN interfaces are accepted for
+    observation and protection policy, but are never physical write targets.
     """
     if not name:
         raise CommandNotAllowedError("Empty interface name.")
@@ -137,40 +140,54 @@ def normalize_interface(name: str) -> str:
         if not suffix.isdigit():
             raise CommandNotAllowedError(f"Invalid Vlan interface: {name!r}")
         return f"Vlan{int(suffix)}"
-    if lower.startswith("gigabitethernet"):
-        suffix = stripped[len("GigabitEthernet"):]
-    elif lower.startswith("gi"):
-        suffix = stripped[2:]
-    else:
+    prefix = next(
+        (candidate for candidate in sorted(_PHYSICAL_PREFIXES, key=len, reverse=True)
+         if lower.startswith(candidate)),
+        None,
+    )
+    if prefix is None:
         raise CommandNotAllowedError(f"Unsupported interface: {name!r}")
-    if not re.fullmatch(r"\d+/\d+", suffix):
+    suffix = stripped[len(prefix):]
+    if not re.fullmatch(r"\d+(?:/\d+){1,2}", suffix):
         raise CommandNotAllowedError(f"Malformed interface suffix: {name!r}")
-    slot, port = suffix.split("/", 1)
-    return f"GigabitEthernet{int(slot)}/{int(port)}"
+    normalized_suffix = "/".join(str(int(part)) for part in suffix.split("/"))
+    return f"{_PHYSICAL_PREFIXES[prefix]}{normalized_suffix}"
+
+
+def is_physical_interface(name: str) -> bool:
+    try:
+        canonical = normalize_interface(name)
+    except CommandNotAllowedError:
+        return False
+    return not canonical.startswith("Vlan")
+
+
+def short_interface(name: str) -> str:
+    canonical = normalize_interface(name)
+    for long_prefix, short_prefix in _SHORT_PREFIXES.items():
+        if canonical.startswith(long_prefix):
+            return canonical.replace(long_prefix, short_prefix, 1)
+    return canonical
 
 
 def assert_interface_writable(name: str) -> str:
-    """Return the canonical name if the interface is writable; raise otherwise."""
+    """Validate only that a name is a supported physical write target.
+
+    Device-specific permission is enforced by ``interface_policy`` immediately
+    before a transaction. Keeping syntax validation here prevents raw input
+    from ever becoming an IOS command while avoiding any global port layout.
+    """
     canonical = normalize_interface(name)
-    if canonical in PROTECTED_INTERFACES:
-        raise ProtectedInterfaceError(
-            f"Interface {canonical} is protected and cannot be modified."
-        )
-    if canonical not in ALLOWLISTED_INTERFACES:
+    if not is_physical_interface(canonical):
         raise CommandNotAllowedError(
-            f"Interface {canonical} is not in the safe-write allowlist."
+            f"Interface {canonical} is not a supported physical write target."
         )
     return canonical
 
 
 def assert_interface_readable(name: str) -> str:
     """Validate a guide/filter interface without granting write authority."""
-    canonical = normalize_interface(name)
-    if canonical not in READABLE_INTERFACES:
-        raise CommandNotAllowedError(
-            f"Interface {canonical} is not in the read-only interface set."
-        )
-    return canonical
+    return normalize_interface(name)
 
 
 def resolve_read_command(symbol: str) -> str:

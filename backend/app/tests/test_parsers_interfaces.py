@@ -12,8 +12,8 @@ def test_parse_interface_status_has_ten_ports():
     assert ports[:2] == ["Gi0/1", "Gi0/2"]
     assert len(interfaces) == 10
     by_port = {i.port: i for i in interfaces}
-    assert by_port["Gi0/1"].protected is True
-    assert by_port["Gi0/2"].protected is True
+    assert by_port["Gi0/1"].policy_state == "UNMANAGED"
+    assert by_port["Gi0/2"].policy_state == "UNMANAGED"
     assert by_port["Gi0/6"].protected is False
     assert by_port["Gi0/1"].status == "connected"
     assert by_port["Gi0/1"].duplex == "a-full"

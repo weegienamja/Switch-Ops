@@ -22,6 +22,7 @@ export default function PortStatusTable({
               <th>Speed</th>
               <th>Duplex</th>
               <th>Type</th>
+              <th>Write policy</th>
             </tr>
           </thead>
           <tbody>
@@ -29,11 +30,6 @@ export default function PortStatusTable({
               <tr key={i.port}>
                 <td>
                   {i.port}
-                  {i.protected && (
-                    <span className="badge badge--cyan" style={{ marginLeft: 8 }}>
-                      protected
-                    </span>
-                  )}
                 </td>
                 <td>{i.name || <span style={{ color: "var(--text-dim)" }}>—</span>}</td>
                 <td>
@@ -55,11 +51,16 @@ export default function PortStatusTable({
                 <td>{i.speed}</td>
                 <td>{i.duplex}</td>
                 <td>{i.type}</td>
+                <td>
+                  <span className={`badge ${i.policyState === "PROTECTED" ? "badge--cyan" : i.policyState === "OPERABLE" ? "badge--amber" : ""}`}>
+                    {(i.policyState || "UNMANAGED").toLowerCase()}
+                  </span>
+                </td>
               </tr>
             ))}
             {interfaces.length === 0 ? (
               <tr>
-                <td colSpan={7} style={{ color: "var(--text-dim)", textAlign: "center" }}>
+                <td colSpan={8} style={{ color: "var(--text-dim)", textAlign: "center" }}>
                   interface status unavailable
                 </td>
               </tr>

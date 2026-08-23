@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsPanel from "@/components/SettingsPanel";
 import { api } from "@/lib/api";
-import type { ConnectionTestResult, RuntimeInfo, SetupStatus } from "@/lib/types";
+import type { ConnectionTestResult, InterfacePolicyResponse, RuntimeInfo, SetupStatus } from "@/lib/types";
 
 const runtimeInfo: RuntimeInfo = {
   version: "0.2.1",
@@ -15,9 +15,9 @@ const runtimeInfo: RuntimeInfo = {
   hostKeyPinned: true,
   telemetryRetentionDays: 30,
   telemetryCollection: "live-tiered",
-  dataDir: "C:\\Users\\someone\\AppData\\Local\\SwitchOps\\SwitchOps\\data",
-  backupDir: "C:\\Users\\someone\\AppData\\Local\\SwitchOps\\SwitchOps\\backups",
-  logDir: "C:\\Users\\someone\\AppData\\Local\\SwitchOps\\SwitchOps\\logs",
+  dataDir: "C:\\Synthetic\\SwitchOps\\data",
+  backupDir: "C:\\Synthetic\\SwitchOps\\backups",
+  logDir: "C:\\Synthetic\\SwitchOps\\logs",
   corsOrigins: ["tauri://localhost"],
   deviceDriver: "cisco_ios",
 };
@@ -30,8 +30,19 @@ const realSetup: SetupStatus = {
   mockMode: false,
   enableWriteActions: false,
   switchHost: "192.0.2.10",
-  switchUsername: "labuser",
+  switchUsername: "synthetic-user",
   switchDeviceType: "cisco_ios",
+};
+
+const localPolicy: InterfacePolicyResponse = {
+  deviceConfigured: true,
+  deviceKey: "0".repeat(64),
+  valid: true,
+  controlledWritesEnabled: false,
+  interfaces: [
+    { interface: "Gi1/0/1", state: "PROTECTED" },
+    { interface: "Gi1/0/2", state: "UNMANAGED" },
+  ],
 };
 
 function healthyTest(overrides: Partial<ConnectionTestResult> = {}): ConnectionTestResult {
@@ -56,6 +67,7 @@ function healthyTest(overrides: Partial<ConnectionTestResult> = {}): ConnectionT
 
 beforeEach(() => {
   vi.spyOn(api, "systemInfo").mockResolvedValue(runtimeInfo);
+  vi.spyOn(api, "interfacePolicy").mockResolvedValue(localPolicy);
 });
 
 afterEach(() => {
@@ -87,21 +99,19 @@ describe("settings wording", () => {
   it("states operation mode as labelled states rather than yes/no", async () => {
     render(<SettingsPanel setup={realSetup} onClose={() => undefined} onChange={() => undefined} />);
     const modes = within(document.querySelector(".settings-modes") as HTMLElement);
-    expect(modes.getByText("Real hardware")).toBeTruthy();
-    expect(modes.getByText("Active")).toBeTruthy();
-    expect(modes.getByText("Mock mode")).toBeTruthy();
-    expect(modes.getByText("Off")).toBeTruthy();
+    expect(modes.getByText("Device connection")).toBeTruthy();
+    expect(modes.getByText("Configured")).toBeTruthy();
     expect(modes.getByText("Write operations")).toBeTruthy();
     expect(modes.getByText("Disabled")).toBeTruthy();
     expect(
-      screen.getByText(/allowed to inspect this device but not change its configuration/),
+      screen.getByText(/controlled writes are globally disabled/),
     ).toBeTruthy();
     // No bare yes/no anywhere.
     expect(screen.queryByText(/^(yes|no)$/i)).toBeNull();
     await waitFor(() => expect(screen.getByText("30 days")).toBeTruthy());
   });
 
-  it("reflects mock mode instead of claiming real hardware", async () => {
+  it("does not expose the source-only mock harness as a production setting", async () => {
     render(
       <SettingsPanel
         setup={{ ...realSetup, mockMode: true }}
@@ -109,9 +119,8 @@ describe("settings wording", () => {
         onChange={() => undefined}
       />,
     );
-    expect(screen.getByText("Inactive")).toBeTruthy();
-    expect(screen.getByText("On")).toBeTruthy();
-    expect(screen.getByText(/showing recorded sample output/)).toBeTruthy();
+    expect(screen.queryByText("Mock mode")).toBeNull();
+    expect(screen.queryByText(/recorded sample output/)).toBeNull();
     await waitFor(() => expect(screen.getByText("30 days")).toBeTruthy());
   });
 
@@ -128,6 +137,38 @@ describe("settings wording", () => {
     expect(screen.getByText("Tiered live")).toBeTruthy();
     expect(screen.getByText(/Ports update every few seconds/)).toBeTruthy();
     await waitFor(() => expect(screen.getByText("30 days")).toBeTruthy());
+  });
+});
+
+describe("local interface policy", () => {
+  it("requires a second deliberate action before enabling controlled writes", async () => {
+    const enabled = { ...localPolicy, controlledWritesEnabled: true };
+    const setWrites = vi.spyOn(api, "setControlledWrites").mockResolvedValue(enabled);
+    render(<SettingsPanel setup={realSetup} onClose={() => undefined} onChange={() => undefined} />);
+
+    await waitFor(() => expect(screen.getByText("Gi1/0/1")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Review enabling writes" }));
+    expect(setWrites).not.toHaveBeenCalled();
+    expect(screen.getByText(/separate session unlock/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm enable" }));
+    await waitFor(() => expect(setWrites).toHaveBeenCalledWith(true));
+  });
+
+  it("applies a per-interface state through the policy API", async () => {
+    const updated = {
+      ...localPolicy,
+      interfaces: localPolicy.interfaces.map((entry) =>
+        entry.interface === "Gi1/0/2" ? { ...entry, state: "OPERABLE" as const } : entry,
+      ),
+    };
+    const setPolicy = vi.spyOn(api, "setInterfacePolicy").mockResolvedValue(updated);
+    render(<SettingsPanel setup={realSetup} onClose={() => undefined} onChange={() => undefined} />);
+
+    const select = await waitFor(() => screen.getByLabelText("Policy for Gi1/0/2"));
+    fireEvent.change(select, { target: { value: "OPERABLE" } });
+    const row = select.closest(".interface-policy-row") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(setPolicy).toHaveBeenCalledWith("Gi1/0/2", "OPERABLE"));
   });
 });
 

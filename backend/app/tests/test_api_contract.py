@@ -11,6 +11,25 @@ from app.main import app
 client = TestClient(app)
 
 
+def install_write_policy(tmp_path, monkeypatch, states):
+    from types import SimpleNamespace
+    from app import main as main_mod
+    from app import operations as operations_mod
+    from app.interface_policy import InterfacePolicyStore
+
+    host = "192.0.2.10"
+    store = InterfacePolicyStore(tmp_path / "interface-policy.json")
+    for interface, state in states.items():
+        store.set_state(host, interface, state)
+    store.set_controlled_writes(True)
+    credentials = SimpleNamespace(status=lambda: {"switch_host": host})
+    monkeypatch.setattr(main_mod, "get_interface_policy_store", lambda: store)
+    monkeypatch.setattr(operations_mod, "get_interface_policy_store", lambda: store)
+    monkeypatch.setattr(main_mod, "get_credential_store", lambda: credentials)
+    monkeypatch.setattr(operations_mod, "get_credential_store", lambda: credentials)
+    return store
+
+
 def test_health_ok():
     r = client.get("/health")
     assert r.status_code == 200
@@ -153,6 +172,16 @@ def test_write_endpoints_403_when_disabled():
     assert r.status_code == 403
 
 
+def test_policy_cannot_make_an_unobserved_interface_operable(tmp_path, monkeypatch):
+    install_write_policy(tmp_path, monkeypatch, {})
+    r = client.put(
+        "/api/interface-policy/interfaces/Hu99-99-99",
+        json={"state": "OPERABLE"},
+    )
+    assert r.status_code == 409
+    assert "currently reported" in r.json()["detail"]
+
+
 def test_cross_site_mutation_origin_is_rejected():
     r = client.post(
         "/api/switch/backup-config",
@@ -162,12 +191,8 @@ def test_cross_site_mutation_origin_is_rejected():
     assert r.json()["code"] == "origin_not_allowed"
 
 
-def test_protected_port_always_refused(monkeypatch):
-    # Enable writes via a settings monkeypatch to confirm protected refusal still applies.
-    from app import main as main_mod
-    from app import operations as operations_mod
-    monkeypatch.setattr(main_mod.settings, "enable_write_actions", True)
-    monkeypatch.setattr(operations_mod, "get_settings", lambda: main_mod.settings)
+def test_protected_port_always_refused(tmp_path, monkeypatch):
+    install_write_policy(tmp_path, monkeypatch, {"Gi0/1": "PROTECTED"})
     assert client.post("/api/control/unlock").status_code == 200
     try:
         r = client.post(
@@ -196,14 +221,11 @@ def test_operation_catalog_exposes_only_bounded_actions():
     assert "Gi0/1" not in body["writableInterfaces"]
 
 
-def test_controlled_operation_api_streams_progress_and_never_auto_saves(monkeypatch):
-    from app import main as main_mod
-    from app import operations as operations_mod
+def test_controlled_operation_api_streams_progress_and_never_auto_saves(tmp_path, monkeypatch):
     from app.live_state import get_live_state
     from app.operations import get_save_tracker, get_write_lock
 
-    monkeypatch.setattr(main_mod.settings, "enable_write_actions", True)
-    monkeypatch.setattr(operations_mod, "get_settings", lambda: main_mod.settings)
+    install_write_policy(tmp_path, monkeypatch, {"Gi0/6": "OPERABLE"})
     device_session.reset_device_session()
     get_save_tracker().reset()
     get_write_lock().lock()
@@ -241,13 +263,10 @@ def test_controlled_operation_api_streams_progress_and_never_auto_saves(monkeypa
         device_session.reset_device_session()
 
 
-def test_non_allowlisted_port_is_rejected_before_device_access(monkeypatch):
-    from app import main as main_mod
-    from app import operations as operations_mod
+def test_unmanaged_port_is_rejected_before_device_access(tmp_path, monkeypatch):
     from app.operations import get_write_lock
 
-    monkeypatch.setattr(main_mod.settings, "enable_write_actions", True)
-    monkeypatch.setattr(operations_mod, "get_settings", lambda: main_mod.settings)
+    install_write_policy(tmp_path, monkeypatch, {})
     get_write_lock().unlock()
     try:
         r = client.post(
@@ -260,13 +279,10 @@ def test_non_allowlisted_port_is_rejected_before_device_access(monkeypatch):
         get_write_lock().lock()
 
 
-def test_new_process_lifespan_always_relocks_control(monkeypatch):
-    from app import main as main_mod
-    from app import operations as operations_mod
+def test_new_process_lifespan_always_relocks_control(tmp_path, monkeypatch):
     from app.operations import get_write_lock
 
-    monkeypatch.setattr(main_mod.settings, "enable_write_actions", True)
-    monkeypatch.setattr(operations_mod, "get_settings", lambda: main_mod.settings)
+    install_write_policy(tmp_path, monkeypatch, {"Gi0/6": "OPERABLE"})
     get_write_lock().unlock()
     with TestClient(app) as fresh_process:
         assert fresh_process.get("/api/control/lock").json()["unlocked"] is False

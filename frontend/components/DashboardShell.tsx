@@ -43,7 +43,6 @@ import LoadingState from "./LoadingState";
 import LogsPanel from "./LogsPanel";
 import LiveStatusBadge from "./LiveStatusBadge";
 import MacTable from "./MacTable";
-import MockScenarioPanel from "./MockScenarioPanel";
 import NetworkEventTimeline from "./NetworkEventTimeline";
 import NetworkTwin from "./NetworkTwin";
 import ObservationHistoryPanel from "./ObservationHistoryPanel";
@@ -79,15 +78,14 @@ interface DashboardData {
   guideOperations: GuideOperation[];
   configurationHistory: ConfigurationHistoryResponse;
   discovery: DiscoveryStatus;
-  mockScenario: "baseline" | "ap_attached";
   sectionErrors: Record<string, string>;
 }
 
 const VIEWS: Array<{ id: View; label: string; description: string }> = [
   { id: "overview", label: "Overview", description: "Current and historical health" },
-  { id: "network", label: "Visual network", description: "Your lab, port by port" },
+  { id: "network", label: "Visual network", description: "Your device, port by port" },
   { id: "events", label: "What changed", description: "Meaningful network events" },
-  { id: "guide", label: "Lab Guide", description: "Read-only guided learning" },
+  { id: "guide", label: "Command guide", description: "Read-only guided inspection" },
   { id: "change", label: "Change control", description: "Plan, back up, verify" },
 ];
 
@@ -103,11 +101,10 @@ export default function DashboardShell() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [scenarioBusy, setScenarioBusy] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeView, setActiveView] = useState<View>("overview");
-  const [selectedPort, setSelectedPort] = useState("Gi0/4");
+  const [selectedPort, setSelectedPort] = useState("");
   const live = useLiveOperations(Boolean(data?.setup && (data.setup.configured || data.setup.mockMode)));
   const liveMerged = useMemo(() => {
     if (!data?.topology || !data.interfaces || !data.poe) return null;
@@ -124,10 +121,9 @@ export default function DashboardShell() {
         setData({ setup } as DashboardData);
         return;
       }
-      const [dashboard, guide, mockScenario] = await Promise.all([
+      const [dashboard, guide] = await Promise.all([
         api.dashboard(),
         api.guideOperations(),
-        setup.mockMode ? api.mockScenario() : Promise.resolve(null),
       ]);
       let history: TelemetryHistoryResponse | null = null;
       try {
@@ -162,9 +158,13 @@ export default function DashboardShell() {
         guideOperations: guide.operations,
         configurationHistory: dashboard.configurationHistory,
         discovery: dashboard.discovery,
-        mockScenario: mockScenario?.scenario || "baseline",
         sectionErrors: dashboard.sectionErrors,
       });
+      setSelectedPort((current) =>
+        dashboard.topology.interfaces.some((item) => item.port === current)
+          ? current
+          : dashboard.topology.interfaces[0]?.port || "",
+      );
       setLastRefresh(new Date(dashboard.telemetry.observedAt));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -177,20 +177,6 @@ export default function DashboardShell() {
   useEffect(() => {
     void loadAll();
   }, []);
-
-  async function changeMockScenario(scenario: "baseline" | "ap_attached") {
-    setScenarioBusy(true);
-    try {
-      await api.setMockScenario(scenario);
-      setActiveView("network");
-      setSelectedPort("Gi0/4");
-      await loadAll(true);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setScenarioBusy(false);
-    }
-  }
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorState message={error} onRetry={() => void loadAll()} />;
@@ -208,7 +194,7 @@ export default function DashboardShell() {
   return (
     <div className="app-shell">
       <div className="local-banner">
-        <span>LOCAL LAB</span>
+        <span>LOCAL-ONLY</span>
         Data stays on this PC. Device access is serialized and commands are allowlisted.
       </div>
       <div className="container">
@@ -294,15 +280,6 @@ export default function DashboardShell() {
 
           {activeView === "network" ? (
             <>
-              {data.setup.mockMode ? (
-                <motion.div variants={fadeUp}>
-                  <MockScenarioPanel
-                    scenario={data.mockScenario}
-                    busy={scenarioBusy || refreshing}
-                    onChange={(scenario) => void changeMockScenario(scenario)}
-                  />
-                </motion.div>
-              ) : null}
               <motion.div variants={fadeUp}>
                 <NetworkTwin
                   topology={currentTopology}
@@ -392,7 +369,7 @@ export default function DashboardShell() {
                 <div className="change-intro">
                   <div className="eyebrow">How a change happens here</div>
                   <ol className="change-flow">
-                    <li><strong>Learn</strong><span>Understand the port in the Lab Guide</span></li>
+                    <li><strong>Learn</strong><span>Understand the port in the command guide</span></li>
                     <li><strong>Plan</strong><span>Describe the intent and validate it</span></li>
                     <li><strong>Review</strong><span>Read the proposed IOS and the impact</span></li>
                     <li><strong>Apply</strong><span>Use bounded controls in Visual network</span></li>
@@ -418,13 +395,14 @@ export default function DashboardShell() {
         </motion.main>
 
         <footer className="footer">
-          SwitchOps · real hardware as an interactive lab · local-only · bounded commands
+          SwitchOps · real device observation · local-only · bounded commands
         </footer>
       </div>
 
       {settingsOpen ? (
         <SettingsPanel
           setup={data.setup}
+          interfaces={currentInterfaces.interfaces}
           onClose={() => setSettingsOpen(false)}
           onChange={() => {
             setSettingsOpen(false);

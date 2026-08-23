@@ -38,17 +38,17 @@ def test_progressive_classification_uses_only_available_evidence():
         None,
         "vendor",
     )
-    assert classify_device("TEST-AP-01 AP")[0:4] == (
+    assert classify_device("Meraki MR44 access point")[0:4] == (
         "access-point",
         "Cisco Meraki",
-        "TEST-AP",
+        "MR44",
         "model",
     )
 
 
 def test_learned_mac_becomes_observed_visual_device():
     topology = build_topology(
-        hostname="Lab-SW1",
+        hostname="SYNTH-SW1",
         model="WS-C3560",
         management_ip="192.0.2.10",
         interfaces=[InterfaceStatus(
@@ -88,12 +88,12 @@ def test_learned_mac_becomes_observed_visual_device():
 
 def test_description_without_mac_is_expected_not_discovered():
     topology = build_topology(
-        hostname="Lab-SW1",
+        hostname="SYNTH-SW1",
         model="WS-C3560",
         management_ip="192.0.2.10",
         interfaces=[InterfaceStatus(
             port="Gi0/4",
-            name="TEST-AP-01 AP",
+            name="SYNTH-MR44-01 AP",
             status="notconnect",
             vlan="1",
             duplex="auto",
@@ -115,7 +115,7 @@ def test_description_without_mac_is_expected_not_discovered():
 
 def test_spare_port_does_not_fabricate_expected_device():
     topology = build_topology(
-        hostname="Lab-SW1",
+        hostname="SYNTH-SW1",
         model="WS-C3560",
         management_ip="192.0.2.10",
         interfaces=[InterfaceStatus(port="Gi0/8", name="Spare Access Port", status="disabled")],
@@ -186,7 +186,7 @@ def test_uplink_endpoint_names_are_unique_per_interface():
 
 def test_endpoint_identity_degrades_when_no_description_exists():
     topology = build_topology(
-        hostname="Lab-SW1",
+        hostname="SYNTH-SW1",
         model="WS-C3560",
         management_ip="192.0.2.10",
         interfaces=[InterfaceStatus(
@@ -208,7 +208,7 @@ def test_endpoint_identity_degrades_when_no_description_exists():
 def test_stale_macs_on_a_down_port_do_not_create_an_observed_device():
     """A MAC that has not yet aged out is not proof of a present device."""
     topology = build_topology(
-        hostname="Lab-SW1",
+        hostname="SYNTH-SW1",
         model="WS-C3560",
         management_ip="192.0.2.10",
         interfaces=[InterfaceStatus(
@@ -225,12 +225,12 @@ def test_stale_macs_on_a_down_port_do_not_create_an_observed_device():
 
 def test_cdp_neighbour_is_direct_evidence_and_outranks_the_description():
     topology = build_topology(
-        hostname="Lab-SW1",
+        hostname="SYNTH-SW1",
         model="WS-C3560CG-8PC-S",
         management_ip="192.0.2.10",
         interfaces=[InterfaceStatus(
             port="Gi0/4",
-            name="TEST-AP-01 AP",
+            name="SYNTH-MR44-01 AP",
             status="connected",
             vlan="1",
             duplex="a-full",
@@ -239,10 +239,10 @@ def test_cdp_neighbour_is_direct_evidence_and_outranks_the_description():
         mac_entries=_macs("Gi0/4", "10", "11", "12"),
         poe_ports=[PoePort(interface="Gi0/4", oper="on", powerWatts=13.4)],
         cdp_neighbors=[CdpNeighbor(
-            remoteName="TEST-AP-Lab",
+            remoteName="SYNTH-MR44-Lab",
             localInterface="Gi0/4",
             remoteInterface="wired0",
-            platform="TEST-AP-01",
+            platform="Meraki MR44",
             capabilities=["Trans-Bridge"],
         )],
     )
@@ -250,9 +250,9 @@ def test_cdp_neighbour_is_direct_evidence_and_outranks_the_description():
     assert endpoint.evidence_level == "direct"
     assert endpoint.identity_source == "cdp"
     assert endpoint.confidence == "high"
-    assert endpoint.name == "TEST-AP-Lab"
+    assert endpoint.name == "SYNTH-MR44-Lab"
     assert endpoint.vendor == "Cisco Meraki"
-    assert endpoint.model == "TEST-AP"
+    assert endpoint.model == "MR44"
     assert endpoint.type == "access-point"
     # Wireless clients behind the AP stay a count, never extra nodes.
     assert endpoint.learned_mac_count == 3
@@ -277,7 +277,7 @@ def test_every_interface_yields_at_most_one_endpoint_node():
         _uplink_interface(port="Gi0/1"),
         InterfaceStatus(port="Gi0/2", name="Test Workstation", status="connected", vlan="1"),
         InterfaceStatus(port="Gi0/3", name="Test Server", status="notconnect", vlan="1"),
-        InterfaceStatus(port="Gi0/4", name="TEST-AP-01 AP", status="notconnect", vlan="1"),
+        InterfaceStatus(port="Gi0/4", name="SYNTH-MR44-01 AP", status="notconnect", vlan="1"),
         InterfaceStatus(port="Gi0/5", name="TV", status="notconnect", vlan="1"),
         InterfaceStatus(port="Gi0/6", name="Spare Access Port", status="disabled", vlan="1"),
     ]
@@ -304,7 +304,7 @@ def test_every_interface_yields_at_most_one_endpoint_node():
 
 def test_interface_carries_learned_count_for_the_ui():
     topology = build_topology(
-        hostname="Lab-SW1",
+        hostname="SYNTH-SW1",
         model="WS-C3560",
         management_ip="192.0.2.10",
         interfaces=[_uplink_interface()],
@@ -318,7 +318,7 @@ def test_interface_carries_learned_count_for_the_ui():
 
 def test_cpu_and_all_vlan_mac_rows_are_ignored():
     topology = build_topology(
-        hostname="Lab-SW1",
+        hostname="SYNTH-SW1",
         model="WS-C3560",
         management_ip="192.0.2.10",
         interfaces=[InterfaceStatus(port="Gi0/2", name="Test Workstation", status="connected", vlan="1")],
@@ -335,10 +335,10 @@ def test_cpu_and_all_vlan_mac_rows_are_ignored():
 # --- CDP parsing ----------------------------------------------------------
 
 CDP_SAMPLE = """-------------------------
-Device ID: TEST-AP-Lab
+Device ID: SYNTH-MR44-Lab
 Entry address(es):
   IP address: 192.0.2.44
-Platform: TEST-AP-01,  Capabilities: Trans-Bridge
+Platform: Meraki MR44,  Capabilities: Trans-Bridge
 Interface: GigabitEthernet0/4,  Port ID (outgoing port): wired0
 Holdtime : 155 sec
 
@@ -358,10 +358,10 @@ def test_parse_cdp_extracts_neighbours_and_shortens_interfaces():
     neighbors = parse_cdp(CDP_SAMPLE)
     assert len(neighbors) == 2
     first = neighbors[0]
-    assert first.remote_name == "TEST-AP-Lab"
+    assert first.remote_name == "SYNTH-MR44-Lab"
     assert first.local_interface == "Gi0/4"
     assert first.remote_interface == "wired0"
-    assert first.platform == "TEST-AP-01"
+    assert first.platform == "Meraki MR44"
     assert first.capabilities == ["Trans-Bridge"]
     assert first.ip == "192.0.2.44"
     assert neighbors[1].local_interface == "Gi0/9"
@@ -373,7 +373,7 @@ def test_parse_cdp_tolerates_empty_and_noisy_output():
     assert parse_cdp("unexpected banner text") == []
 
 
-# --- physical lab shape ----------------------------------------------------
+# --- synthetic topology shape ----------------------------------------------------
 #
 # Mirrors the interface table of the real WS-C3560CG-8PC-S so a future change
 # cannot silently alter what that switch renders as. Addresses are from the
@@ -383,7 +383,7 @@ PHYSICAL_LAB_INTERFACES = [
     InterfaceStatus(port="Gi0/1", name="Uplink to Test Gateway", status="connected", vlan="1", duplex="a-full", speed="a-1000", protected=True),
     InterfaceStatus(port="Gi0/2", name="Test Workstation", status="connected", vlan="1", duplex="a-full", speed="a-1000", protected=True),
     InterfaceStatus(port="Gi0/3", name="Test Server", status="notconnect", vlan="1", duplex="auto", speed="auto"),
-    InterfaceStatus(port="Gi0/4", name="TEST-AP-01 AP", status="notconnect", vlan="1", duplex="auto", speed="auto"),
+    InterfaceStatus(port="Gi0/4", name="SYNTH-MR44-01 AP", status="notconnect", vlan="1", duplex="auto", speed="auto"),
     InterfaceStatus(port="Gi0/5", name="TV", status="notconnect", vlan="1", duplex="auto", speed="auto"),
     InterfaceStatus(port="Gi0/6", name="Spare Access Port", status="disabled", vlan="1", duplex="auto", speed="auto"),
     InterfaceStatus(port="Gi0/7", name="Spare Access Port", status="disabled", vlan="1", duplex="auto", speed="auto"),
@@ -393,7 +393,7 @@ PHYSICAL_LAB_INTERFACES = [
 ]
 
 
-def _physical_lab_topology(uplink_macs: int = 3):
+def _synthetic_topology_fixture(uplink_macs: int = 3):
     return build_topology(
         hostname="SWITCHOPS-TEST-SW1",
         model="WS-C3560CG-8PC-S",
@@ -406,8 +406,8 @@ def _physical_lab_topology(uplink_macs: int = 3):
     )
 
 
-def test_physical_lab_renders_the_devices_that_actually_exist():
-    topology = _physical_lab_topology()
+def test_synthetic_fixture_renders_the_devices_that_actually_exist():
+    topology = _synthetic_topology_fixture()
     rendered = {
         device.connected_interface: (device.name, device.type, device.source, device.evidence_level)
         for device in topology.devices
@@ -420,7 +420,7 @@ def test_physical_lab_renders_the_devices_that_actually_exist():
         "Gi0/2": ("Unidentified device", "unknown", "observed", "observed-on-port"),
         # Dark ports: intent only, so the description is the label.
         "Gi0/3": ("Test Server", "server", "expected", "expected"),
-        "Gi0/4": ("TEST-AP-01 AP", "access-point", "expected", "expected"),
+        "Gi0/4": ("SYNTH-MR44-01 AP", "access-point", "expected", "expected"),
         "Gi0/5": ("TV", "tv-media", "expected", "expected"),
     }
     expectations = {
@@ -434,9 +434,9 @@ def test_physical_lab_renders_the_devices_that_actually_exist():
     assert "Gi0/6" not in rendered and "Gi0/9" not in rendered and "Gi0/10" not in rendered
 
 
-def test_physical_lab_uplink_stays_singular_however_many_addresses_appear():
+def test_synthetic_fixture_uplink_stays_singular_however_many_addresses_appear():
     for uplink_macs in (1, 3, 5, 40):
-        topology = _physical_lab_topology(uplink_macs)
+        topology = _synthetic_topology_fixture(uplink_macs)
         uplink = [
             device for device in topology.devices if device.connected_interface == "Gi0/1"
         ]
@@ -449,19 +449,19 @@ def test_physical_lab_uplink_stays_singular_however_many_addresses_appear():
         assert len(topology.links) == 5
 
 
-def test_physical_lab_marks_the_management_ports_protected():
-    topology = _physical_lab_topology()
+def test_synthetic_fixture_marks_the_management_ports_protected():
+    topology = _synthetic_topology_fixture()
     protected = {i.port for i in topology.interfaces if i.protected}
     assert protected == {"Gi0/1", "Gi0/2"}
 
 
-def test_physical_lab_expected_ap_is_ready_for_the_mr44_transition():
+def test_synthetic_fixture_expected_ap_is_ready_for_the_mr44_transition():
     """Before the TEST-AP is plugged in, Gi0/4 must read as waiting, not offline."""
-    topology = _physical_lab_topology()
+    topology = _synthetic_topology_fixture()
     ap = next(d for d in topology.devices if d.connected_interface == "Gi0/4")
     assert ap.source == "expected"
     assert ap.online is False
-    assert ap.model == "TEST-AP" and ap.vendor == "Cisco Meraki"
+    assert ap.model == "MR44" and ap.vendor == "Cisco Meraki"
     # Identity is described, not discovered — the AP has never spoken.
     assert ap.identity_source == "interface-description"
     assert ap.confidence == "medium"

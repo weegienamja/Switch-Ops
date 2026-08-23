@@ -136,6 +136,9 @@ def classify_device(description: str, *, vendor_hint: str | None = None) -> tupl
     if model_match:
         model = model_match.group(1).upper()
         evidence.append("model named by observed metadata")
+        if vendor is None:
+            vendor = "Cisco Meraki"
+            evidence.append("vendor identified from the model family")
 
     if model:
         stage = "model"
@@ -526,6 +529,7 @@ def build_topology(
                 poeState=poe.oper if poe else "not-supported",
                 poeWatts=poe.power_watts if poe else 0,
                 protected=interface.protected,
+                policyState=interface.policy_state,
                 role=role,
                 learnedMacCount=learned_count,
             )

@@ -76,7 +76,7 @@ def real_mode(monkeypatch):
                         "configured": True,
                         "storage": "keyring",
                         "switch_host": "192.0.2.10",
-                        "switch_username": "labuser",
+                        "switch_username": "synthetic-user",
                     }
                 )
             },
@@ -205,14 +205,14 @@ def test_no_failure_detail_echoes_the_underlying_exception(real_mode, monkeypatc
     result = ct.run_connection_test(
         session_error=SwitchConnectionError(
             "Netmiko connection failed",
-            detail=f"password={SECRET} user=labuser path=C:/Users/example-user/creds.json",
+            detail=f"password={SECRET} user=synthetic-user path=C:/Synthetic/credentials.json",
         )
     )
     blob = result.model_dump_json()
     assert SECRET not in blob
-    assert "labuser" not in blob
+    assert "synthetic-user" not in blob
     assert "creds.json" not in blob
-    assert "C:/Users" not in blob
+    assert "C:/Synthetic" not in blob
     # Only the fixed vocabulary is exposed.
     assert result.failure_code in ct.FAILURE_TEXT
 

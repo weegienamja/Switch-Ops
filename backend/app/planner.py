@@ -7,10 +7,9 @@ from typing import Iterable
 
 from .command_registry import (
     assert_interface_readable,
-    assert_interface_writable,
     resolve_read_command,
+    short_interface,
 )
-from .errors import SwitchOpsError
 from .models import (
     AccessPointPlanRequest,
     DeploymentPlan,
@@ -21,7 +20,7 @@ from .models import (
 
 
 def _short_interface(canonical: str) -> str:
-    return canonical.replace("GigabitEthernet", "Gi")
+    return short_interface(canonical)
 
 
 def build_access_point_plan(
@@ -45,13 +44,15 @@ def build_access_point_plan(
         detail=f"{short} was returned by show interfaces status." if interface_exists else f"{short} was not returned by the switch.",
     ))
 
-    try:
-        assert_interface_writable(canonical)
-        safe_target = True
-        safe_detail = f"{canonical} is an allowlisted lab interface and is not protected."
-    except SwitchOpsError as exc:
-        safe_target = False
-        safe_detail = exc.message
+    observed_interface = interface_by_port.get(short.lower())
+    safe_target = bool(
+        observed_interface and observed_interface.policy_state == "OPERABLE"
+    )
+    safe_detail = (
+        f"{canonical} is explicitly OPERABLE in this device's local policy."
+        if safe_target
+        else f"{canonical} is not explicitly OPERABLE in this device's local policy."
+    )
     checks.append(PlanCheck(name="target_is_safe", passed=safe_target, detail=safe_detail))
 
     poe_supported = request.poe == "never" or short.lower() in poe_by_port
@@ -107,9 +108,9 @@ def build_access_point_plan(
         desiredState=desired_state,
         checks=checks,
         impact=(
-            "Selected access port only. Protected management interfaces are unaffected."
+            "Selected OPERABLE interface only. Protected interfaces are unaffected."
             if safe_target
-            else "Plan is blocked because the target is protected or outside the lab allowlist."
+            else "Plan is blocked because the target is PROTECTED or UNMANAGED."
         ),
         proposedIos=proposed,
         backupRequired=True,

@@ -58,14 +58,28 @@ def parse_running_config(text: str) -> Dict[str, object]:
     m = re.search(r"^hostname\s+(\S+)", text, re.MULTILINE)
     if m:
         out["hostname"] = m.group(1)
-    m = re.search(
-        r"interface Vlan1.*?ip address\s+(\S+)\s+(\S+)",
+    svi_addresses: List[Dict[str, str]] = []
+    for match in re.finditer(
+        r"^interface\s+(Vlan\d+)\s*$\n(?P<body>.*?)(?=^!\s*$|^interface\s+|\Z)",
         text,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if m:
-        out["management_ip"] = m.group(1)
-        out["management_mask"] = m.group(2)
+        re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    ):
+        address = re.search(
+            r"^\s*ip address\s+(\S+)\s+(\S+)",
+            match.group("body"),
+            re.MULTILINE | re.IGNORECASE,
+        )
+        if address:
+            svi_addresses.append({
+                "interface": match.group(1),
+                "ip": address.group(1),
+                "mask": address.group(2),
+            })
+    out["svi_addresses"] = svi_addresses
+    if len(svi_addresses) == 1:
+        out["management_ip"] = svi_addresses[0]["ip"]
+        out["management_mask"] = svi_addresses[0]["mask"]
+        out["management_interface"] = svi_addresses[0]["interface"]
     m = re.search(r"^ip default-gateway\s+(\S+)", text, re.MULTILINE)
     if m:
         out["gateway"] = m.group(1)

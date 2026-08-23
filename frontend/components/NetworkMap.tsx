@@ -41,11 +41,6 @@ interface Wire {
   label: string | null;
 }
 
-function portNumber(port: string): number {
-  const match = /Gi0\/(\d+)/.exec(port);
-  return match ? Number(match[1]) : 99;
-}
-
 function factLine(placed: PlacedDevice): string {
   const { device, link, port } = placed;
   if (device.source === "expected") return `Expected on ${port}`;
@@ -56,7 +51,7 @@ function factLine(placed: PlacedDevice): string {
 }
 
 /**
- * The physical lab, drawn as one canvas.
+ * The observed topology, drawn as one canvas.
  *
  * The Catalyst front panel is the centre of the topology rather than a
  * separate card, and every device is wired to the port it is actually plugged
@@ -98,7 +93,9 @@ export default function NetworkMap({
       return { device, link, port, reconciliation: reconciliationByPort.get(port) };
     })
     .filter((item) => item.port)
-    .sort((a, b) => portNumber(a.port) - portNumber(b.port));
+    .sort((a, b) =>
+      a.port.localeCompare(b.port, undefined, { numeric: true, sensitivity: "base" }),
+    );
 
   const upstream = placed.filter((item) => item.device.role === "uplink");
   const edge = placed.filter((item) => item.device.role !== "uplink");
@@ -205,7 +202,7 @@ export default function NetworkMap({
     <section className="card network-map" aria-labelledby="network-map-title">
       <div className="card__head">
         <div>
-          <h2 className="card__title" id="network-map-title">Your lab</h2>
+          <h2 className="card__title" id="network-map-title">Observed network</h2>
           <div className="card__subtitle">
             Every device is drawn on the port it is plugged into. Solid cables are observed;
             dashed cables are expected from an interface description only.

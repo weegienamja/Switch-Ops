@@ -25,10 +25,10 @@ def test_parse_interface_status_has_ten_ports():
     ports = [i.port for i in interfaces]
     assert ports[:2] == ["Gi0/1", "Gi0/2"]
     assert len(interfaces) == 10
-    # Gi0/1 and Gi0/2 are protected
+    # Parsing observation never grants or denies write authority.
     by_port = {i.port: i for i in interfaces}
-    assert by_port["Gi0/1"].protected is True
-    assert by_port["Gi0/2"].protected is True
+    assert by_port["Gi0/1"].policy_state == "UNMANAGED"
+    assert by_port["Gi0/2"].policy_state == "UNMANAGED"
     assert by_port["Gi0/6"].protected is False
     assert by_port["Gi0/1"].status == "connected"
     assert by_port["Gi0/1"].duplex == "a-full"
@@ -102,8 +102,9 @@ def test_parse_running_config_redacts():
     text = _load("show_running_config.txt")
     cfg = parse_running_config(text)
     assert cfg["hostname"] == "SWITCHOPS-TEST-SW1"
-    assert cfg["management_ip"] == "192.0.2.190"
-    assert cfg["gateway"] == "192.0.2.19"
+    assert cfg["management_ip"] == "192.0.2.10"
+    assert cfg["management_interface"] == "Vlan10"
+    assert cfg["gateway"] == "192.0.2.1"
     assert cfg["http_disabled"] is True
     assert cfg["https_disabled"] is True
     assert "GigabitEthernet0/6" in cfg["shutdown_interfaces"]
@@ -120,7 +121,7 @@ def test_config_redaction_covers_common_ios_secret_forms():
             " password 7 value-three",
             "snmp-server community value-four RO",
             "tacacs-server key 7 value-five",
-            "crypto isakmp key value-six address 192.0.2.10.1",
+            "crypto isakmp key value-six address 192.0.2.1",
         ]
     )
     redacted = redact_config(text)

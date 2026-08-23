@@ -16,6 +16,7 @@ const interfaces: InterfaceStatus[] = [
     speed: "auto",
     type: "10/100/1000BaseTX",
     protected: false,
+    policyState: "OPERABLE",
   },
   {
     port: "Gi0/1",
@@ -26,6 +27,7 @@ const interfaces: InterfaceStatus[] = [
     speed: "a-1000",
     type: "10/100/1000BaseTX",
     protected: true,
+    policyState: "PROTECTED",
   },
 ];
 
@@ -44,11 +46,11 @@ function validPlan() {
     },
     checks: [
       { name: "interface_exists", passed: true, detail: "Gi0/4 was returned by show interfaces status." },
-      { name: "target_is_safe", passed: true, detail: "GigabitEthernet0/4 is an allowlisted lab interface." },
+      { name: "target_is_safe", passed: true, detail: "GigabitEthernet0/4 is OPERABLE in local policy." },
       { name: "poe_supported", passed: true, detail: "Gi0/4 is present in show power inline." },
       { name: "vlan_exists", passed: true, detail: "VLAN 1 exists in show vlan brief." },
     ],
-    impact: "Selected access port only. Protected management interfaces are unaffected.",
+    impact: "Selected access port only. Protected interfaces are unaffected.",
     proposedIos: ["configure terminal", "interface GigabitEthernet0/4", "switchport access vlan 1"],
     backupRequired: true,
     verificationCommands: ["show interfaces status", "show power inline"],
@@ -132,7 +134,7 @@ describe("DeploymentPlanPanel", () => {
       ...validPlan(),
       status: "INVALID",
       proposedIos: [],
-      impact: "Plan is blocked because the target is protected or outside the lab allowlist.",
+      impact: "Plan is blocked because the target is not OPERABLE in local policy.",
       checks: [
         { name: "target_is_safe", passed: false, detail: "GigabitEthernet0/1 is protected and cannot be modified." },
       ],

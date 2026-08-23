@@ -36,15 +36,21 @@ interface GigabitEthernet0/4
 interface GigabitEthernet0/5
 !
 interface GigabitEthernet0/6
+ shutdown
 !
 interface GigabitEthernet0/7
+ shutdown
 !
 interface GigabitEthernet0/8
+ shutdown
 !
 interface Vlan10
  ip address 192.0.2.10 255.255.255.0
 !
 ip default-gateway 192.0.2.1
+!
+no ip http server
+no ip http secure-server
 !
 line vty 0 4
  login local

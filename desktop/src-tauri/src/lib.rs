@@ -72,9 +72,6 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
-            let desktop_mode = std::env::var("SWITCHOPS_DESKTOP_MODE")
-                .unwrap_or_else(|_| "real".to_string());
-            let mock_mode = desktop_mode.eq_ignore_ascii_case("mock");
             let shell = app.shell();
             let sidecar = shell
                 .sidecar("switchops-backend")
@@ -85,10 +82,7 @@ pub fn run() {
                     "--port",
                     &BACKEND_PORT.to_string(),
                 ])
-                .env(
-                    "SWITCH_MOCK_MODE",
-                    if mock_mode { "true" } else { "false" },
-                );
+                .env("SWITCH_MOCK_MODE", "false");
             let (mut events, child) = sidecar
                 .spawn()
                 .expect("failed to spawn switchops-backend");

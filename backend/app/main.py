@@ -22,7 +22,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .audit_store import get_audit_store
-from .command_registry import assert_interface_readable
+from .command_registry import assert_interface_readable, short_interface
 from .configuration_history import get_configuration_history_store
 from .connection_test import run_connection_test
 from .intent_store import get_intent_store
@@ -37,7 +37,7 @@ from .live_state import (
     get_live_state,
     set_collector,
 )
-from .errors import SwitchOpsError
+from .errors import CommandNotAllowedError, SwitchOpsError
 from .health_logic import build_summary
 from .host_key_store import is_host_pinned
 from .guide import list_guide_operations, run_guide_operation
@@ -81,8 +81,13 @@ from .models import (
     TelemetryHistoryResponse,
     TelemetrySnapshotSummary,
     ConfigSaveState,
+    ControlledWritesUpdate,
+    InterfacePolicyEntry,
+    InterfacePolicyResponse,
+    InterfacePolicyUpdate,
     WriteLockStatus,
 )
+from .interface_policy import get_interface_policy_store
 from .operations import (
     OPERATIONS,
     assert_interface_operable,
@@ -146,7 +151,7 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="SwitchOps",
-    version="0.4.0",
+    version="0.4.1",
     description="Local-only network operations sidecar. Allowlisted commands only.",
     docs_url="/docs" if settings.enable_api_docs else None,
     redoc_url=None,
@@ -161,7 +166,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -231,6 +236,15 @@ _UNSUPPORTED_IOS_OUTPUT = re.compile(
 )
 
 
+def _current_device_host() -> str | None:
+    host = get_credential_store().status().get("switch_host")
+    return str(host) if host else None
+
+
+def _annotate_interface_policy(interfaces: list) -> None:
+    get_interface_policy_store().annotate(_current_device_host(), interfaces)
+
+
 def _parse_section(
     section: str,
     parser: Callable[[str], T],
@@ -287,6 +301,17 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
     interfaces = _parse_section(
         "interfaces", parse_interface_status, outputs["interfaces"], [], section_errors
     )
+    configured_host = _current_device_host()
+    for svi in config.get("svi_addresses", []):
+        if isinstance(svi, dict) and configured_host and svi.get("ip") == configured_host:
+            config["management_ip"] = svi.get("ip")
+            config["management_mask"] = svi.get("mask")
+            config["management_interface"] = svi.get("interface")
+            get_interface_policy_store().ensure_protected(
+                configured_host, str(svi.get("interface") or "")
+            )
+            break
+    _annotate_interface_policy(interfaces)
     environment = _parse_section(
         "environment",
         parse_environment,
@@ -752,7 +777,7 @@ def health():
         "ok": True,
         "service": "switchops-backend",
         "mockMode": settings.mock_mode,
-        "enableWriteActions": settings.enable_write_actions,
+        "enableWriteActions": get_interface_policy_store().controlled_writes_enabled(),
     }
 
 
@@ -766,7 +791,7 @@ def system_info():
         apiHost=settings.host,
         apiPort=settings.port,
         mockMode=settings.mock_mode,
-        enableWriteActions=settings.enable_write_actions,
+        enableWriteActions=get_interface_policy_store().controlled_writes_enabled(),
         legacySsh=settings.legacy_ssh,
         apiDocsEnabled=settings.enable_api_docs,
         hostKeyPinned=bool(host) and is_host_pinned(str(host)),
@@ -789,7 +814,7 @@ def setup_status():
         hasEnableSecret=raw["has_enable_secret"],
         storage=raw["storage"],
         mockMode=settings.mock_mode,
-        enableWriteActions=settings.enable_write_actions,
+        enableWriteActions=get_interface_policy_store().controlled_writes_enabled(),
         switchHost=raw["switch_host"],
         switchUsername=raw["switch_username"],
         switchDeviceType=raw["switch_device_type"],
@@ -871,7 +896,9 @@ def get_interfaces():
         "interfaces",
         lambda c: run_and_audit(c, symbol="show_interfaces_status"),
     )
-    return InterfaceStatusResponse(interfaces=parse_interface_status(out))
+    interfaces = parse_interface_status(out)
+    _annotate_interface_policy(interfaces)
+    return InterfaceStatusResponse(interfaces=interfaces)
 
 
 @app.get("/api/switch/errors", response_model=InterfaceErrorsResponse, response_model_by_alias=True)
@@ -1071,6 +1098,7 @@ def post_access_point_plan(req: AccessPointPlanRequest):
         )
 
     interfaces, poe, vlans = on_device("access_point_plan", _collect)
+    _annotate_interface_policy(interfaces)
     return build_access_point_plan(
         req,
         interfaces=interfaces,
@@ -1109,6 +1137,14 @@ def put_topology_intent(
     resulting disagreement is reported as stale documentation.
     """
     interface = _short_interface(assert_interface_readable(_decode_port(port)))
+    observed = {
+        str(item.get("port", ""))
+        for item in get_live_state().snapshot().get("interfaces", [])
+    }
+    if observed and interface not in observed:
+        raise CommandNotAllowedError(
+            f"Interface {interface} has not been observed on the configured device."
+        )
     store = get_intent_store()
     store.set_expected(
         device_id=deviceId,
@@ -1149,8 +1185,8 @@ def post_backup_config():
 
 
 def _short_interface(canonical: str) -> str:
-    """``GigabitEthernet0/4`` -> ``Gi0/4`` to match observation keys."""
-    return canonical.replace("GigabitEthernet", "Gi")
+    """Return the IOS short form used by observation keys."""
+    return short_interface(canonical)
 
 
 def _decode_port(port: str) -> str:
@@ -1159,6 +1195,69 @@ def _decode_port(port: str) -> str:
 
 
 # --- controlled operations ------------------------------------------------
+
+
+def _interface_policy_response() -> InterfacePolicyResponse:
+    observed = [item.get("port", "") for item in get_live_state().snapshot()["interfaces"]]
+    status = get_interface_policy_store().status(_current_device_host(), observed)
+    return InterfacePolicyResponse(
+        deviceConfigured=status["deviceConfigured"],
+        deviceKey=status["deviceKey"],
+        valid=status["valid"],
+        loadError=status["loadError"],
+        controlledWritesEnabled=status["controlledWritesEnabled"],
+        interfaces=[
+            InterfacePolicyEntry(interface=interface, state=state)
+            for interface, state in sorted(status["interfaces"].items())
+        ],
+    )
+
+
+@app.get(
+    "/api/interface-policy",
+    response_model=InterfacePolicyResponse,
+    response_model_by_alias=True,
+)
+def get_interface_policy():
+    return _interface_policy_response()
+
+
+@app.put(
+    "/api/interface-policy/control",
+    response_model=InterfacePolicyResponse,
+    response_model_by_alias=True,
+)
+def put_controlled_writes(req: ControlledWritesUpdate):
+    get_interface_policy_store().set_controlled_writes(req.enabled)
+    if not req.enabled:
+        get_write_lock().lock()
+    return _interface_policy_response()
+
+
+@app.put(
+    "/api/interface-policy/interfaces/{port}",
+    response_model=InterfacePolicyResponse,
+    response_model_by_alias=True,
+)
+def put_interface_policy(port: str, req: InterfacePolicyUpdate):
+    host = _current_device_host()
+    if not host:
+        raise HTTPException(status_code=409, detail="No device is configured.")
+    canonical = assert_interface_readable(_decode_port(port))
+    interface = _short_interface(canonical)
+    if req.state == "OPERABLE":
+        observed = {
+            item.get("port", "").strip().lower()
+            for item in get_live_state().snapshot()["interfaces"]
+            if item.get("port")
+        }
+        if interface.lower() not in observed:
+            raise HTTPException(
+                status_code=409,
+                detail="Only an interface currently reported by the device can be made operable.",
+            )
+    get_interface_policy_store().set_state(host, canonical, req.state)
+    return _interface_policy_response()
 
 
 @app.get("/api/control/lock", response_model=WriteLockStatus, response_model_by_alias=True)
@@ -1186,6 +1285,7 @@ def post_control_lock():
 
 @app.get("/api/operations/catalog")
 def get_operations_catalog():
+    policy = _interface_policy_response()
     return {
         "operations": [
             {
@@ -1196,8 +1296,15 @@ def get_operations_catalog():
             }
             for spec in OPERATIONS.values()
         ],
-        "writableInterfaces": [f"Gi0/{number}" for number in range(3, 9)],
-        "protectedInterfaces": ["Gi0/1", "Gi0/2", "Vlan1"],
+        "writableInterfaces": [
+            entry.interface for entry in policy.interfaces if entry.state == "OPERABLE"
+        ],
+        "protectedInterfaces": [
+            entry.interface for entry in policy.interfaces if entry.state == "PROTECTED"
+        ],
+        "unmanagedInterfaces": [
+            entry.interface for entry in policy.interfaces if entry.state == "UNMANAGED"
+        ],
         "arbitraryCli": False,
         "automaticSave": False,
     }
@@ -1330,7 +1437,10 @@ def main() -> None:
         host = "127.0.0.1"
     logger.info(
         "Starting SwitchOps backend on %s:%s (mock=%s, writes=%s)",
-        host, args.port, settings.mock_mode, settings.enable_write_actions,
+        host,
+        args.port,
+        settings.mock_mode,
+        get_interface_policy_store().controlled_writes_enabled(),
     )
     uvicorn.run(app, host=host, port=args.port, log_config=None)
 

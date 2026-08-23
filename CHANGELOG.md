@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.1 - 2026-08-23
+
+### Public release hardening
+
+- Removed production fixture runtime behavior. Packaged builds force real mode,
+  sample IOS output is no longer bundled, and a clean first launch contains no
+  configured device or generated network state.
+- Removed device-specific onboarding defaults and deployment branding.
+- Replaced the fixed port layout with a validated, local, per-device interface
+  policy: PROTECTED, OPERABLE, or fail-closed UNMANAGED.
+- Made controlled writes default off and retained the process-local lock that
+  starts engaged on every launch.
+- Added a deliberate Settings workflow for global write opt-in and per-interface
+  policy changes. The backend remains authoritative and holds policy stable for
+  each complete transaction.
+- Generalized physical-interface normalization across common Catalyst Fast,
+  Gigabit, 10/25/40/100-Gigabit naming and dynamic front-panel rendering.
+- Added honest first-run connection testing, hardened runtime/release ignore
+  rules, public privacy documentation, a security policy, and third-party
+  provenance notes.
+- Standardized packaged runtime data at `%LOCALAPPDATA%\SwitchOps` and versioned
+  all application metadata at 0.4.1.
+
 ## 0.4.0 - 2026-08-22
 
 ### Live operations
@@ -15,12 +38,12 @@
 
 ### Controlled changes
 
-- Added process-local write lock and a fixed operation catalog for admin
-  up/down, PoE auto/off, and sanitized descriptions on Gi0/3-Gi0/8 only.
+- Added a process-local write lock and a fixed operation catalog for admin
+  up/down, PoE auto/off, and sanitized descriptions.
 - Added precheck, exact-state capture, backup, IOS rejection detection,
   property verification, audit, and rollback semantics.
-- Kept Gi0/1, Gi0/2, and Vlan1 immutable across short, long, mixed-case, and
-  leading-zero aliases.
+- The initial deployment used a fixed protected/operable layout; v0.4.1
+  replaces that deployment-specific rule with local per-device policy.
 - Removed automatic startup saves. Running-vs-startup divergence is visible;
   save is separate and requires explicit confirmation.
 
@@ -36,14 +59,8 @@
 
 ### Validation
 
-- Measured warm full observations at about 1.93-1.98 seconds versus about
-  11.75 seconds for the original cold architecture; prompt-anchored port reads
-  measured about 46 ms versus about 509 ms.
-- Temporary real-switch LLDP enable/read/restore completed with zero advertised
-  neighbours; running configuration was restored and startup was unchanged.
-- Real Gi0/6 validation completed `disabled -> notconnect -> disabled`; final
-  running/startup fingerprints match, pending operations are zero, and writes
-  are disabled again.
+- Hardware validation confirmed persistent-session performance, reversible
+  operation verification, rollback, and restored running/startup state.
 - Repaired Recent observations geometry and semantics for missing, sparse,
   irregular, and reset data.
 

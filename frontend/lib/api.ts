@@ -11,6 +11,8 @@ import type {
   GuideCatalogResponse,
   GuideRunResult,
   InterfaceErrorsResponse,
+  InterfacePolicyResponse,
+  InterfacePolicyState,
   LogsResponse,
   MacTableResponse,
   MemoryStatus,
@@ -169,6 +171,18 @@ export const api = {
     fetchJson<WriteLockStatus>("/api/control/unlock", { method: "POST" }),
   lockControl: () =>
     fetchJson<WriteLockStatus>("/api/control/lock", { method: "POST" }),
+  interfacePolicy: () =>
+    fetchJson<InterfacePolicyResponse>("/api/interface-policy"),
+  setControlledWrites: (enabled: boolean) =>
+    fetchJson<InterfacePolicyResponse>("/api/interface-policy/control", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+  setInterfacePolicy: (port: string, state: InterfacePolicyState) =>
+    fetchJson<InterfacePolicyResponse>(
+      `/api/interface-policy/interfaces/${portToPath(port)}`,
+      { method: "PUT", body: JSON.stringify({ state }) },
+    ),
   runOperation: (port: string, kind: OperationKind, value?: string) =>
     fetchJson<OperationResult>(`/api/interfaces/${portToPath(port)}/operations`, {
       method: "POST",

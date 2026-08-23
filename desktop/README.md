@@ -8,13 +8,14 @@ Wraps the Next.js frontend and bundles the FastAPI backend as a PyInstaller side
 # 1. Build the backend sidecar
 powershell -ExecutionPolicy Bypass -File scripts/build-backend-sidecar.ps1
 
-# 2. Start Tauri from the repository root (real mode is the default)
+# 2. Start Tauri from the repository root
 cd ../..
-Remove-Item Env:SWITCHOPS_DESKTOP_MODE -ErrorAction SilentlyContinue
 pnpm desktop:dev
 ```
 
-For mock mode, set `$env:SWITCHOPS_DESKTOP_MODE = "mock"` before the final command.
+The desktop always starts its sidecar with fixture mode disabled. A clean
+launch opens first-run setup until real device credentials are saved and the
+connection test succeeds.
 
 ## Build (Windows installer)
 

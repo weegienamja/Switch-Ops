@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import List
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,7 +31,7 @@ def _runtime_root() -> Path:
     if getattr(sys, "frozen", False):
         local_app_data = os.environ.get("LOCALAPPDATA")
         base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
-        return base / "SwitchOps" / "SwitchOps"
+        return base / "SwitchOps"
     return BACKEND_ROOT
 
 
@@ -40,11 +40,8 @@ DATA_DIR = RUNTIME_ROOT / "data"
 LOG_DIR = RUNTIME_ROOT / "logs"
 BACKUP_DIR = RUNTIME_ROOT / "backups"
 
-if getattr(sys, "frozen", False):
-    _bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
-    SAMPLE_DIR = _bundle_root / "app" / "sample_outputs"
-else:
-    SAMPLE_DIR = Path(__file__).resolve().parent / "sample_outputs"
+# Test fixtures are source-only. Production builds do not bundle this path.
+SAMPLE_DIR = Path(__file__).resolve().parent / "sample_outputs"
 
 for _d in (DATA_DIR, LOG_DIR, BACKUP_DIR):
     _d.mkdir(parents=True, exist_ok=True)
@@ -67,8 +64,7 @@ class Settings(BaseSettings):
         alias="SWITCHOPS_CORS_ORIGINS",
     )
 
-    mock_mode: bool = Field(default=True, alias="SWITCH_MOCK_MODE")
-    enable_write_actions: bool = Field(default=False, alias="ENABLE_WRITE_ACTIONS")
+    mock_mode: bool = Field(default=False, alias="SWITCH_MOCK_MODE")
     legacy_ssh: bool = Field(default=True, alias="SWITCH_LEGACY_SSH")
     allow_system_ssh: bool = Field(default=False, alias="SWITCH_ALLOW_SYSTEM_SSH")
     enable_api_docs: bool = Field(default=False, alias="SWITCHOPS_ENABLE_API_DOCS")
@@ -81,8 +77,8 @@ class Settings(BaseSettings):
 
     # Read directly only if keyring + file are both unavailable. Treated as
     # placeholders; never logged.
-    switch_host: str = Field(default="192.0.2.190", alias="SWITCH_HOST")
-    switch_username: str = Field(default="operator", alias="SWITCH_USERNAME")
+    switch_host: str = Field(default="", alias="SWITCH_HOST")
+    switch_username: str = Field(default="", alias="SWITCH_USERNAME")
     switch_password: str | None = Field(default=None, alias="SWITCH_PASSWORD")
     switch_enable_secret: str | None = Field(default=None, alias="SWITCH_ENABLE_SECRET")
     switch_device_type: str = Field(default="cisco_ios", alias="SWITCH_DEVICE_TYPE")
@@ -91,6 +87,15 @@ class Settings(BaseSettings):
     log_dir: Path = LOG_DIR
     data_dir: Path = DATA_DIR
     sample_dir: Path = SAMPLE_DIR
+
+    @model_validator(mode="after")
+    def disable_mock_in_packaged_build(self) -> "Settings":
+        # SWITCH_MOCK_MODE remains useful for source-only automated tests and
+        # developer harnesses. A packaged sidecar must never present fixtures
+        # as the operator's network, even if its environment is manipulated.
+        if getattr(sys, "frozen", False):
+            self.mock_mode = False
+        return self
 
     @property
     def cors_origin_list(self) -> List[str]:
