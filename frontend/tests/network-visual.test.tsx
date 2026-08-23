@@ -66,39 +66,36 @@ const topology: TopologyModel = {
     // The regression case: one uplink node carrying five learned addresses.
     device({
       id: "endpoint-gi01",
-      type: "router",
-      name: "Uplink to Test Gateway",
-      visualCategory: "router",
+      type: "unknown",
+      name: "Unidentified device",
+      visualCategory: "unknown",
       connectedInterface: "Gi0/1",
       evidenceLevel: "observed-on-port",
-      identitySource: "interface-description",
+      identitySource: "none",
+      expectedName: "Uplink to Test Gateway",
+      expectedType: "router",
+      existenceConfidence: "high",
+      identityConfidence: "unknown",
+      freshness: "current",
+      evidenceIds: ["ev-link-1", "ev-mac-1"],
       learnedMacCount: 5,
       role: "uplink",
     }),
     device({
       id: "endpoint-gi02",
-      type: "desktop",
-      name: "Test Workstation",
-      visualCategory: "desktop",
+      type: "unknown",
+      name: "Unidentified device",
+      visualCategory: "unknown",
       connectedInterface: "Gi0/2",
       evidenceLevel: "observed-on-port",
-      identitySource: "interface-description",
+      identitySource: "none",
+      expectedName: "Test Workstation",
+      expectedType: "desktop",
+      existenceConfidence: "high",
+      identityConfidence: "unknown",
+      freshness: "current",
+      evidenceIds: ["ev-link-2"],
       learnedMacCount: 1,
-    }),
-    device({
-      id: "expected-ap",
-      type: "access-point",
-      vendor: "Cisco Meraki",
-      model: "TEST-AP",
-      name: "TEST-AP-01 AP",
-      source: "expected",
-      classificationStage: "model",
-      online: false,
-      connectedInterface: "Gi0/4",
-      visualCategory: "access-point",
-      evidence: ["interface description only; attachment not observed"],
-      evidenceLevel: "expected",
-      identitySource: "interface-description",
     }),
   ],
   interfaces: Array.from({ length: 10 }, (_, index) => ({
@@ -122,16 +119,55 @@ const topology: TopologyModel = {
   links: [
     link({ id: "link-gi01", toDeviceId: "endpoint-gi01", fromInterface: "Gi0/1", learnedMacCount: 5 }),
     link({ id: "link-gi02", toDeviceId: "endpoint-gi02", fromInterface: "Gi0/2" }),
-    link({
-      id: "link-ap",
-      toDeviceId: "expected-ap",
-      fromInterface: "Gi0/4",
-      status: "waiting",
-      speed: "auto",
+  ],
+  expectations: [
+    {
+      interface: "Gi0/4",
+      name: "TEST-AP-01 AP",
+      deviceType: "access-point",
+      vendor: "Cisco Meraki",
+      model: "TEST-AP",
+      source: "interface-description",
       confidence: "low",
-      evidenceLevel: "expected",
-      learnedMacCount: 0,
-    }),
+      evidenceIds: ["ev-description-4"],
+    },
+  ],
+  evidence: [
+    {
+      id: "ev-link-1",
+      evidenceType: "INTERFACE_LINK",
+      evidenceClass: "observed",
+      source: "interface-telemetry",
+      deviceId: "switch-synthetic",
+      interface: "Gi0/1",
+      entityId: "endpoint-gi01",
+      summary: "Gi0/1 reports an operational link.",
+      observedAt: "2026-08-22T04:00:00Z",
+      freshness: "current",
+      strength: "high",
+      establishes: { existence: true, identity: false, attachment: true, relationship: true, role: false },
+      relationship: "attached-endpoint",
+      provenance: "show interfaces status",
+      revoked: false,
+      conflict: false,
+    },
+    {
+      id: "ev-mac-1",
+      evidenceType: "MAC_LEARNED",
+      evidenceClass: "observed",
+      source: "mac-table",
+      deviceId: "switch-synthetic",
+      interface: "Gi0/1",
+      summary: "Five addresses are learned through Gi0/1, not directly attached.",
+      observedAt: "2026-08-22T04:00:00Z",
+      freshness: "current",
+      strength: "high",
+      establishes: { existence: true, identity: false, attachment: false, relationship: true, role: false },
+      relationship: "learned-behind",
+      provenance: "show mac address-table",
+      revoked: false,
+      conflict: false,
+    },
   ],
 };
 
@@ -201,10 +237,10 @@ describe("network map", () => {
         onSelectPort={() => undefined}
       />,
     );
-    // Three endpoints, not seven: Gi0/1 carries five addresses behind one node.
+    // Two observed endpoints, not expected-only cards or one node per learned MAC.
     const nodes = document.querySelectorAll("[data-node]");
-    expect(nodes).toHaveLength(3);
-    expect(screen.getAllByText("Uplink to Test Gateway")).toHaveLength(1);
+    expect(nodes).toHaveLength(2);
+    expect((document.querySelector('[data-node="endpoint-gi01"]') as HTMLElement).textContent).toContain("Uplink to Test Gateway");
     expect(screen.queryByText("Uplink to Test Gateway 1")).toBeNull();
     expect(screen.queryByText("Uplink to Test Gateway 2")).toBeNull();
   });
@@ -220,13 +256,13 @@ describe("network map", () => {
     );
     const upstream = document.querySelector(".lab-canvas__tier--upstream") as HTMLElement;
     const edge = document.querySelector(".lab-canvas__tier--edge") as HTMLElement;
-    expect(within(upstream).getByText("Uplink to Test Gateway")).toBeTruthy();
-    expect(within(edge).getByText("Test Workstation")).toBeTruthy();
-    expect(within(edge).getByText("TEST-AP-01 AP")).toBeTruthy();
+    expect(upstream.textContent).toContain("Uplink to Test Gateway");
+    expect(edge.textContent).toContain("Test Workstation");
+    expect(within(edge).queryByText("TEST-AP-01 AP")).toBeNull();
     expect(within(upstream).queryByText("Test Workstation")).toBeNull();
   });
 
-  it("labels an unobserved device as expected and waiting rather than offline", () => {
+  it("keeps expected-only descriptions as compact port intent rather than observed nodes", () => {
     render(
       <NetworkMap
         topology={topology}
@@ -235,11 +271,27 @@ describe("network map", () => {
         onSelectPort={() => undefined}
       />,
     );
-    const node = document.querySelector('[data-node="expected-ap"]') as HTMLElement;
-    expect(within(node).getByText("WAITING")).toBeTruthy();
-    expect(within(node).getByText("Expected")).toBeTruthy();
-    expect(within(node).getByText("Expected on Gi0/4")).toBeTruthy();
-    expect(within(node).queryByText(/offline/i)).toBeNull();
+    expect(document.querySelector('[data-node="expected-ap"]')).toBeNull();
+    const intent = document.querySelector('[data-expectation="Gi0/4"]') as HTMLElement;
+    expect(within(intent).getByText(/No current observed attachment/)).toBeTruthy();
+    expect(within(intent).getByText(/Expected only/)).toBeTruthy();
+    expect(within(intent).queryByText(/offline/i)).toBeNull();
+  });
+
+  it("offers explicit observed, reconciled, and expected knowledge views", () => {
+    render(
+      <NetworkMap
+        topology={topology}
+        telemetry={telemetry}
+        selectedPort="Gi0/4"
+        onSelectPort={() => undefined}
+      />,
+    );
+    expect(screen.getByRole("tab", { name: "Observed" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("tab", { name: "Expected" }));
+    expect(screen.getByText("Expected network")).toBeTruthy();
+    expect(document.querySelectorAll("[data-node]")).toHaveLength(0);
+    expect(document.querySelector('[data-expectation="Gi0/4"]')).toBeTruthy();
   });
 
   it("selects the physical port when a topology node is clicked", () => {
@@ -281,8 +333,10 @@ describe("port inspector", () => {
     expect(screen.getByText("Observed on port")).toBeTruthy();
     expect(screen.getByText(/5 addresses are reachable through this link/)).toBeTruthy();
     expect(
-      screen.getByText(/Name taken from the interface description you configured/),
+      screen.getByText(/Nothing identifies this device yet/),
     ).toBeTruthy();
+    expect(screen.getByText("Evidence details · 2")).toBeTruthy();
+    expect(screen.getByText(/show mac address-table/)).toBeTruthy();
   });
 
   it("gives a deterministic reason for each reported value", () => {
@@ -305,7 +359,15 @@ describe("port inspector", () => {
     expect(
       screen.getByText(/administratively shut down and will not establish a link/),
     ).toBeTruthy();
-    expect(screen.getByText(/Nothing is evidenced on this interface/)).toBeTruthy();
+    expect(screen.getByText(/Nothing is currently evidenced on this interface/)).toBeTruthy();
+  });
+
+  it("shows expected-only identity at the port without an endpoint card", () => {
+    render(
+      <PortInspector topology={topology} telemetry={telemetry} events={[]} selectedPort="Gi0/4" />,
+    );
+    expect(screen.getByText(/Nothing is currently evidenced on this interface.*Expected: TEST-AP-01 AP/)).toBeTruthy();
+    expect(screen.queryByText("Observed on port")).toBeNull();
   });
 });
 

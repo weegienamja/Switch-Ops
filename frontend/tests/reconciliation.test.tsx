@@ -200,20 +200,6 @@ const TOPOLOGY: TopologyModel = {
       role: "uplink",
       learnedMacCount: 2,
     }),
-    device({
-      id: "expected-gi04",
-      type: "access-point",
-      name: "TEST-AP-01 AP",
-      source: "expected",
-      online: false,
-      visualCategory: "access-point",
-      connectedInterface: "Gi0/4",
-      expectedName: "TEST-AP-01 AP",
-      expectedType: "access-point",
-      evidenceLevel: "expected",
-      identitySource: "interface-description",
-      learnedMacCount: 0,
-    }),
   ],
   interfaces: Array.from({ length: 10 }, (_, index) => ({
     id: `switch-synthetic:Gi0/${index + 1}`,
@@ -234,16 +220,16 @@ const TOPOLOGY: TopologyModel = {
   })),
   links: [
     link({ id: "l1", toDeviceId: "endpoint-gi01", fromInterface: "Gi0/1", learnedMacCount: 2 }),
-    link({
-      id: "l4",
-      toDeviceId: "expected-gi04",
-      fromInterface: "Gi0/4",
-      status: "waiting",
-      speed: "auto",
+  ],
+  expectations: [
+    {
+      interface: "Gi0/4",
+      name: "TEST-AP-01 AP",
+      deviceType: "access-point",
+      source: "interface-description",
       confidence: "low",
-      evidenceLevel: "expected",
-      learnedMacCount: 0,
-    }),
+      evidenceIds: ["ev-description-4"],
+    },
   ],
 };
 
@@ -353,6 +339,7 @@ describe("observed versus expected in the map", () => {
         reconciliation={SUMMARY}
       />,
     );
+    fireEvent.click(screen.getByRole("tab", { name: "Reconciled" }));
     const node = document.querySelector('[data-node="endpoint-gi01"]') as HTMLElement;
     expect(node.getAttribute("data-reconciliation")).toBe("uncertain");
     expect(within(node).getByText("Unconfirmed")).toBeTruthy();
@@ -368,13 +355,14 @@ describe("observed versus expected in the map", () => {
         reconciliation={SUMMARY}
       />,
     );
-    const missing = document.querySelector('[data-node="expected-gi04"]') as HTMLElement;
+    fireEvent.click(screen.getByRole("tab", { name: "Reconciled" }));
+    const missing = document.querySelector('[data-expectation="Gi0/4"]') as HTMLElement;
     expect(missing.getAttribute("data-reconciliation")).toBe("expected-not-observed");
-    expect(missing.className).toContain("topo-node--attention");
+    expect(missing.className).toContain("port-expectation--attention");
     expect(within(missing).getByText("Not observed")).toBeTruthy();
   });
 
-  it("draws observed links solid and expected links dashed", () => {
+  it("keeps expected-only intent out of the observed link graph", () => {
     render(
       <NetworkMap
         topology={TOPOLOGY}
@@ -384,12 +372,12 @@ describe("observed versus expected in the map", () => {
         reconciliation={SUMMARY}
       />,
     );
-    // The observed uplink is up; the expected AP link is waiting.
+    // The observed uplink is a link; the AP description is port intent only.
     const observedLink = TOPOLOGY.links.find((item) => item.fromInterface === "Gi0/1");
     const expectedLink = TOPOLOGY.links.find((item) => item.fromInterface === "Gi0/4");
     expect(observedLink?.status).toBe("up");
-    expect(expectedLink?.status).toBe("waiting");
-    expect(expectedLink?.evidenceLevel).toBe("expected");
+    expect(expectedLink).toBeUndefined();
+    expect(TOPOLOGY.expectations?.[0].interface).toBe("Gi0/4");
   });
 
   it("still refuses to duplicate a router behind an uplink", () => {
@@ -404,7 +392,7 @@ describe("observed versus expected in the map", () => {
     );
     // Two addresses behind Gi0/1, one node.
     expect(document.querySelectorAll('[data-node="endpoint-gi01"]')).toHaveLength(1);
-    expect(document.querySelectorAll("[data-node]")).toHaveLength(2);
+    expect(document.querySelectorAll("[data-node]")).toHaveLength(1);
   });
 });
 

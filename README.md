@@ -44,6 +44,34 @@ Windows SmartScreen to show its standard publisher warning.
   configuration is separate, explicit, and confirmed; SwitchOps never saves
   automatically.
 
+## v0.5.0 source: Discovery & Identity
+
+The current source tree adds an evidence-aware identity and attachment model.
+It has not been described here as a published GitHub release unless a v0.5.0
+tag and release actually exist.
+
+- Full nodes in the default **Observed** topology require current evidence of
+  existence. An interface description alone stays on the port as expected
+  intent and cannot create an observed television, server, AP, or other device.
+- Unknown endpoints are first-class: SwitchOps can establish that something is
+  attached while keeping its name, vendor, model, and role unknown.
+- Structured evidence records cover interface link and description, CDP, LLDP,
+  MAC learning, ARP correlation, local-host correlation, local OUI lookup,
+  SwitchOps intent, accepted plans, and prior observations.
+- Existence confidence and identity confidence are separate categorical claims:
+  `unknown`, `low`, `medium`, `high`, or `confirmed`. Contradictory sources are
+  retained, lower confidence, and surface as uncertainty rather than a silent
+  last-writer-wins decision.
+- Evidence is `current`, `aging`, `stale`, or `historical`. Missed polls and
+  reconnects age facts; only a successful superseding observation revokes them
+  into history.
+- Stable entity identifiers preserve continuity across port moves. A successful
+  disappearance or replacement retains the previous identity locally as
+  history without presenting it as current fact.
+- **Observed**, **Reconciled**, and **Expected** network modes give intent the
+  right visual authority. Expected-only relationships are compact port records,
+  not peers of currently observed endpoints.
+
 ## Interface write policy
 
 SwitchOps does not contain a public, device-specific port allowlist.
@@ -68,12 +96,26 @@ read-only.
 
 ## Evidence model
 
-SwitchOps keeps observed facts separate from expected topology. Interface
-descriptions are intent, not proof that a named device is present. CDP and LLDP
-announcements are direct evidence; MAC learning proves reachability through a
-port but does not by itself identify the directly attached device. The UI
+SwitchOps keeps `observed`, `expected`, `inferred`, and `historical` knowledge
+separate. It also separates existence, identity, role, relationship, evidence,
+and confidence. Interface descriptions are intent, not proof that a named
+device is present. CDP and LLDP can establish a direct neighbour; MAC learning
+establishes reachability through a port but may represent clients behind an
+uplink, AP, bridge, hypervisor, or downstream switch. ARP correlates an IP with
+a MAC but does not prove physical attachment. OUI supplies only an offline
+vendor hint and is ignored for invalid, multicast, broadcast, and locally
+administered addresses.
+
+Relationship types are `direct-neighbour`, `attached-endpoint`,
+`learned-behind`, `gateway-path`, and `expected-neighbour`. Reconciliation
 reports `aligned`, `drift`, `expected-not-observed`, `unexpected`, `uncertain`,
-or `not-applicable` without converting uncertainty into a guess.
+or `not-applicable` without converting uncertainty into a guess. Health remains
+separate: a healthy link can still have topology drift.
+
+Detailed evidence, source provenance, confidence, freshness, and last-seen time
+are available from the selected port inspector. Structured history is stored in
+the local `discovery-history.sqlite` database. Schema migrations are additive
+and preserve existing v0.4.1 topology intent.
 
 ## Local data and privacy
 
@@ -104,8 +146,10 @@ supported-version policy.
 
 ## Compatibility and safety boundary
 
-v0.4.1 targets Windows x64 and Cisco IOS devices supported by Netmiko's
-`cisco_ios` driver. Some older IOS releases require legacy SSH algorithms.
+The formally verified hardware remains Cisco `WS-C3560CG-8PC-S` running IOS
+`12.2(55)EX2` on Windows x64. Other Catalyst models supported by Netmiko's
+`cisco_ios` driver may work but are not claimed as validated. Some older IOS
+releases require legacy SSH algorithms.
 SwitchOps enables those algorithms only inside its backend process; it does not
 weaken Windows or system-wide SSH configuration. Keep management SSH reachable
 only from a trusted management network.

@@ -13,6 +13,7 @@ import type {
   OperationProgress,
   OperationResult,
   WriteLockStatus,
+  TopologyModel,
 } from "./types";
 
 type StreamState = "connecting" | "open" | "error" | "unavailable";
@@ -48,12 +49,14 @@ export function useLiveOperations(enabled: boolean) {
   const [config, setConfig] = useState<ConfigSaveState>(UNKNOWN_CONFIG);
   const [lastEventAt, setLastEventAt] = useState<string | null>(null);
   const [lldp, setLldp] = useState<LldpDiscoveryStatus | null>(null);
+  const [topology, setTopology] = useState<TopologyModel | null>(null);
 
   const applySnapshot = useCallback((snapshot: LiveSnapshot) => {
     setInterfaces(snapshot.interfaces || []);
     setFreshness(snapshot.freshness || {});
     setConnection(snapshot.connection || OFFLINE);
     if (snapshot.discovery?.lldp) setLldp(snapshot.discovery.lldp);
+    if (snapshot.topology) setTopology(snapshot.topology);
     if (snapshot.operationInProgress) {
       const [kind, interfaceName] = snapshot.operationInProgress.split(":", 2);
       setOperation({
@@ -124,6 +127,7 @@ export function useLiveOperations(enabled: boolean) {
     listen<{ lldp: LldpDiscoveryStatus }>("discovery_state", (payload) =>
       setLldp(payload.lldp),
     );
+    listen<TopologyModel>("topology_state", setTopology);
 
     return () => {
       cancelled = true;
@@ -187,6 +191,7 @@ export function useLiveOperations(enabled: boolean) {
     config,
     lastEventAt,
     lldp,
+    topology,
     unlock,
     lockNow,
     runOperation,

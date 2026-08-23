@@ -7,6 +7,7 @@ import type {
   NetworkLink,
   ReconciliationSummary,
   TelemetrySnapshotSummary,
+  TopologyExpectation,
   TopologyModel,
 } from "@/lib/types";
 import { STATUS_COPY } from "@/lib/reconciliation";
@@ -40,6 +41,8 @@ interface Wire {
   behind: string | null;
   label: string | null;
 }
+
+type TopologyView = "observed" | "reconciled" | "expected";
 
 function factLine(placed: PlacedDevice): string {
   const { device, link, port } = placed;
@@ -77,6 +80,7 @@ export default function NetworkMap({
   const nodeRefs = useRef(new Map<string, HTMLElement>());
   const [wires, setWires] = useState<Wire[]>([]);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const [view, setView] = useState<TopologyView>("observed");
 
   const root = topology.devices.find((device) => device.id === topology.rootDeviceId);
   const linkByDevice = new Map(topology.links.map((link) => [link.toDeviceId, link]));
@@ -85,8 +89,12 @@ export default function NetworkMap({
     (reconciliation?.interfaces || []).map((item) => [item.interface, item]),
   );
 
-  const placed: PlacedDevice[] = topology.devices
-    .filter((device) => device.id !== topology.rootDeviceId)
+  const observedPlaced: PlacedDevice[] = topology.devices
+    .filter((device) =>
+      device.id !== topology.rootDeviceId &&
+      device.source !== "expected" &&
+      device.existenceState !== "historical"
+    )
     .map((device) => {
       const link = linkByDevice.get(device.id);
       const port = link?.fromInterface || device.connectedInterface || "";
@@ -96,6 +104,12 @@ export default function NetworkMap({
     .sort((a, b) =>
       a.port.localeCompare(b.port, undefined, { numeric: true, sensitivity: "base" }),
     );
+  const placed = view === "expected" ? [] : observedPlaced;
+  const expectations = topology.expectations || [];
+  const observedPorts = new Set(observedPlaced.map((item) => item.port));
+  const visibleExpectations = view === "expected"
+    ? expectations
+    : expectations.filter((item) => !observedPorts.has(item.interface));
 
   const upstream = placed.filter((item) => item.device.role === "uplink");
   const edge = placed.filter((item) => item.device.role !== "uplink");
@@ -202,13 +216,41 @@ export default function NetworkMap({
     <section className="card network-map" aria-labelledby="network-map-title">
       <div className="card__head">
         <div>
-          <h2 className="card__title" id="network-map-title">Observed network</h2>
+          <h2 className="card__title" id="network-map-title">
+            {view === "observed" ? "Observed network" : view === "reconciled" ? "Reconciled network" : "Expected network"}
+          </h2>
           <div className="card__subtitle">
-            Every device is drawn on the port it is plugged into. Solid cables are observed;
-            dashed cables are expected from an interface description only.
+            {view === "observed"
+              ? "Full nodes require current existence evidence. Interface descriptions remain port-level intent."
+              : view === "reconciled"
+                ? "Current evidence is compared with intent; discrepancies do not change link health."
+                : "Intent only. These labels describe what should be present, not what SwitchOps observed."}
           </div>
         </div>
-        <span className="badge">{topologyCountLabel(placed.map((item) => item.device))}</span>
+        <span className="badge">
+          {view === "expected"
+            ? `${expectations.length} expected`
+            : topologyCountLabel(observedPlaced.map((item) => item.device))}
+        </span>
+      </div>
+
+      <div className="topology-view-tabs" role="tablist" aria-label="Topology knowledge view">
+        {([
+          ["observed", "Observed"],
+          ["reconciled", "Reconciled"],
+          ["expected", "Expected"],
+        ] as const).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={view === id}
+            className={view === id ? "is-active" : ""}
+            onClick={() => setView(id)}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       <div className="lab-canvas" ref={canvasRef}>
@@ -245,6 +287,7 @@ export default function NetworkMap({
                   selected={item.port === selectedPort}
                   onSelect={onSelectPort}
                   nodeRef={registerNode(item.device.id)}
+                  showReconciliation={view === "reconciled"}
                 />
               ))}
             </div>
@@ -266,7 +309,9 @@ export default function NetworkMap({
         </div>
 
         <div className="lab-canvas__tier lab-canvas__tier--edge">
-          <span className="lab-canvas__tier-label">Connected &amp; expected</span>
+          <span className="lab-canvas__tier-label">
+            {view === "expected" ? "Recorded intent" : "Currently evidenced endpoints"}
+          </span>
           {edge.length ? (
             <div className="lab-canvas__row">
               {edge.map((item) => (
@@ -276,16 +321,39 @@ export default function NetworkMap({
                   selected={item.port === selectedPort}
                   onSelect={onSelectPort}
                   nodeRef={registerNode(item.device.id)}
+                  showReconciliation={view === "reconciled"}
                 />
               ))}
             </div>
           ) : (
             <p className="empty-note lab-canvas__empty">
-              No endpoint is evidenced yet. Devices appear here once a port has a link, learns an
-              address, or carries a description.
+              {view === "expected"
+                ? "No topology intent is recorded yet."
+                : "No endpoint existence is currently evidenced. Interface descriptions do not create nodes."}
             </p>
           )}
         </div>
+
+        {visibleExpectations.length ? (
+          <div className="port-expectations" aria-label="Port-level expectations">
+            <span className="lab-canvas__tier-label">
+              {view === "expected" ? "Expected relationships" : "Expected, not currently observed"}
+            </span>
+            <div className="port-expectations__grid">
+              {visibleExpectations.map((item) => (
+                <ExpectationCard
+                  key={`${item.interface}-${item.name}`}
+                  expectation={item}
+                  selected={selectedPort === item.interface}
+                  onSelect={onSelectPort}
+                  interfaceState={topology.interfaces.find((port) => port.port === item.interface)?.operState}
+                  reconciliation={reconciliationByPort.get(item.interface)}
+                  showReconciliation={view === "reconciled"}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -296,18 +364,21 @@ function TopologyNode({
   selected,
   onSelect,
   nodeRef,
+  showReconciliation,
 }: {
   placed: PlacedDevice;
   selected: boolean;
   onSelect: (port: string) => void;
   nodeRef: (element: HTMLElement | null) => void;
+  showReconciliation: boolean;
 }) {
   const { device, port, reconciliation } = placed;
   const tone = deviceStateTone(device);
   const evidence = EVIDENCE_COPY[device.evidenceLevel];
   const status = reconciliation?.status;
-  const needsAttention =
-    status === "drift" || status === "expected-not-observed" || status === "unexpected";
+  const needsAttention = showReconciliation && (
+    status === "drift" || status === "expected-not-observed" || status === "unexpected"
+  );
   // An expectation is only worth showing separately when it is not already
   // the node's label - otherwise a dark port would say the same thing twice.
   const expectation =
@@ -345,10 +416,47 @@ function TopologyNode({
       <span className="topo-node__fact">{factLine(placed)}</span>
       <span className="topo-node__tags">
         <span className={`evidence-tag evidence-tag--${device.evidenceLevel}`}>{evidence.label}</span>
-        {status && status !== "not-applicable" ? (
+        {showReconciliation && status && status !== "not-applicable" ? (
           <span className={`recon-badge recon-badge--${status}`}>{STATUS_COPY[status].label}</span>
         ) : null}
       </span>
+    </button>
+  );
+}
+
+function ExpectationCard({
+  expectation,
+  selected,
+  onSelect,
+  interfaceState,
+  reconciliation,
+  showReconciliation,
+}: {
+  expectation: TopologyExpectation;
+  selected: boolean;
+  onSelect: (port: string) => void;
+  interfaceState?: "up" | "down" | "unknown";
+  reconciliation?: InterfaceReconciliation;
+  showReconciliation: boolean;
+}) {
+  const status = showReconciliation ? reconciliation?.status : undefined;
+  const needsAttention = status === "drift" || status === "expected-not-observed" || status === "unexpected";
+  return (
+    <button
+      type="button"
+      data-expectation={expectation.interface}
+      data-reconciliation={status || "none"}
+      className={`port-expectation ${selected ? "port-expectation--selected" : ""} ${needsAttention ? "port-expectation--attention" : ""}`}
+      onClick={() => onSelect(expectation.interface)}
+      aria-pressed={selected}
+    >
+      <span className="port-expectation__port">{expectation.interface}</span>
+      <strong>{expectation.name}</strong>
+      <span>{interfaceState === "up" ? "Link present; identity not confirmed" : "No current observed attachment"}</span>
+      <small>Expected only · {expectation.source.replaceAll("-", " ")}</small>
+      {status && status !== "not-applicable" ? (
+        <span className={`recon-badge recon-badge--${status}`}>{STATUS_COPY[status].label}</span>
+      ) : null}
     </button>
   );
 }

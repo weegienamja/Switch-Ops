@@ -31,6 +31,7 @@ from .models import ExpectedRelationship, IntentSource
 
 
 DB_PATH = DATA_DIR / "topology-intent.sqlite"
+SCHEMA_VERSION = 1
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS expected_relationships (
@@ -71,13 +72,30 @@ class TopologyIntentStore:
         self._lock = Lock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
-            conn.executescript(_DDL)
+            self._migrate(conn)
         harden_private_file(self.db_path)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Upgrade v0.4.1 databases in place without dropping local intent."""
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Topology-intent schema {version} is newer than supported {SCHEMA_VERSION}."
+            )
+        if version < 1:
+            conn.executescript(_DDL)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    @staticmethod
+    def schema_version(db_path: Path) -> int:
+        with sqlite3.connect(db_path) as conn:
+            return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
     # --- expected topology ------------------------------------------------
 

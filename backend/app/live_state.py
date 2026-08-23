@@ -37,6 +37,9 @@ from .interface_policy import get_interface_policy_store
 from .models import InterfaceStatus, PoePort
 from .parsers.interfaces import parse_interface_status
 from .discovery import inspect_lldp
+from .parsers.arp import parse_arp
+from .parsers.cdp import parse_cdp
+from .parsers.mac_table import parse_mac_table
 from .parsers.poe import parse_poe
 from .switch_client import SwitchClient
 from .tools.read_only import run_and_audit
@@ -199,6 +202,7 @@ class LiveState:
             "neighbors": [],
             "detail": "LLDP has not been collected yet.",
         }
+        self.topology: Optional[dict[str, Any]] = None
 
     # -- updates ----------------------------------------------------------
 
@@ -264,6 +268,12 @@ class LiveState:
         with self._lock:
             self.lldp = status.model_dump(by_alias=True)
 
+    def apply_topology(self, payload: dict[str, Any]) -> None:
+        """Replace the authoritative deep topology and notify SSE clients."""
+        with self._lock:
+            self.topology = payload
+        self.hub.publish("topology_state", payload)
+
     # -- reads ------------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
@@ -275,6 +285,7 @@ class LiveState:
                 "freshness": asdict(self.freshness),
                 "operationInProgress": self.operation_in_progress,
                 "discovery": {"lldp": dict(self.lldp)},
+                "topology": dict(self.topology) if self.topology else None,
             }
 
 
@@ -293,6 +304,8 @@ class LiveCollector:
         on_fast_change: Optional[Callable[[list[dict[str, Any]], datetime], None]] = None,
         on_poe_change: Optional[Callable[[list[dict[str, Any]], datetime], None]] = None,
         on_history_tick: Optional[Callable[[datetime], None]] = None,
+        on_slow_discovery: Optional[Callable[[dict[str, Any], datetime], None]] = None,
+        on_slow_failure: Optional[Callable[[datetime], None]] = None,
     ) -> None:
         self.state = state
         self.session = session or get_device_session()
@@ -300,6 +313,8 @@ class LiveCollector:
         self.on_fast_change = on_fast_change
         self.on_poe_change = on_poe_change
         self.on_history_tick = on_history_tick
+        self.on_slow_discovery = on_slow_discovery
+        self.on_slow_failure = on_slow_failure
         self._thread: Optional[threading.Thread] = None
         self._stopping = threading.Event()
         self._paused = threading.Event()
@@ -365,6 +380,8 @@ class LiveCollector:
             future.result()
         except Exception as exc:  # collection failure must not kill the loop
             logger.debug("Live tier %s failed (%s)", kind, type(exc).__name__)
+            if kind == "live-slow" and self.on_slow_failure:
+                self.on_slow_failure(datetime.now(timezone.utc))
 
     def collect_fast(self) -> None:
         def run(client: SwitchClient) -> None:
@@ -415,8 +432,13 @@ class LiveCollector:
 
     def collect_slow(self) -> None:
         def run(client: SwitchClient) -> None:
-            for symbol in ("show_mac_address_table", "show_ip_arp", "show_cdp_neighbors_detail"):
-                run_and_audit(client, symbol=symbol, actor="live-slow")
+            mac_output = run_and_audit(
+                client, symbol="show_mac_address_table", actor="live-slow"
+            )
+            arp_output = run_and_audit(client, symbol="show_ip_arp", actor="live-slow")
+            cdp_output = run_and_audit(
+                client, symbol="show_cdp_neighbors_detail", actor="live-slow"
+            )
             lldp_output = run_and_audit(
                 client, symbol="show_lldp_neighbors_detail", actor="live-slow"
             )
@@ -426,6 +448,16 @@ class LiveCollector:
             self.state.apply_lldp(lldp)
             at = datetime.now(timezone.utc)
             self.state.mark_fresh("slow", at)
+            if self.on_slow_discovery:
+                self.on_slow_discovery(
+                    {
+                        "macEntries": parse_mac_table(mac_output),
+                        "arpEntries": parse_arp(arp_output),
+                        "cdpNeighbors": parse_cdp(cdp_output),
+                        "lldpNeighbors": lldp.neighbors,
+                    },
+                    at,
+                )
             self.state.hub.publish("discovery_state", {"lldp": self.state.lldp})
             self.state.hub.publish("freshness", asdict(self.state.freshness))
 

@@ -103,14 +103,20 @@ def test_description_without_mac_is_expected_not_discovered():
         poe_ports=[PoePort(interface="Gi0/4", oper="off")],
     )
 
-    expected = next(device for device in topology.devices if device.type == "access-point")
-    assert expected.source == "expected"
-    assert expected.online is False
-    assert expected.evidence_level == "expected"
-    assert expected.identity_source == "interface-description"
-    assert "description only" in expected.evidence[0]
-    assert topology.links[0].status == "waiting"
-    assert topology.links[0].evidence_level == "expected"
+    assert len(topology.devices) == 1
+    assert topology.links == []
+    expected = topology.expectations[0]
+    assert expected.interface == "Gi0/4"
+    assert expected.device_type == "access-point"
+    assert expected.source == "interface-description"
+    assert expected.confidence == "low"
+    port = topology.interfaces[0]
+    assert port.expected_name == "SYNTH-MR44-01 AP"
+    assert port.expected_category == "access-point"
+    fact = next(item for item in topology.evidence if item.evidence_type == "INTERFACE_DESCRIPTION")
+    assert fact.evidence_class == "expected"
+    assert fact.establishes.existence is False
+    assert fact.establishes.identity is False
 
 
 def test_spare_port_does_not_fabricate_expected_device():
@@ -192,7 +198,7 @@ def test_endpoint_identity_degrades_when_no_description_exists():
         interfaces=[InterfaceStatus(
             port="Gi0/5", name="", status="connected", vlan="1", speed="a-1000", duplex="a-full"
         )],
-        mac_entries=_macs("Gi0/5", "aa"),
+        mac_entries=[MacTableEntry(vlan="1", mac="0200.0000.00aa", type="DYNAMIC", port="Gi0/5")],
         poe_ports=[],
     )
     endpoint = next(d for d in topology.devices if d.id != topology.root_device_id)
@@ -217,10 +223,12 @@ def test_stale_macs_on_a_down_port_do_not_create_an_observed_device():
         mac_entries=_macs("Gi0/3", "77"),
         poe_ports=[],
     )
-    endpoint = next(d for d in topology.devices if d.id != topology.root_device_id)
-    assert endpoint.source == "expected"
-    assert endpoint.evidence_level == "expected"
-    assert endpoint.online is False
+    assert len(topology.devices) == 1
+    assert topology.links == []
+    assert topology.expectations[0].name == "Test Server"
+    mac_fact = next(item for item in topology.evidence if item.evidence_type == "MAC_LEARNED")
+    assert mac_fact.establishes.attachment is False
+    assert mac_fact.establishes.existence is False
 
 
 def test_cdp_neighbour_is_direct_evidence_and_outranks_the_description():
@@ -296,8 +304,11 @@ def test_every_interface_yields_at_most_one_endpoint_node():
         per_interface[device.connected_interface or ""] = (
             per_interface.get(device.connected_interface or "", 0) + 1
         )
-    assert per_interface == {"Gi0/1": 1, "Gi0/2": 1, "Gi0/3": 1, "Gi0/4": 1, "Gi0/5": 1}
-    assert len(topology.links) == 5
+    assert per_interface == {"Gi0/1": 1, "Gi0/2": 1}
+    assert {item.interface for item in topology.expectations} == {
+        "Gi0/1", "Gi0/2", "Gi0/3", "Gi0/4", "Gi0/5"
+    }
+    assert len(topology.links) == 2
     # And the link count never exceeds one per interface either.
     assert len({link.from_interface for link in topology.links}) == len(topology.links)
 
@@ -418,18 +429,13 @@ def test_synthetic_fixture_renders_the_devices_that_actually_exist():
         # as the expectation it is.
         "Gi0/1": ("Unidentified device", "unknown", "observed", "observed-on-port"),
         "Gi0/2": ("Unidentified device", "unknown", "observed", "observed-on-port"),
-        # Dark ports: intent only, so the description is the label.
-        "Gi0/3": ("Test Server", "server", "expected", "expected"),
-        "Gi0/4": ("SYNTH-MR44-01 AP", "access-point", "expected", "expected"),
-        "Gi0/5": ("TV", "tv-media", "expected", "expected"),
     }
-    expectations = {
-        device.connected_interface: device.expected_name
-        for device in topology.devices
-        if device.id != topology.root_device_id
-    }
+    expectations = {item.interface: item.name for item in topology.expectations}
     assert expectations["Gi0/1"] == "Uplink to Test Gateway"
     assert expectations["Gi0/2"] == "Test Workstation"
+    assert expectations["Gi0/3"] == "Test Server"
+    assert expectations["Gi0/4"] == "SYNTH-MR44-01 AP"
+    assert expectations["Gi0/5"] == "TV"
     # Spare and disabled ports invent nothing, including "Spare Uplink".
     assert "Gi0/6" not in rendered and "Gi0/9" not in rendered and "Gi0/10" not in rendered
 
@@ -445,8 +451,9 @@ def test_synthetic_fixture_uplink_stays_singular_however_many_addresses_appear()
         assert uplink[0].expected_name == "Uplink to Test Gateway"
         assert uplink[0].learned_mac_count == uplink_macs
         # The whole topology grows by nothing as addresses accumulate.
-        assert len(topology.devices) == 6
-        assert len(topology.links) == 5
+        assert len(topology.devices) == 3
+        assert len(topology.links) == 2
+        assert len(topology.expectations) == 5
 
 
 def test_synthetic_fixture_marks_the_management_ports_protected():
@@ -458,13 +465,10 @@ def test_synthetic_fixture_marks_the_management_ports_protected():
 def test_synthetic_fixture_expected_ap_is_ready_for_the_mr44_transition():
     """Before the TEST-AP is plugged in, Gi0/4 must read as waiting, not offline."""
     topology = _synthetic_topology_fixture()
-    ap = next(d for d in topology.devices if d.connected_interface == "Gi0/4")
-    assert ap.source == "expected"
-    assert ap.online is False
+    ap = next(item for item in topology.expectations if item.interface == "Gi0/4")
     assert ap.model == "MR44" and ap.vendor == "Cisco Meraki"
     # Identity is described, not discovered — the AP has never spoken.
-    assert ap.identity_source == "interface-description"
-    assert ap.confidence == "medium"
-    link = next(l for l in topology.links if l.from_interface == "Gi0/4")
-    assert link.status == "waiting"
-    assert link.learned_mac_count == 0
+    assert ap.source == "interface-description"
+    assert ap.confidence == "low"
+    assert not any(d.connected_interface == "Gi0/4" for d in topology.devices)
+    assert not any(link.from_interface == "Gi0/4" for link in topology.links)

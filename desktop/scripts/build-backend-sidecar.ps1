@@ -56,6 +56,7 @@ try {
         --collect-submodules netmiko `
         --collect-submodules paramiko `
         --collect-submodules keyring `
+        --collect-data netaddr `
         --workpath "build\pyinstaller" `
         --specpath "build\spec" `
         sidecar.py

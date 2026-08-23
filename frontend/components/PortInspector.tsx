@@ -13,6 +13,7 @@ import {
   EVIDENCE_COPY,
   IDENTITY_COPY,
   deviceStateLabel,
+  confidenceLabel,
   learnedBehindNote,
 } from "@/lib/evidence";
 import { portState } from "./CatalystFrontPanel";
@@ -60,6 +61,19 @@ export default function PortInspector({
   );
   const portIntent = (intent || []).find((item) => item.interface === selectedPort);
   const behindNote = learnedBehindNote(link?.learnedMacCount || 0);
+  const expectation = (topology.expectations || []).find(
+    (item) => item.interface === selectedPort,
+  );
+  const evidenceIds = new Set([
+    ...(selected?.evidenceIds || []),
+    ...(endpoint?.evidenceIds || []),
+  ]);
+  const evidenceRecords = (topology.evidence || [])
+    .filter((item) =>
+      evidenceIds.has(item.id) ||
+      (item.interface === selectedPort && item.evidenceType === "PRIOR_OBSERVATION")
+    )
+    .sort((left, right) => right.observedAt.localeCompare(left.observedAt));
 
   return (
     <section className="card port-inspector-card" aria-labelledby="port-inspector-title" aria-live="polite">
@@ -121,7 +135,8 @@ export default function PortInspector({
             </div>
           ) : (
             <p className="empty-note">
-              Nothing is evidenced on this interface.
+              Nothing is currently evidenced on this interface.
+              {expectation ? ` Expected: ${expectation.name}.` : ""}
             </p>
           )}
           {endpoint ? (
@@ -133,8 +148,51 @@ export default function PortInspector({
                 {IDENTITY_COPY[endpoint.identitySource]}
               </p>
               {behindNote ? <p className="port-inspector__evidence">{behindNote}</p> : null}
+              <dl className="evidence-confidence">
+                <div>
+                  <dt>Existence</dt>
+                  <dd>{confidenceLabel(endpoint.existenceConfidence || "unknown")}</dd>
+                </div>
+                <div>
+                  <dt>Identity</dt>
+                  <dd>{confidenceLabel(endpoint.identityConfidence || endpoint.confidence)}</dd>
+                </div>
+                <div>
+                  <dt>Freshness</dt>
+                  <dd>{(endpoint.freshness || "current").toUpperCase()}</dd>
+                </div>
+                <div>
+                  <dt>Last seen</dt>
+                  <dd>{endpoint.lastSeen ? new Date(endpoint.lastSeen).toLocaleString() : "not recorded"}</dd>
+                </div>
+              </dl>
+              {(endpoint.conflicts || []).map((conflict) => (
+                <p key={conflict.summary} className="port-inspector__conflict">{conflict.summary}</p>
+              ))}
             </>
           ) : null}
+
+          <details className="evidence-details" open={Boolean(endpoint)}>
+            <summary>Evidence details · {evidenceRecords.length}</summary>
+            {evidenceRecords.length ? (
+              <ul>
+                {evidenceRecords.map((record) => (
+                  <li key={record.id}>
+                    <div>
+                      <strong>{record.evidenceType.replaceAll("_", " ")}</strong>
+                      <span className={`freshness-tag freshness-tag--${record.freshness}`}>
+                        {record.freshness}
+                      </span>
+                    </div>
+                    <p>{record.summary}</p>
+                    <small>{record.provenance} · {record.strength} strength</small>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="empty-note">No structured evidence was returned for this port.</p>
+            )}
+          </details>
         </div>
 
         <div className="port-inspector__column">

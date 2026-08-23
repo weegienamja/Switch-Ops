@@ -42,6 +42,7 @@ from .models import (
     LocalEndpointStatus,
     MacTableEntry,
     NetworkEvent,
+    TopologyModel,
     ReconciliationStatus,
     ReconciliationSummary,
     TopologyAssertion,
@@ -138,6 +139,7 @@ class CiscoIosEvidenceProvider:
         arp_entries: Sequence[ArpEntry] = (),
         default_gateway: Optional[str] = None,
         observed_at: Optional[datetime] = None,
+        topology: TopologyModel | None = None,
     ) -> None:
         self.interfaces = list(interfaces)
         self.cdp_by_port: dict[str, list[CdpNeighbor]] = {}
@@ -157,6 +159,7 @@ class CiscoIosEvidenceProvider:
         self.arp_entries = list(arp_entries)
         self.default_gateway = (default_gateway or "").strip()
         self.observed_at = observed_at or datetime.now(timezone.utc)
+        self.topology = topology
 
     # -- observed ---------------------------------------------------------
 
@@ -166,6 +169,54 @@ class CiscoIosEvidenceProvider:
             # A down port observes nothing. Stale MAC entries are not evidence
             # of a present device.
             return None
+
+        if self.topology is not None:
+            endpoint = next(
+                (
+                    item
+                    for item in self.topology.devices
+                    if item.id != self.topology.root_device_id
+                    and item.connected_interface == interface.port
+                    and item.existence_state != "historical"
+                ),
+                None,
+            )
+            if endpoint is not None:
+                identified = endpoint.identity_source in {"cdp", "lldp", "local-host"}
+                source: EvidenceSource = (
+                    endpoint.identity_source
+                    if endpoint.identity_source in {"cdp", "lldp", "local-host", "mac-oui"}
+                    else "interface-telemetry"
+                )
+                records = {
+                    item.id: item for item in self.topology.evidence
+                    if item.id in endpoint.evidence_ids
+                }
+                detail = " ".join(
+                    record.summary for record in records.values()
+                    if record.establishes.existence or record.establishes.identity
+                ) or f"{interface.port} reports an active link."
+                return TopologyAssertion(
+                    subject=interface.port,
+                    relationship=endpoint.relationship or "attached-endpoint",
+                    objectLabel=endpoint.name if identified else UNIDENTIFIED,
+                    objectIdentified=identified,
+                    evidenceClass="observed",
+                    source=source,
+                    confidence=(
+                        endpoint.identity_confidence if identified
+                        else endpoint.existence_confidence
+                    ),
+                    detail=detail,
+                    observedAt=endpoint.last_seen or self.observed_at,
+                    freshness=endpoint.freshness,
+                    evidenceIds=endpoint.evidence_ids,
+                    conflicted=bool(endpoint.conflicts),
+                    conflictReasons=[item.summary for item in endpoint.conflicts],
+                    deviceType=endpoint.observed_category,
+                    vendor=endpoint.vendor,
+                    model=endpoint.model,
+                )
 
         learned = self.macs_by_port.get(interface.port, [])
         neighbors = self.cdp_by_port.get(interface.port, [])
@@ -661,6 +712,14 @@ def reconcile_interface(
             f"Something is attached to {interface.port}, but no intent records what "
             "should be there. Recording an expectation lets SwitchOps tell you when "
             "it changes."
+        )
+    elif observed.conflicted:
+        status = "uncertain"
+        headline = "Evidence conflicts"
+        explanation = (
+            f"Current evidence on {interface.port} disagrees: "
+            + " ".join(observed.conflict_reasons)
+            + " SwitchOps has lowered confidence instead of choosing a silent winner."
         )
     elif not observed.object_identified:
         status = "uncertain"

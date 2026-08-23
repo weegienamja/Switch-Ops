@@ -1,6 +1,6 @@
 [project]
 name = "switchops-backend"
-version = "0.4.1"
+version = "0.5.0"
 description = "SwitchOps backend"
 requires-python = ">=3.11,<3.14"
 

@@ -11,6 +11,7 @@ import re
 import socket
 from typing import Iterable, Sequence
 
+from .discovery_evidence import normalize_mac
 from .models import (
     ArpEntry,
     InterfaceStatus,
@@ -35,10 +36,6 @@ class LocalAdapter:
     ip: str
     netmask: str
     mac: str
-
-
-def normalize_mac(value: str) -> str:
-    return "".join(character for character in value.lower() if character in "0123456789abcdef")
 
 
 def _locally_administered(value: str) -> bool:
@@ -235,7 +232,7 @@ def inspect_snmp_config(running_config: str) -> SnmpInspectionStatus:
     detail = (
         "Existing SNMP configuration was detected read-only; SwitchOps did not use or change it."
         if configured
-        else "No SNMP configuration was detected. v0.4 continues to use the persistent SSH session."
+        else "No SNMP configuration was detected. SwitchOps continues to use the persistent SSH session."
     )
     return SnmpInspectionStatus(
         configured=configured,

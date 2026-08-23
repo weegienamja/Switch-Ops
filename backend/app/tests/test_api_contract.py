@@ -105,6 +105,19 @@ def test_dashboard_endpoint_mock_uses_complete_contract():
     assert body["discovery"]["lldp"]["state"] == "disabled"
     assert body["discovery"]["localEndpoint"]["state"] == "unavailable"
     assert body["discovery"]["snmp"]["configured"] is False
+    topology = body["topology"]
+    assert topology["evidenceModelVersion"] == 1
+    assert topology["evidence"]
+    assert topology["expectations"]
+    assert all(device["source"] != "expected" for device in topology["devices"])
+    assert not any(link["evidenceLevel"] == "expected" for link in topology["links"])
+    description = next(
+        item for item in topology["evidence"]
+        if item["evidenceType"] == "INTERFACE_DESCRIPTION"
+    )
+    assert description["evidenceClass"] == "expected"
+    assert description["establishes"]["existence"] is False
+    assert description["establishes"]["identity"] is False
     assert "community" not in r.text.lower()
 
 

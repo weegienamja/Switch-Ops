@@ -4,6 +4,7 @@ import type {
   IdentitySource,
   NetworkDevice,
   NetworkLink,
+  Confidence,
 } from "./types";
 
 /**
@@ -81,6 +82,9 @@ export const IDENTITY_COPY: Record<IdentitySource, string> = {
 /** Short status word shown on a topology node. Never colour-only. */
 export function deviceStateLabel(device: NetworkDevice): string {
   if (device.source === "expected") return "WAITING";
+  if (device.freshness === "historical") return "HISTORICAL";
+  if (device.freshness === "stale") return "STALE";
+  if (device.freshness === "aging") return "AGING";
   if (device.online) return "LINK UP";
   return "NO LINK";
 }
@@ -89,6 +93,7 @@ export function deviceStateTone(
   device: NetworkDevice,
 ): "up" | "waiting" | "down" {
   if (device.source === "expected") return "waiting";
+  if (device.freshness === "aging" || device.freshness === "stale" || device.freshness === "historical") return "waiting";
   return device.online ? "up" : "down";
 }
 
@@ -135,6 +140,6 @@ export function linkStyle(link: NetworkLink | undefined): "solid" | "dashed" | "
   return "idle";
 }
 
-export function confidenceLabel(confidence: "low" | "medium" | "high"): string {
+export function confidenceLabel(confidence: Confidence): string {
   return `${confidence} confidence`;
 }

@@ -109,6 +109,7 @@ export const SOURCE_COPY: Record<EvidenceSource, string> = {
   "accepted-plan": "an accepted change plan",
   "prior-observation": "the previous observation",
   "mac-address-form": "the form of the hardware address itself",
+  "mac-oui": "the bundled IEEE OUI registry",
   "meraki-api": "a Meraki controller",
   none: "nothing",
 };

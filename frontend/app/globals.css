@@ -841,6 +841,24 @@ a:focus-visible {
 .port-inspector__section { margin-top: 18px; }
 .port-inspector__evidence { margin: 8px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.55; }
 .port-inspector__evidence--identity { color: var(--text-dim); }
+.evidence-confidence { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 12px 0 0; }
+.evidence-confidence div { padding: 7px 8px; border: 1px solid var(--border); border-radius: 7px; }
+.evidence-confidence dt { color: var(--text-dim); font: 8px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.evidence-confidence dd { margin: 3px 0 0; color: var(--text-muted); font-size: 9.5px; }
+.port-inspector__conflict { margin: 9px 0 0; padding: 8px; border: 1px solid rgba(245, 158, 11, .28); border-radius: 7px; color: var(--amber); font-size: 10px; line-height: 1.45; }
+.evidence-details { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+.evidence-details summary { color: var(--text-muted); font: 700 9px/1.4 var(--mono); cursor: pointer; text-transform: uppercase; }
+.evidence-details ul { display: grid; gap: 7px; margin: 9px 0 0; padding: 0; list-style: none; }
+.evidence-details li { padding: 8px; border: 1px solid var(--border); border-radius: 7px; background: rgba(8, 15, 27, .42); }
+.evidence-details li > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.evidence-details strong { color: var(--text); font: 700 8.5px/1.3 var(--mono); }
+.evidence-details p { margin: 5px 0; color: var(--text-muted); font-size: 9.5px; line-height: 1.45; }
+.evidence-details small { color: var(--text-dim); font: 8px/1.3 var(--mono); }
+.freshness-tag { padding: 2px 5px; border-radius: 999px; color: var(--text-dim); font: 700 7.5px/1 var(--mono); text-transform: uppercase; }
+.freshness-tag--current { color: var(--green); background: rgba(34, 197, 94, .08); }
+.freshness-tag--aging { color: var(--amber); background: rgba(245, 158, 11, .08); }
+.freshness-tag--stale,
+.freshness-tag--historical { color: #94a3b8; background: rgba(148, 163, 184, .08); }
 .port-endpoint { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .port-endpoint__copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
 .port-endpoint__copy strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
@@ -872,6 +890,50 @@ a:focus-visible {
 /* --- Lab canvas: the physical network as one picture -------------------- */
 .network-map { overflow: hidden; }
 .lab-canvas { position: relative; display: grid; gap: 34px; padding: 6px 0 2px; }
+.topology-view-tabs {
+  display: inline-flex;
+  gap: 3px;
+  margin: 0 0 16px 20px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(7, 13, 24, .55);
+}
+.topology-view-tabs button {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: .06em;
+  cursor: pointer;
+}
+.topology-view-tabs button.is-active {
+  background: rgba(34, 211, 238, .11);
+  color: var(--cyan);
+}
+.port-expectations { position: relative; z-index: 1; display: grid; gap: 9px; }
+.port-expectations__grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.port-expectation {
+  display: grid;
+  width: min(220px, 100%);
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px dashed rgba(148, 163, 184, .28);
+  border-radius: 9px;
+  background: rgba(9, 16, 28, .52);
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+}
+.port-expectation:hover,
+.port-expectation--selected { border-color: var(--cyan); }
+.port-expectation--attention { border-color: rgba(245, 158, 11, .48); }
+.port-expectation__port { color: var(--cyan); font: 700 9px/1 var(--mono); letter-spacing: .08em; }
+.port-expectation strong { color: var(--text); font-size: 11px; }
+.port-expectation span:not(.port-expectation__port) { font-size: 9.5px; }
+.port-expectation small { color: var(--text-dim); font: 8.5px/1.3 var(--mono); text-transform: uppercase; }
 .lab-canvas__wires { position: absolute; inset: 0; z-index: 0; overflow: visible; pointer-events: none; }
 .wire__hit { fill: none; stroke: transparent; stroke-width: 12; }
 .wire__line { fill: none; stroke: #55637a; stroke-width: 1.75; stroke-linecap: round; opacity: .85; }

@@ -369,11 +369,14 @@ class DeviceSessionManager:
             queue_wait_ms = (time.monotonic() - job.submitted_at) * 1000
             client = self._ensure_client()
             if client is None:
-                job.future.set_exception(
-                    SwitchOpsError(
-                        self._last_error or "The switch session is not available.",
-                    )
-                )
+                message = self._last_error or "The switch session is not available."
+                if self._last_error_code == "credentials_missing":
+                    unavailable: SwitchOpsError = CredentialsMissingError(message)
+                elif self._last_error_code == "host_key_changed":
+                    unavailable = HostKeyChangedError(message)
+                else:
+                    unavailable = SwitchOpsError(message)
+                job.future.set_exception(unavailable)
                 self._queue.task_done()
                 continue
 

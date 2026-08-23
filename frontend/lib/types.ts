@@ -189,6 +189,7 @@ export interface LiveSnapshot {
   freshness: LiveFreshness;
   operationInProgress?: string | null;
   discovery?: { lldp?: LldpDiscoveryStatus };
+  topology?: TopologyModel | null;
   connection: LiveConnection;
   tiers?: {
     fastSeconds?: number | null;
@@ -352,8 +353,59 @@ export type EvidenceSource =
   | "accepted-plan"
   | "prior-observation"
   | "mac-address-form"
+  | "mac-oui"
   | "meraki-api"
   | "none";
+
+export type Confidence = "unknown" | "low" | "medium" | "high" | "confirmed";
+export type FreshnessState = "current" | "aging" | "stale" | "historical";
+export type EvidenceType =
+  | "INTERFACE_LINK"
+  | "INTERFACE_DESCRIPTION"
+  | "CDP_NEIGHBOR"
+  | "LLDP_NEIGHBOR"
+  | "MAC_LEARNED"
+  | "ARP_ENTRY"
+  | "LOCAL_HOST_MAC"
+  | "OUI_VENDOR"
+  | "USER_INTENT"
+  | "ACCEPTED_PLAN"
+  | "PRIOR_OBSERVATION";
+
+export interface EvidenceClaimSupport {
+  existence: boolean;
+  identity: boolean;
+  attachment: boolean;
+  relationship: boolean;
+  role: boolean;
+}
+
+export interface DiscoveryEvidence {
+  id: string;
+  evidenceType: EvidenceType;
+  evidenceClass: EvidenceClass;
+  source: EvidenceSource;
+  deviceId: string;
+  interface?: string | null;
+  entityId?: string | null;
+  observedValue?: string | null;
+  summary: string;
+  observedAt: string;
+  freshness: FreshnessState;
+  expiresAt?: string | null;
+  strength: Confidence;
+  establishes: EvidenceClaimSupport;
+  relationship?: RelationshipKind | null;
+  provenance: string;
+  revoked: boolean;
+  conflict: boolean;
+}
+
+export interface EvidenceConflict {
+  field: "identity" | "vendor" | "model" | "category" | "attachment";
+  summary: string;
+  evidenceIds: string[];
+}
 
 export type RelationshipKind =
   | "direct-neighbour"
@@ -370,9 +422,13 @@ export interface TopologyAssertion {
   objectIdentified: boolean;
   evidenceClass: EvidenceClass;
   source: EvidenceSource;
-  confidence: "low" | "medium" | "high";
+  confidence: Confidence;
   detail: string;
   observedAt?: string | null;
+  freshness?: FreshnessState;
+  evidenceIds?: string[];
+  conflicted?: boolean;
+  conflictReasons?: string[];
   deviceType?: DeviceType | null;
   vendor?: string | null;
   model?: string | null;
@@ -514,7 +570,7 @@ export interface NetworkDevice {
   mac?: string | null;
   ip?: string | null;
   source: "observed" | "inferred" | "expected";
-  confidence: "low" | "medium" | "high";
+  confidence: Confidence;
   classificationStage: "unknown" | "category" | "vendor" | "model";
   online: boolean;
   connectedInterface?: string | null;
@@ -530,6 +586,19 @@ export interface NetworkDevice {
   /** Addresses reachable through this link. >1 means devices sit behind it. */
   learnedMacCount: number;
   role: InterfaceRole;
+  existenceState?: "observed" | "inferred" | "historical";
+  existenceConfidence?: Confidence;
+  identityConfidence?: Confidence;
+  freshness?: FreshnessState;
+  relationship?: RelationshipKind | null;
+  firstSeen?: string | null;
+  macAddresses?: string[];
+  ipAddresses?: string[];
+  observedCategory?: DeviceType;
+  expectedCategory?: DeviceType | null;
+  evidenceIds?: string[];
+  conflicts?: EvidenceConflict[];
+  historicalIdentity?: string | null;
 }
 
 export interface NetworkInterface {
@@ -549,6 +618,13 @@ export interface NetworkInterface {
   policyState?: InterfacePolicyState;
   role: InterfaceRole;
   learnedMacCount: number;
+  expectedName?: string | null;
+  expectedCategory?: DeviceType | null;
+  expectedVendor?: string | null;
+  expectedModel?: string | null;
+  expectedSource?: "user-intent" | "accepted-plan" | "interface-description" | null;
+  freshness?: FreshnessState;
+  evidenceIds?: string[];
 }
 
 export interface NetworkLink {
@@ -560,10 +636,24 @@ export interface NetworkLink {
   status: "up" | "down" | "waiting" | "unknown";
   speed: string;
   poe: boolean;
-  confidence: "low" | "medium" | "high";
+  confidence: Confidence;
   evidence: string[];
   evidenceLevel: EvidenceLevel;
   learnedMacCount: number;
+  relationship?: RelationshipKind;
+  freshness?: FreshnessState;
+  evidenceIds?: string[];
+}
+
+export interface TopologyExpectation {
+  interface: string;
+  name: string;
+  deviceType: DeviceType;
+  vendor?: string | null;
+  model?: string | null;
+  source: "user-intent" | "accepted-plan" | "interface-description";
+  confidence: Confidence;
+  evidenceIds: string[];
 }
 
 export interface TopologyModel {
@@ -572,6 +662,10 @@ export interface TopologyModel {
   devices: NetworkDevice[];
   interfaces: NetworkInterface[];
   links: NetworkLink[];
+  evidence?: DiscoveryEvidence[];
+  expectations?: TopologyExpectation[];
+  historicalDevices?: NetworkDevice[];
+  evidenceModelVersion?: number;
 }
 
 export interface InterfaceStatus {

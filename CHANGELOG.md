@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.5.0 - Unreleased
+
+### Discovery and identity
+
+- Added structured, timestamped discovery evidence with explicit claim support,
+  provenance, categorical confidence, and current/aging/stale/historical state.
+- Separated endpoint existence confidence from identity confidence and made
+  link-only unknown endpoints first-class topology entities.
+- Added offline OUI vendor hints through the bundled `netaddr` IEEE registry,
+  with conservative handling of local, multicast, broadcast, invalid, and
+  unregistered addresses.
+- Correlated single learned MAC addresses with ARP IP observations without
+  treating ARP or MAC reachability as direct physical attachment.
+- Added stable entity identities across port moves, conflict records, evidence
+  revocation, and retained historical identities.
+
+### Topology and reconciliation
+
+- Removed description-only expected devices and links from the observed graph.
+  Interface descriptions now produce port-level expectation records only.
+- Added Observed, Reconciled, and Expected views plus a structured evidence
+  inspector with confidence, freshness, provenance, and last-seen detail.
+- Kept multiple addresses on uplinks as learned-behind evidence rather than
+  multiplying direct endpoint cards.
+- Made the reconciler consume the authoritative evidence-backed topology and
+  surface conflicts as uncertainty.
+
+### Persistence and live API
+
+- Added an explicitly versioned `discovery-history.sqlite` schema for stable
+  entity/evidence continuity and observation history.
+- Added an in-place schema migration marker for v0.4.1 topology-intent data.
+- Added authoritative typed topology envelopes to the local SSE stream; fast
+  interface overlays age nodes rather than rebuilding identity in the UI.
+
 ## 0.4.1 - 2026-08-23
 
 ### Public release hardening

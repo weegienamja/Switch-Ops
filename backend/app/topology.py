@@ -26,10 +26,14 @@ import re
 from typing import Iterable, Sequence
 
 from .models import (
+    ArpEntry,
     CdpNeighbor,
+    DiscoveryEvidence,
     DeviceCapability,
     DeviceType,
+    EvidenceClaimSupport,
     EvidenceLevel,
+    ExpectedRelationship,
     IdentitySource,
     InterfaceRole,
     InterfaceStatus,
@@ -40,7 +44,17 @@ from .models import (
     NetworkInterface,
     NetworkLink,
     PoePort,
+    TopologyExpectation,
     TopologyModel,
+)
+from .discovery_evidence import (
+    evidence_record,
+    existence_confidence,
+    identity_confidence,
+    normalize_mac,
+    oui_vendor_hint,
+    stable_entity_id,
+    vendor_conflict,
 )
 
 
@@ -89,6 +103,11 @@ def _device_id_from_mac(mac: str) -> str:
     normalized = re.sub(r"[^0-9a-f]", "", mac.lower())
     digest = hashlib.sha256(normalized.encode("ascii", errors="ignore")).hexdigest()[:12]
     return f"device-{digest}"
+
+
+def switch_device_id(hostname: str, source_namespace: str = "physical") -> str:
+    """Stable storage/API identity for one managed switch."""
+    return f"switch-{_slug(source_namespace)}-{_slug(hostname)}"
 
 
 def interface_admin_state(status: str) -> str:
@@ -447,13 +466,17 @@ def build_topology(
     poe_ports: Iterable[PoePort],
     cdp_neighbors: Iterable[CdpNeighbor] = (),
     lldp_neighbors: Iterable[LldpNeighbor] = (),
+    arp_entries: Iterable[ArpEntry] = (),
     local_endpoint: LocalEndpointStatus | None = None,
+    expected_relationships: Iterable[ExpectedRelationship] = (),
     observed_at: datetime | None = None,
     source_namespace: str = "physical",
 ) -> TopologyModel:
     observed_at = observed_at or datetime.now(timezone.utc)
     # Mock and physical observations must never share a history/config identity.
-    switch_id = f"switch-{_slug(source_namespace)}-{_slug(hostname)}"
+    switch_id = switch_device_id(hostname, source_namespace)
+    evidence: list[DiscoveryEvidence] = []
+    expectations: list[TopologyExpectation] = []
     devices: list[NetworkDevice] = [
         NetworkDevice(
             id=switch_id,
@@ -475,6 +498,12 @@ def build_topology(
             evidence=["authenticated IOS telemetry"],
             evidenceLevel="direct",
             identitySource="switch-telemetry",
+            existenceState="observed",
+            existenceConfidence="confirmed",
+            identityConfidence="confirmed",
+            freshness="current",
+            firstSeen=observed_at,
+            observedCategory="switch",
         )
     ]
 
@@ -484,6 +513,12 @@ def build_topology(
         if entry.port.upper() == "CPU" or entry.vlan.lower() == "all":
             continue
         macs_by_port.setdefault(entry.port, []).append(entry)
+
+    arp_by_mac: dict[str, list[ArpEntry]] = {}
+    for entry in arp_entries:
+        normalized = normalize_mac(entry.mac)
+        if len(normalized) == 12:
+            arp_by_mac.setdefault(normalized, []).append(entry)
 
     cdp_by_port: dict[str, list[CdpNeighbor]] = {}
     for neighbor in cdp_neighbors:
@@ -496,6 +531,8 @@ def build_topology(
         if not neighbor.local_interface:
             continue
         lldp_by_port.setdefault(neighbor.local_interface, []).append(neighbor)
+
+    stored_by_port = {item.interface: item for item in expected_relationships}
 
     normalized_interfaces: list[NetworkInterface] = []
     links: list[NetworkLink] = []
@@ -514,32 +551,199 @@ def build_topology(
             and local_endpoint.interface == interface.port
         )
 
-        normalized_interfaces.append(
-            NetworkInterface(
-                id=f"{switch_id}:{interface.port}",
-                deviceId=switch_id,
-                port=interface.port,
-                description=interface.name,
-                adminState=admin_state,
-                operState=oper_state,
-                speed=interface.speed,
-                duplex=interface.duplex,
-                vlan=interface.vlan,
-                poeCapable=poe is not None,
-                poeState=poe.oper if poe else "not-supported",
-                poeWatts=poe.power_watts if poe else 0,
-                protected=interface.protected,
-                policyState=interface.policy_state,
-                role=role,
-                learnedMacCount=learned_count,
-            )
+        interface_evidence: list[DiscoveryEvidence] = []
+        link_fact = evidence_record(
+            evidence_type="INTERFACE_LINK",
+            evidence_class="observed",
+            source="interface-telemetry",
+            device_id=switch_id,
+            interface=interface.port,
+            entity_id=None,
+            observed_value=oper_state,
+            summary=(
+                f"{interface.port} reports an operational link."
+                if oper_state == "up"
+                else f"{interface.port} reports no operational link."
+            ),
+            observed_at=observed_at,
+            strength="high" if oper_state == "up" else "medium",
+            establishes=EvidenceClaimSupport(
+                existence=oper_state == "up",
+                attachment=oper_state == "up",
+                relationship=oper_state == "up",
+            ),
+            relationship="attached-endpoint" if oper_state == "up" else None,
+            provenance="show interfaces status",
         )
+        interface_evidence.append(link_fact)
+
+        stored = stored_by_port.get(interface.port)
+        expectation: TopologyExpectation | None = None
+        if stored is not None:
+            intent_type = "USER_INTENT" if stored.source == "user-intent" else "ACCEPTED_PLAN"
+            intent_source = "user-intent" if stored.source == "user-intent" else "accepted-plan"
+            expected_fact = evidence_record(
+                evidence_type=intent_type,
+                evidence_class="expected",
+                source=intent_source,
+                device_id=switch_id,
+                interface=interface.port,
+                entity_id=None,
+                observed_value=stored.expected_name,
+                summary=f"SwitchOps records {stored.expected_name!r} as the intended neighbour on {interface.port}.",
+                observed_at=stored.updated_at or observed_at,
+                strength="high" if stored.source == "user-intent" else "medium",
+                establishes=EvidenceClaimSupport(role=True),
+                relationship="expected-neighbour",
+                provenance="SwitchOps local topology intent",
+            )
+            interface_evidence.append(expected_fact)
+            expectation = TopologyExpectation(
+                interface=interface.port,
+                name=stored.expected_name,
+                deviceType=stored.expected_device_type,
+                vendor=stored.expected_vendor,
+                model=stored.expected_model,
+                source=stored.source,
+                confidence="high" if stored.source == "user-intent" else "medium",
+                evidenceIds=[expected_fact.id],
+            )
+
+        description_fact: DiscoveryEvidence | None = None
+        if _meaningful_expected_description(interface.name):
+            description_fact = evidence_record(
+                evidence_type="INTERFACE_DESCRIPTION",
+                evidence_class="expected",
+                source="interface-description",
+                device_id=switch_id,
+                interface=interface.port,
+                entity_id=None,
+                observed_value=interface.name.strip(),
+                summary=(
+                    f"The configured description is {interface.name.strip()!r}. "
+                    "It documents intent and does not prove a device is present."
+                ),
+                observed_at=observed_at,
+                strength="low",
+                establishes=EvidenceClaimSupport(role=True),
+                relationship="expected-neighbour",
+                provenance="show running-config / show interfaces status",
+            )
+            interface_evidence.append(description_fact)
+            if expectation is None:
+                category, vendor, exact_model, _stage, _description_evidence = classify_device(
+                    interface.name
+                )
+                expectation = TopologyExpectation(
+                    interface=interface.port,
+                    name=interface.name.strip(),
+                    deviceType=category,
+                    vendor=vendor,
+                    model=exact_model,
+                    source="interface-description",
+                    confidence="low",
+                    evidenceIds=[description_fact.id],
+                )
+        if expectation is not None:
+            expectations.append(expectation)
 
         endpoint: NetworkDevice | None = None
         link_status: str = "down"
         link_confidence: str = "low"
         link_evidence_level: EvidenceLevel = "unknown"
         link_evidence: list[str] = []
+        entity_evidence: list[DiscoveryEvidence] = []
+        relationship = "attached-endpoint"
+
+        if neighbors:
+            neighbor_key = f"{neighbors[0].remote_name}|{neighbors[0].ip or ''}"
+            entity_id = stable_entity_id(source_namespace, "neighbor", neighbor_key)
+        elif lldp_neighbors_on_port:
+            neighbor_key = f"{lldp_neighbors_on_port[0].remote_name}|{lldp_neighbors_on_port[0].ip or ''}"
+            entity_id = stable_entity_id(source_namespace, "neighbor", neighbor_key)
+        elif local_match:
+            entity_id = stable_entity_id(source_namespace, "local-host", switch_id)
+        elif learned_count == 1:
+            entity_id = stable_entity_id(source_namespace, "mac", normalize_mac(learned[0].mac))
+        else:
+            entity_id = stable_entity_id(source_namespace, "port-presence", f"{switch_id}|{interface.port}")
+
+        # MAC and ARP are reachability/correlation facts. They never prove a
+        # direct physical endpoint by themselves.
+        for mac_entry in learned:
+            normalized_mac = normalize_mac(mac_entry.mac)
+            attributable = learned_count == 1
+            mac_fact = evidence_record(
+                evidence_type="MAC_LEARNED",
+                evidence_class="observed",
+                source="mac-table",
+                device_id=switch_id,
+                interface=interface.port,
+                entity_id=entity_id if attributable else None,
+                observed_value=mac_entry.mac.lower(),
+                summary=(
+                    f"The switch learned this address through {interface.port}; it may be behind another device."
+                    if oper_state == "up"
+                    else f"The address remains in the MAC table for {interface.port}, but the port is down; it is not current presence evidence."
+                ),
+                observed_at=observed_at,
+                strength="high",
+                establishes=EvidenceClaimSupport(
+                    existence=oper_state == "up", relationship=oper_state == "up"
+                ),
+                relationship=(
+                    "attached-endpoint" if attributable and role == "access" else "learned-behind"
+                ) if oper_state == "up" else None,
+                provenance="show mac address-table",
+            )
+            interface_evidence.append(mac_fact)
+            if attributable:
+                entity_evidence.append(mac_fact)
+
+            hint = oui_vendor_hint(mac_entry.mac)
+            if hint.vendor:
+                oui_fact = evidence_record(
+                    evidence_type="OUI_VENDOR",
+                    evidence_class="inferred",
+                    source="mac-oui",
+                    device_id=switch_id,
+                    interface=interface.port,
+                    entity_id=entity_id if attributable else None,
+                    observed_value=hint.vendor,
+                    summary=f"Vendor hint: {hint.vendor}. {hint.detail}",
+                    observed_at=observed_at,
+                    strength="low",
+                    establishes=EvidenceClaimSupport(identity=True),
+                    provenance="bundled IEEE OUI registry via netaddr",
+                )
+                interface_evidence.append(oui_fact)
+                if attributable:
+                    entity_evidence.append(oui_fact)
+
+            for arp_entry in arp_by_mac.get(normalized_mac, []):
+                arp_fact = evidence_record(
+                    evidence_type="ARP_ENTRY",
+                    evidence_class="observed",
+                    source="arp",
+                    device_id=switch_id,
+                    interface=interface.port,
+                    entity_id=entity_id if attributable else None,
+                    observed_value=f"{arp_entry.ip} ↔ {mac_entry.mac.lower()}",
+                    summary=(
+                        f"ARP correlates {arp_entry.ip} with an address learned through {interface.port}; "
+                        "this proves a path, not direct attachment."
+                    ),
+                    observed_at=observed_at,
+                    strength="medium",
+                    establishes=EvidenceClaimSupport(
+                        existence=oper_state == "up", relationship=oper_state == "up"
+                    ),
+                    relationship="learned-behind" if oper_state == "up" else None,
+                    provenance="show ip arp + show mac address-table",
+                )
+                interface_evidence.append(arp_fact)
+                if attributable:
+                    entity_evidence.append(arp_fact)
 
         if neighbors and oper_state == "up":
             # Strongest evidence: the neighbour identified itself on the wire.
@@ -556,6 +760,24 @@ def build_topology(
             link_confidence = "high"
             link_evidence_level = "direct"
             link_evidence = ["CDP neighbour announced on this interface", "interface operational state"]
+            relationship = "direct-neighbour"
+            direct_fact = evidence_record(
+                evidence_type="CDP_NEIGHBOR",
+                evidence_class="observed",
+                source="cdp",
+                device_id=switch_id,
+                interface=interface.port,
+                entity_id=entity_id,
+                observed_value=neighbors[0].remote_name,
+                summary=f"{neighbors[0].remote_name} announced itself directly on {interface.port} over CDP.",
+                observed_at=observed_at,
+                strength="high",
+                establishes=EvidenceClaimSupport(existence=True, identity=True, attachment=True, relationship=True, role=True),
+                relationship="direct-neighbour",
+                provenance="show cdp neighbors detail",
+            )
+            interface_evidence.append(direct_fact)
+            entity_evidence.append(direct_fact)
             if len(neighbors) > 1:
                 link_evidence.append(
                     f"{len(neighbors)} CDP neighbours are visible through this interface"
@@ -574,6 +796,24 @@ def build_topology(
             link_confidence = "high"
             link_evidence_level = "direct"
             link_evidence = ["LLDP neighbour announced on this interface", "interface operational state"]
+            relationship = "direct-neighbour"
+            direct_fact = evidence_record(
+                evidence_type="LLDP_NEIGHBOR",
+                evidence_class="observed",
+                source="lldp",
+                device_id=switch_id,
+                interface=interface.port,
+                entity_id=entity_id,
+                observed_value=lldp_neighbors_on_port[0].remote_name,
+                summary=f"{lldp_neighbors_on_port[0].remote_name} announced itself directly on {interface.port} over LLDP.",
+                observed_at=observed_at,
+                strength="high",
+                establishes=EvidenceClaimSupport(existence=True, identity=True, attachment=True, relationship=True, role=True),
+                relationship="direct-neighbour",
+                provenance="show lldp neighbors detail",
+            )
+            interface_evidence.append(direct_fact)
+            entity_evidence.append(direct_fact)
             if len(lldp_neighbors_on_port) > 1:
                 link_evidence.append(
                     f"{len(lldp_neighbors_on_port)} LLDP neighbours are visible through this interface"
@@ -592,6 +832,23 @@ def build_topology(
             link_confidence = "high"
             link_evidence_level = "observed-on-port"
             link_evidence = ["unique local-host and MAC-table correlation", "interface operational state"]
+            local_fact = evidence_record(
+                evidence_type="LOCAL_HOST_MAC",
+                evidence_class="observed",
+                source="local-host",
+                device_id=switch_id,
+                interface=interface.port,
+                entity_id=entity_id,
+                observed_value="active local adapter matched",
+                summary=local_endpoint.detail,
+                observed_at=observed_at,
+                strength="confirmed",
+                establishes=EvidenceClaimSupport(existence=True, identity=True, attachment=True, relationship=True),
+                relationship="attached-endpoint",
+                provenance="local adapter inventory + switch MAC table + interface state",
+            )
+            interface_evidence.append(local_fact)
+            entity_evidence.append(local_fact)
         elif learned and oper_state == "up":
             # Something is attached: link up and addresses are being learned.
             # Exactly one node, regardless of how many addresses appeared.
@@ -614,43 +871,110 @@ def build_topology(
                 link_evidence.append(
                     "additional addresses are reachable behind this link, not attached to this port"
                 )
-        elif _meaningful_expected_description(interface.name):
-            # Description only. Never presented as a discovered device.
-            category, vendor, exact_model, stage, description_evidence = classify_device(
-                interface.name
-            )
-            expected_id = f"expected-{switch_id}-{_slug(interface.port)}"
+        elif oper_state == "up":
+            # Link state proves presence even before the switch learns an
+            # address. Identity remains explicitly unknown.
             endpoint = NetworkDevice(
-                id=expected_id,
-                type=category,
-                vendor=vendor,
-                model=exact_model,
-                name=interface.name.strip(),
-                source="expected",
-                confidence="medium" if category != "unknown" else "low",
-                classificationStage=stage,
-                online=False,
+                id=entity_id,
+                type="unknown",
+                name="Unidentified endpoint",
+                source="observed",
+                confidence="low",
+                classificationStage="unknown",
+                online=True,
                 connectedInterface=interface.port,
-                visualCategory=category,
+                visualCategory="unknown",
                 capabilities=[],
-                evidence=[
-                    "interface description only; attachment not observed",
-                    *description_evidence,
-                ],
-                evidenceLevel="expected",
-                identitySource="interface-description",
-                expectedName=interface.name.strip(),
-                expectedType=category,
+                lastSeen=observed_at,
+                evidence=["interface reports an active link; no identity source is available"],
+                evidenceLevel="observed-on-port",
+                identitySource="none",
+                expectedName=expectation.name if expectation else None,
+                expectedType=expectation.device_type if expectation else None,
                 learnedMacCount=0,
                 role=role,
             )
-            link_status = "waiting" if admin_state == "up" else "down"
-            link_confidence = "low"
-            link_evidence_level = "expected"
-            link_evidence = ["interface description; nothing observed on the interface"]
+            link_status = "up"
+            link_confidence = "medium"
+            link_evidence_level = "observed-on-port"
+            link_evidence = ["interface operational state"]
+
+        # Port intent is first-class even when no node exists.
+        normalized_interfaces.append(
+            NetworkInterface(
+                id=f"{switch_id}:{interface.port}",
+                deviceId=switch_id,
+                port=interface.port,
+                description=interface.name,
+                adminState=admin_state,
+                operState=oper_state,
+                speed=interface.speed,
+                duplex=interface.duplex,
+                vlan=interface.vlan,
+                poeCapable=poe is not None,
+                poeState=poe.oper if poe else "not-supported",
+                poeWatts=poe.power_watts if poe else 0,
+                protected=interface.protected,
+                policyState=interface.policy_state,
+                role=role,
+                learnedMacCount=learned_count,
+                expectedName=expectation.name if expectation else None,
+                expectedCategory=expectation.device_type if expectation else None,
+                expectedVendor=expectation.vendor if expectation else None,
+                expectedModel=expectation.model if expectation else None,
+                expectedSource=expectation.source if expectation else None,
+                evidenceIds=[item.id for item in interface_evidence],
+            )
+        )
+        evidence.extend(interface_evidence)
 
         if endpoint is None:
             continue
+
+        endpoint.id = entity_id
+        entity_evidence = [link_fact, *entity_evidence]
+        endpoint.evidence_ids = list(dict.fromkeys(item.id for item in entity_evidence))
+        endpoint.existence_state = "observed"
+        endpoint.existence_confidence = existence_confidence(entity_evidence)
+        endpoint.identity_confidence = identity_confidence(entity_evidence)
+        endpoint.freshness = "current"
+        endpoint.relationship = relationship  # type: ignore[assignment]
+        endpoint.first_seen = observed_at
+        endpoint.last_seen = observed_at
+        endpoint.observed_category = endpoint.type
+        endpoint.expected_name = expectation.name if expectation else None
+        endpoint.expected_type = expectation.device_type if expectation else None
+        endpoint.expected_category = expectation.device_type if expectation else None
+        if learned_count == 1:
+            endpoint.mac_addresses = [learned[0].mac.lower()]
+            endpoint.mac = learned[0].mac.lower()
+            correlated_ips = [item.ip for item in arp_by_mac.get(normalize_mac(learned[0].mac), [])]
+            endpoint.ip_addresses = list(dict.fromkeys(correlated_ips))
+            if endpoint.ip is None and correlated_ips:
+                endpoint.ip = correlated_ips[0]
+            hint = oui_vendor_hint(learned[0].mac)
+            if hint.vendor:
+                if endpoint.vendor:
+                    conflict = vendor_conflict(
+                        observed_vendor=endpoint.vendor,
+                        oui_vendor=hint.vendor,
+                        evidence_ids=endpoint.evidence_ids,
+                    )
+                    if conflict:
+                        endpoint.conflicts.append(conflict)
+                        endpoint.identity_confidence = identity_confidence(entity_evidence, endpoint.conflicts)
+                else:
+                    endpoint.vendor = hint.vendor
+                    if endpoint.identity_source == "none":
+                        endpoint.identity_source = "mac-oui"
+                    endpoint.classification_stage = "vendor"
+                    endpoint.identity_confidence = identity_confidence(entity_evidence)
+        if endpoint.identity_confidence == "unknown":
+            endpoint.confidence = "low"
+        elif endpoint.identity_confidence == "confirmed":
+            endpoint.confidence = "high"
+        else:
+            endpoint.confidence = endpoint.identity_confidence
 
         devices.append(endpoint)
         links.append(
@@ -671,6 +995,9 @@ def build_topology(
                 evidence=link_evidence,
                 evidenceLevel=link_evidence_level,
                 learnedMacCount=learned_count,
+                relationship=relationship,
+                freshness="current",
+                evidenceIds=[item.id for item in entity_evidence if item.establishes.relationship or item.establishes.attachment],
             )
         )
 
@@ -680,4 +1007,7 @@ def build_topology(
         devices=devices,
         interfaces=normalized_interfaces,
         links=links,
+        evidence=evidence,
+        expectations=expectations,
+        evidenceModelVersion=1,
     )

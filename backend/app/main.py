@@ -30,6 +30,7 @@ from .config import get_settings
 from .credential_store import SwitchCredentials, get_credential_store
 from .device_session import JobPriority, get_device_session, run_on_device
 from .discovery import correlate_local_endpoint, inspect_lldp, inspect_snmp_config
+from .discovery_store import get_discovery_store
 from .live_state import (
     LiveCollector,
     TierConfig,
@@ -63,6 +64,7 @@ from .models import (
     GuideRunResult,
     InterfaceErrorsResponse,
     InterfaceDelta,
+    InterfaceStatus,
     InterfaceStatusResponse,
     LogsResponse,
     MacTableResponse,
@@ -72,6 +74,7 @@ from .models import (
     NetworkEventsResponse,
     NetworkEvent,
     PoeResponse,
+    PoePort,
     OperationRequest,
     OperationResult,
     ReconciliationSummary,
@@ -80,6 +83,7 @@ from .models import (
     SwitchSummary,
     TelemetryHistoryResponse,
     TelemetrySnapshotSummary,
+    TopologyModel,
     ConfigSaveState,
     ControlledWritesUpdate,
     InterfacePolicyEntry,
@@ -126,7 +130,7 @@ from .switch_client import (
     set_mock_scenario,
 )
 from .telemetry_store import get_telemetry_store
-from .topology import build_topology
+from .topology import build_topology, switch_device_id
 from .tools.backup import backup_running_config
 from .tools.read_only import run_and_audit
 
@@ -151,7 +155,7 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="SwitchOps",
-    version="0.4.1",
+    version="0.5.0",
     description="Local-only network operations sidecar. Allowlisted commands only.",
     docs_url="/docs" if settings.enable_api_docs else None,
     redoc_url=None,
@@ -386,6 +390,15 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         localEndpoint=local_endpoint,
         snmp=inspect_snmp_config(outputs["config"]),
     )
+    intent_store = get_intent_store()
+    try:
+        stored_expectations = intent_store.list_expected(
+            switch_device_id(hostname, "mock" if settings.mock_mode else "physical")
+        )
+    except Exception as exc:
+        section_errors["topologyIntent"] = "persistence_failed"
+        logger.warning("Topology intent load failed (%s)", type(exc).__name__)
+        stored_expectations = []
     topology = build_topology(
         hostname=hostname,
         model=model,
@@ -395,10 +408,25 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
         poe_ports=poe.ports,
         cdp_neighbors=cdp_neighbors,
         lldp_neighbors=lldp_neighbors,
+        arp_entries=arp_entries,
         local_endpoint=local_endpoint,
+        expected_relationships=stored_expectations,
         observed_at=observed_at,
         source_namespace="mock" if settings.mock_mode else "physical",
     )
+    try:
+        core_discovery_sections = {
+            "interfaces", "macTable", "neighbors", "lldpSummary", "lldpDetail", "arp"
+        }
+        topology = get_discovery_store().apply_observation(
+            topology,
+            complete=not bool(core_discovery_sections & section_errors.keys()),
+            observed_at=observed_at,
+            connection_state=str(get_device_session().status().get("state") or "live"),
+        )
+    except Exception as exc:
+        section_errors["discoveryHistory"] = "persistence_failed"
+        logger.warning("Discovery history failed (%s)", type(exc).__name__)
     telemetry_store = get_telemetry_store(
         retention_days=settings.telemetry_retention_days
     )
@@ -471,7 +499,6 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
     # Deliberately computed from the same observation, but kept entirely
     # separate from health: a network can be perfectly healthy and still not
     # match what the operator believes is plugged in.
-    intent_store = get_intent_store()
     # The live cache needs the device identity to attribute its events.
     live_state = get_live_state()
     live_state.device_id = topology.root_device_id
@@ -498,6 +525,7 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
             arp_entries=arp_entries,
             default_gateway=gateway_value,
             observed_at=observed_at,
+            topology=topology,
         )
         reconciliation = reconcile(
             device_id=topology.root_device_id,
@@ -505,7 +533,7 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
             ios=ios_provider,
             intent=IntentProvider(
                 interfaces=interfaces,
-                stored=intent_store.list_expected(topology.root_device_id),
+                stored=stored_expectations,
             ),
             history=HistoryProvider(previous_states),
             evaluated_at=observed_at,
@@ -525,6 +553,11 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
             deviceId=topology.root_device_id,
             headline="Reconciliation unavailable for this observation.",
         )
+
+    # Deep observations publish one authoritative topology envelope. Fast
+    # interface events remain lightweight overlays and never reconstruct
+    # identity in the frontend.
+    live_state.apply_topology(topology.model_dump(by_alias=True, mode="json"))
 
     summary = build_summary(
         hostname=hostname,
@@ -679,6 +712,114 @@ def _record_poe_transitions(changes: list[dict], at: datetime) -> None:
             logger.warning("Could not persist a PoE transition")
 
 
+def _record_slow_discovery(payload: dict, at: datetime) -> None:
+    """Rebuild topology from the slow-tier commands already collected.
+
+    No additional IOS command is sent. The cached deep snapshot supplies switch
+    metadata; fast state supplies the current physical interfaces.
+    """
+    live = get_live_state()
+    snapshot = live.snapshot()
+    cached_payload = snapshot.get("topology")
+    if not cached_payload:
+        return
+    try:
+        cached = TopologyModel.model_validate(cached_payload)
+        root = next(item for item in cached.devices if item.id == cached.root_device_id)
+        interfaces = [
+            InterfaceStatus(
+                port=item["port"],
+                name=item.get("description") or "",
+                status=item.get("status") or "",
+                vlan=item.get("vlan") or "",
+                duplex=item.get("duplex") or "",
+                speed=item.get("speed") or "",
+                protected=bool(item.get("protected")),
+                policyState=item.get("policy_state") or "UNMANAGED",
+            )
+            for item in snapshot.get("interfaces", [])
+        ]
+        if not interfaces:
+            return
+        poe_ports = [
+            PoePort(
+                interface=item["port"],
+                oper=item.get("poe_state") or "not-supported",
+                powerWatts=float(item.get("poe_watts") or 0),
+            )
+            for item in snapshot.get("interfaces", [])
+            if item.get("poe_state")
+        ]
+        management_ip = root.ip or "Unknown"
+        mac_entries = payload.get("macEntries") or []
+        arp_entries = payload.get("arpEntries") or []
+        local_endpoint = correlate_local_endpoint(
+            management_ip=management_ip,
+            mac_entries=mac_entries,
+            arp_entries=arp_entries,
+            interfaces=interfaces,
+            adapters=[] if settings.mock_mode else None,
+        )
+        expected = get_intent_store().list_expected(cached.root_device_id)
+        updated = build_topology(
+            hostname=root.name,
+            model=root.model or "Unknown Cisco device",
+            management_ip=management_ip,
+            interfaces=interfaces,
+            mac_entries=mac_entries,
+            arp_entries=arp_entries,
+            poe_ports=poe_ports,
+            cdp_neighbors=payload.get("cdpNeighbors") or [],
+            lldp_neighbors=payload.get("lldpNeighbors") or [],
+            local_endpoint=local_endpoint,
+            expected_relationships=expected,
+            observed_at=at,
+            source_namespace="mock" if settings.mock_mode else "physical",
+        )
+        updated = get_discovery_store().apply_observation(
+            updated,
+            complete=True,
+            observed_at=at,
+            connection_state=str(get_device_session().status().get("state") or "live"),
+        )
+        live.apply_topology(updated.model_dump(by_alias=True, mode="json"))
+    except Exception as exc:
+        logger.debug("Slow-tier topology refresh failed (%s)", type(exc).__name__)
+
+
+def _record_slow_failure(at: datetime) -> None:
+    """Age cached discovery after a failed slow poll without revoking it."""
+    live = get_live_state()
+    cached_payload = live.snapshot().get("topology")
+    if not cached_payload:
+        return
+    try:
+        cached = TopologyModel.model_validate(cached_payload)
+        root = next(item for item in cached.devices if item.id == cached.root_device_id)
+        incomplete = TopologyModel(
+            generatedAt=at,
+            rootDeviceId=cached.root_device_id,
+            devices=[root],
+            interfaces=cached.interfaces,
+            links=[],
+            evidence=[],
+            expectations=cached.expectations,
+            evidenceModelVersion=cached.evidence_model_version,
+        )
+        store = get_discovery_store()
+        if store.observation_count(cached.root_device_id) == 0:
+            return
+        aged = store.apply_observation(
+            incomplete,
+            complete=False,
+            observed_at=at,
+            connection_state=str(get_device_session().status().get("state") or "stale"),
+        )
+        live.apply_topology(aged.model_dump(by_alias=True, mode="json"))
+    except Exception as exc:
+        logger.debug("Slow-tier topology aging failed (%s)", type(exc).__name__)
+
+
 def _start_live_operations() -> None:
     session = get_device_session()
     session.start()
@@ -690,6 +831,8 @@ def _start_live_operations() -> None:
         config=TierConfig(),
         on_fast_change=_record_interface_transitions,
         on_poe_change=_record_poe_transitions,
+        on_slow_discovery=_record_slow_discovery,
+        on_slow_failure=_record_slow_failure,
     )
     set_collector(collector)
     collector.start()

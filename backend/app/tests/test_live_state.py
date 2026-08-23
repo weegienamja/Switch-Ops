@@ -193,6 +193,26 @@ def test_a_broken_subscriber_cannot_break_collection():
     hub.publish("interface_state", {})  # must not raise
 
 
+def test_authoritative_topology_is_in_the_opening_snapshot_and_sse_event():
+    state = LiveState()
+    published: list[tuple[str, dict]] = []
+    state.hub.publish = lambda event_type, payload: published.append((event_type, payload))
+    payload = {
+        "generatedAt": "2026-08-23T12:00:00Z",
+        "rootDeviceId": "switch-synthetic",
+        "devices": [],
+        "interfaces": [],
+        "links": [],
+        "evidence": [],
+        "expectations": [],
+        "historicalDevices": [],
+        "evidenceModelVersion": 1,
+    }
+    state.apply_topology(payload)
+    assert state.snapshot()["topology"] == payload
+    assert published == [("topology_state", payload)]
+
+
 # --- collector scheduling ---------------------------------------------------
 
 
@@ -284,6 +304,24 @@ def test_the_medium_tier_rotates_rather_than_running_everything(wired):
     assert len(commands) == 4
 
 
+def test_slow_tier_parses_and_emits_discovery_without_extra_commands(wired):
+    collector, _session, _state, commands = wired
+    received: list[dict] = []
+    collector.on_slow_discovery = lambda payload, _at: received.append(payload)
+    collector.collect_slow()
+    time.sleep(0.6)
+    assert commands == [
+        "show_mac_address_table",
+        "show_ip_arp",
+        "show_cdp_neighbors_detail",
+        "show_lldp_neighbors_detail",
+    ]
+    assert len(received) == 1
+    assert set(received[0]) == {
+        "macEntries", "arpEntries", "cdpNeighbors", "lldpNeighbors"
+    }
+
+
 def test_a_failing_tier_does_not_stop_the_loop(wired):
     collector, session, _state, _commands = wired
 
@@ -294,3 +332,21 @@ def test_a_failing_tier_does_not_stop_the_loop(wired):
     time.sleep(0.3)
     # The collector is still usable.
     assert collector._submit("live-fast", lambda c: c.run("show_interfaces_status"), JobPriority.FAST)
+
+
+def test_a_failed_slow_poll_ages_discovery_without_stopping_collection(wired):
+    collector, _session, _state, _commands = wired
+    failures: list[datetime] = []
+    collector.on_slow_failure = failures.append
+
+    def explode(_client):
+        raise RuntimeError("synthetic slow collection failure")
+
+    collector._submit("live-slow", explode, JobPriority.SLOW)
+    time.sleep(0.3)
+
+    assert len(failures) == 1
+    assert failures[0].tzinfo is not None
+    assert collector._submit(
+        "live-slow", lambda c: c.run("show_mac_address_table"), JobPriority.SLOW
+    )

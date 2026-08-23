@@ -10,7 +10,7 @@ records for the principal runtime and build dependencies:
 
 | Ecosystem | Principal components | Upstream license family |
 | --- | --- | --- |
-| Python / PyPI | FastAPI, Uvicorn, Pydantic, Netmiko, keyring | MIT / BSD |
+| Python / PyPI | FastAPI, Uvicorn, Pydantic, Netmiko, keyring, netaddr | MIT / BSD |
 | Python / PyPI | Paramiko | LGPL-2.1 |
 | Python build | PyInstaller | GPL-2.0-or-later with the PyInstaller bootloader exception |
 | JavaScript / npm | React, Next.js, Motion | MIT |
@@ -25,3 +25,8 @@ No third-party source archive, credential, private package, or development
 machine path is committed to this repository. Release binaries are produced
 from the committed manifests and lockfiles and are distributed as GitHub
 Release assets rather than source-history contents.
+
+`netaddr` includes a local copy of the IEEE organisational-registration data
+used for OUI hints. SwitchOps performs no cloud lookup. The registry can name
+the organisation assigned a hardware-address prefix; it cannot prove a device
+model, hostname, role, or physical attachment.

@@ -243,7 +243,7 @@ def test_missing_credentials_do_not_spin(monkeypatch, tracker):
     instance.start()
     try:
         for _ in range(3):
-            with pytest.raises(Exception):
+            with pytest.raises(CredentialsMissingError):
                 instance.submit("job", lambda c: c.run("a")).result(timeout=10)
         assert tracker.connects == 1
         assert instance.status()["errorCode"] == "credentials_missing"

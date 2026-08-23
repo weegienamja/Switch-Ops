@@ -327,6 +327,7 @@ EvidenceSource = Literal[
     "accepted-plan",
     "prior-observation",
     "mac-address-form",
+    "mac-oui",
     "meraki-api",
     "none",
 ]
@@ -347,7 +348,79 @@ RelationshipKind = Literal[
     "expected-neighbour",
 ]
 
-Confidence = Literal["low", "medium", "high"]
+Confidence = Literal["unknown", "low", "medium", "high", "confirmed"]
+
+
+# Discovery evidence is deliberately more detailed than a topology assertion.
+# An assertion is a reconciler-friendly claim about a port; an evidence record
+# states exactly what was collected and which kinds of claim that source is
+# capable of supporting.  Keeping these rules in the backend prevents the UI
+# from quietly turning labels into facts.
+EvidenceType = Literal[
+    "INTERFACE_LINK",
+    "INTERFACE_DESCRIPTION",
+    "CDP_NEIGHBOR",
+    "LLDP_NEIGHBOR",
+    "MAC_LEARNED",
+    "ARP_ENTRY",
+    "LOCAL_HOST_MAC",
+    "OUI_VENDOR",
+    "USER_INTENT",
+    "ACCEPTED_PLAN",
+    "PRIOR_OBSERVATION",
+]
+
+FreshnessState = Literal["current", "aging", "stale", "historical"]
+ExistenceState = Literal["observed", "inferred", "historical"]
+
+
+class EvidenceClaimSupport(BaseModel):
+    """The exact claim categories one evidence item can establish."""
+
+    existence: bool = False
+    identity: bool = False
+    attachment: bool = False
+    relationship: bool = False
+    role: bool = False
+
+
+class DiscoveryEvidence(BaseModel):
+    """One timestamped, explainable discovery fact.
+
+    ``observed_value`` is a compact local-app value, not raw command output.
+    Secrets and complete IOS output never belong in this model.
+    """
+
+    id: str
+    evidence_type: EvidenceType = Field(alias="evidenceType")
+    evidence_class: EvidenceClass = Field(alias="evidenceClass")
+    source: EvidenceSource
+    device_id: str = Field(alias="deviceId")
+    interface: Optional[str] = None
+    entity_id: Optional[str] = Field(default=None, alias="entityId")
+    observed_value: Optional[str] = Field(default=None, alias="observedValue")
+    summary: str
+    observed_at: datetime = Field(alias="observedAt")
+    freshness: FreshnessState = "current"
+    expires_at: Optional[datetime] = Field(default=None, alias="expiresAt")
+    strength: Confidence = "unknown"
+    establishes: EvidenceClaimSupport = Field(default_factory=EvidenceClaimSupport)
+    relationship: Optional[RelationshipKind] = None
+    provenance: str
+    revoked: bool = False
+    conflict: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class EvidenceConflict(BaseModel):
+    """A contradiction retained as evidence instead of silently resolved."""
+
+    field: Literal["identity", "vendor", "model", "category", "attachment"]
+    summary: str
+    evidence_ids: List[str] = Field(default_factory=list, alias="evidenceIds")
+
+    model_config = {"populate_by_name": True}
 
 
 class TopologyAssertion(BaseModel):
@@ -369,6 +442,10 @@ class TopologyAssertion(BaseModel):
     confidence: Confidence
     detail: str
     observed_at: Optional[datetime] = Field(default=None, alias="observedAt")
+    freshness: FreshnessState = "current"
+    evidence_ids: List[str] = Field(default_factory=list, alias="evidenceIds")
+    conflicted: bool = False
+    conflict_reasons: List[str] = Field(default_factory=list, alias="conflictReasons")
     # Optional structured identity, only populated by identifying sources.
     device_type: Optional[DeviceType] = Field(default=None, alias="deviceType")
     vendor: Optional[str] = None
@@ -594,7 +671,9 @@ class NetworkDevice(BaseModel):
     mac: Optional[str] = None
     ip: Optional[str] = None
     source: Literal["observed", "inferred", "expected"]
-    confidence: Literal["low", "medium", "high"]
+    # ``confidence`` is retained for v0.4 API compatibility and mirrors
+    # identity confidence. Existence confidence is a separate claim in v0.5.
+    confidence: Confidence
     classification_stage: Literal["unknown", "category", "vendor", "model"] = Field(
         alias="classificationStage"
     )
@@ -614,6 +693,19 @@ class NetworkDevice(BaseModel):
     # further devices sit behind it; it never multiplies this device.
     learned_mac_count: int = Field(default=0, alias="learnedMacCount")
     role: InterfaceRole = "unknown"
+    existence_state: ExistenceState = Field(default="observed", alias="existenceState")
+    existence_confidence: Confidence = Field(default="unknown", alias="existenceConfidence")
+    identity_confidence: Confidence = Field(default="unknown", alias="identityConfidence")
+    freshness: FreshnessState = "current"
+    relationship: Optional[RelationshipKind] = None
+    first_seen: Optional[datetime] = Field(default=None, alias="firstSeen")
+    mac_addresses: List[str] = Field(default_factory=list, alias="macAddresses")
+    ip_addresses: List[str] = Field(default_factory=list, alias="ipAddresses")
+    observed_category: DeviceType = Field(default="unknown", alias="observedCategory")
+    expected_category: Optional[DeviceType] = Field(default=None, alias="expectedCategory")
+    evidence_ids: List[str] = Field(default_factory=list, alias="evidenceIds")
+    conflicts: List[EvidenceConflict] = Field(default_factory=list)
+    historical_identity: Optional[str] = Field(default=None, alias="historicalIdentity")
 
     model_config = {"populate_by_name": True}
 
@@ -635,6 +727,13 @@ class NetworkInterface(BaseModel):
     policy_state: InterfacePolicyState = Field(default="UNMANAGED", alias="policyState")
     role: InterfaceRole = "unknown"
     learned_mac_count: int = Field(default=0, alias="learnedMacCount")
+    expected_name: Optional[str] = Field(default=None, alias="expectedName")
+    expected_category: Optional[DeviceType] = Field(default=None, alias="expectedCategory")
+    expected_vendor: Optional[str] = Field(default=None, alias="expectedVendor")
+    expected_model: Optional[str] = Field(default=None, alias="expectedModel")
+    expected_source: Optional[IntentSource] = Field(default=None, alias="expectedSource")
+    freshness: FreshnessState = "current"
+    evidence_ids: List[str] = Field(default_factory=list, alias="evidenceIds")
 
     model_config = {"populate_by_name": True}
 
@@ -648,10 +747,28 @@ class NetworkLink(BaseModel):
     status: Literal["up", "down", "waiting", "unknown"]
     speed: str = ""
     poe: bool = False
-    confidence: Literal["low", "medium", "high"]
+    confidence: Confidence
     evidence: List[str] = Field(default_factory=list)
     evidence_level: EvidenceLevel = Field(default="unknown", alias="evidenceLevel")
     learned_mac_count: int = Field(default=0, alias="learnedMacCount")
+    relationship: RelationshipKind = "attached-endpoint"
+    freshness: FreshnessState = "current"
+    evidence_ids: List[str] = Field(default_factory=list, alias="evidenceIds")
+
+    model_config = {"populate_by_name": True}
+
+
+class TopologyExpectation(BaseModel):
+    """Port-level intent. It is never an observed device node."""
+
+    interface: str
+    name: str
+    device_type: DeviceType = Field(default="unknown", alias="deviceType")
+    vendor: Optional[str] = None
+    model: Optional[str] = None
+    source: IntentSource = "interface-description"
+    confidence: Confidence = "low"
+    evidence_ids: List[str] = Field(default_factory=list, alias="evidenceIds")
 
     model_config = {"populate_by_name": True}
 
@@ -662,6 +779,10 @@ class TopologyModel(BaseModel):
     devices: List[NetworkDevice]
     interfaces: List[NetworkInterface]
     links: List[NetworkLink]
+    evidence: List[DiscoveryEvidence] = Field(default_factory=list)
+    expectations: List[TopologyExpectation] = Field(default_factory=list)
+    historical_devices: List[NetworkDevice] = Field(default_factory=list, alias="historicalDevices")
+    evidence_model_version: int = Field(default=1, alias="evidenceModelVersion")
 
     model_config = {"populate_by_name": True}
 

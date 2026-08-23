@@ -108,8 +108,8 @@ export default function DashboardShell() {
   const live = useLiveOperations(Boolean(data?.setup && (data.setup.configured || data.setup.mockMode)));
   const liveMerged = useMemo(() => {
     if (!data?.topology || !data.interfaces || !data.poe) return null;
-    return mergeLiveInterfaces(data.topology, data.interfaces, data.poe, live.interfaces);
-  }, [data, live.interfaces]);
+    return mergeLiveInterfaces(live.topology || data.topology, data.interfaces, data.poe, live.interfaces);
+  }, [data, live.interfaces, live.topology]);
 
   async function loadAll(silent = false) {
     if (!silent) setLoading(true);

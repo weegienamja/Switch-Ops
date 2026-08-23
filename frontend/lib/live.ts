@@ -2,6 +2,7 @@ import type {
   InterfaceStatus,
   LiveInterfaceState,
   NetworkInterface,
+  NetworkLink,
   PoeResponse,
   TopologyModel,
 } from "./types";
@@ -59,16 +60,32 @@ export function mergeLiveInterfaces(
 
   const topologyInterfaces = topology.interfaces.map(mergeNetworkInterface);
   const stateByPort = new Map(topologyInterfaces.map((item) => [item.port, item]));
+  const topologyLinks = topology.links.map((link) => {
+    const item = stateByPort.get(link.fromInterface);
+    if (!item) return link;
+    const status: NetworkLink["status"] =
+      item.operState === "up" ? "up" : item.adminState === "down" ? "down" : "waiting";
+    return {
+      ...link,
+      status,
+      freshness: item.operState === "up" ? ("current" as const) : ("aging" as const),
+    };
+  });
+  const linkByDevice = new Map(topologyLinks.map((item) => [item.toDeviceId, item]));
   return {
     topology: {
       ...topology,
       interfaces: topologyInterfaces,
-      links: topology.links.map((link) => {
-        const item = stateByPort.get(link.fromInterface);
-        if (!item) return link;
-        const status =
-          item.operState === "up" ? "up" : item.adminState === "down" ? "down" : "waiting";
-        return { ...link, status };
+      links: topologyLinks,
+      devices: topology.devices.map((device) => {
+        if (device.id === topology.rootDeviceId) return device;
+        const link = linkByDevice.get(device.id);
+        if (!link) return device;
+        return {
+          ...device,
+          online: link.status === "up",
+          freshness: link.status === "up" ? ("current" as const) : ("aging" as const),
+        };
       }),
     },
     interfaces: { interfaces: interfaces.interfaces.map(mergeStatus) },
