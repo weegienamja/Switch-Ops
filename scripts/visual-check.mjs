@@ -43,6 +43,14 @@ const VIEWPORTS = [
 /** Tab label -> screenshot slug. Labels match the nav buttons. */
 const VIEWS = [
   { label: "Overview", slug: "overview" },
+  { label: "Lab Assurance", slug: "lab-assurance" },
+  {
+    label: "Lab Assurance",
+    slug: "lab-assurance-capabilities",
+    prepare: `[...document.querySelectorAll(".assurance-tabs button")]
+      .find((button) => button.textContent.trim() === "Capabilities")?.click(), true`,
+    settle: 500,
+  },
   {
     label: "Visual network",
     slug: "network",

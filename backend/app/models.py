@@ -1214,3 +1214,30 @@ class WriteActionResult(BaseModel):
     duration_ms: int = Field(alias="durationMs")
 
     model_config = {"populate_by_name": True}
+
+
+# --- Lab Assurance -------------------------------------------------------
+#
+# Keep the public request/response contract surface centralized in this
+# module.  The implementation is split out only to keep this long-lived file
+# navigable.
+from .lab_models import (  # noqa: E402,F401
+    ConfiguredLabDevice,
+    FailureScenario,
+    LabAssuranceState,
+    LabAssuranceSummary,
+    LabCapability,
+    LabDevice,
+    LabDeviceCreateRequest,
+    LabDeviceList,
+    LabEdge,
+    LabEvidence,
+    LabFinding,
+    LabInterface,
+    LabPath,
+    LabRefreshResult,
+    LogicalNetwork,
+    PathHop,
+    PerformanceObservation,
+    PerformanceProbeRequest,
+)

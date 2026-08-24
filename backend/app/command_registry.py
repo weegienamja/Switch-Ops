@@ -50,6 +50,22 @@ READ_ONLY_COMMANDS: Dict[str, str] = {
     "show_interfaces_trunk": "show interfaces trunk",
     "show_environment": "show environment",
     "show_environment_all": "show environment all",
+    # Lab Assurance routing/control-plane observation. Each entry is a fixed
+    # read-only command; unsupported output becomes capability evidence and is
+    # never treated as an empty healthy result.
+    "show_ip_route": "show ip route",
+    "show_ip_protocols": "show ip protocols",
+    "show_ip_ospf_neighbor": "show ip ospf neighbor",
+    "show_ip_eigrp_neighbors": "show ip eigrp neighbors",
+    "show_bgp_ipv4_unicast_summary": "show bgp ipv4 unicast summary",
+    "show_standby_brief": "show standby brief",
+    "show_vrf": "show vrf",
+    "show_bfd_neighbors": "show bfd neighbors",
+    "show_ip_sla_summary": "show ip sla summary",
+    "show_nve_peers": "show nve peers",
+    "show_bgp_l2vpn_evpn_summary": "show bgp l2vpn evpn summary",
+    "show_segment_routing_mpls_sid_map": "show segment-routing mpls connected-prefix-sid-map",
+    "show_segment_routing_srv6_locator": "show segment-routing srv6 locator",
     # NB: do NOT use "show running-config | section line vty" — that fails on
     # IOS 12.2(55)EX2. Use "begin line vty" if ever needed.
     "show_running_config_begin_vty": "show running-config | begin line vty",

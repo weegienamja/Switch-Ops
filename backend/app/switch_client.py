@@ -469,3 +469,26 @@ def get_switch_client() -> SwitchClient:
         legacy = LegacyParamikoSwitchClient(creds)
         legacy.connect()
         return legacy
+
+
+def connect_switch_client(creds: SwitchCredentials) -> SwitchClient:
+    """Open a bounded IOS/IOS-XE session for an explicitly supplied target.
+
+    Lab Assurance uses this for secondary devices. The caller owns and must
+    close the returned client. It is intentionally not exposed through an API
+    that accepts commands: callers can execute only command-registry symbols.
+    """
+    settings = get_settings()
+    register_secret(creds.switch_password)
+    register_secret(creds.switch_enable_secret)
+    try:
+        client = NetmikoSwitchClient(creds, legacy_algorithms=settings.legacy_ssh)
+        client.connect()
+        return client
+    except LegacySshNegotiationError:
+        if not settings.legacy_ssh:
+            raise
+        logger.warning("Falling back to legacy Paramiko for a Lab Assurance device.")
+        legacy = LegacyParamikoSwitchClient(creds)
+        legacy.connect()
+        return legacy

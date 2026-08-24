@@ -21,6 +21,7 @@ from .logging_config import register_secret
 logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "switchops"
+LAB_DEVICE_SERVICE_NAME = "switchops-lab-device"
 CRED_FILE = DATA_DIR / "credentials.json"
 
 _ACCOUNT_KEYS = (
@@ -224,6 +225,37 @@ class CredentialStore:
             switch_enable_secret=os.environ.get("SWITCH_ENABLE_SECRET", "") or "",
             switch_device_type=os.environ.get("SWITCH_DEVICE_TYPE", "cisco_ios"),
         )
+
+
+class KeyringCredentialVault:
+    """Small keyring-only vault for secondary device credential payloads.
+
+    Lab Assurance deliberately has no file or environment fallback.  Keeping
+    the keyring adapter here preserves the project's single credential-access
+    boundary while allowing the device registry to persist opaque IDs only.
+    """
+
+    def __init__(self, *, keyring=None) -> None:
+        self._keyring = _try_import_keyring() if keyring is None else keyring
+
+    @property
+    def available(self) -> bool:
+        return self._keyring is not None
+
+    def save_lab_device(self, device_id: str, payload: str) -> None:
+        if self._keyring is None:
+            raise RuntimeError("Windows Credential Manager is unavailable.")
+        self._keyring.set_password(LAB_DEVICE_SERVICE_NAME, device_id, payload)
+
+    def load_lab_device(self, device_id: str) -> str | None:
+        if self._keyring is None:
+            return None
+        return self._keyring.get_password(LAB_DEVICE_SERVICE_NAME, device_id)
+
+    def delete_lab_device(self, device_id: str) -> None:
+        if self._keyring is None:
+            raise RuntimeError("Windows Credential Manager is unavailable.")
+        self._keyring.delete_password(LAB_DEVICE_SERVICE_NAME, device_id)
 
 
 _store: Optional[CredentialStore] = None

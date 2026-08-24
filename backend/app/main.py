@@ -104,6 +104,22 @@ from .meraki_models import (
     MerakiSetupStatus,
 )
 from .interface_policy import device_key, get_interface_policy_store
+from .lab_collector import LAB_COMMANDS, LabDeviceObservation, collect_lab_device
+from .models import (
+    ConfiguredLabDevice,
+    FailureScenario,
+    LabAssuranceState,
+    LabCapability,
+    LabDeviceCreateRequest,
+    LabDeviceList,
+    LabEdge,
+    LabFinding,
+    LabPath,
+    LabRefreshResult,
+    PerformanceObservation,
+    PerformanceProbeRequest,
+)
+from .lab_service import get_lab_assurance_service
 from .operations import (
     OPERATIONS,
     assert_interface_operable,
@@ -171,7 +187,7 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="SwitchOps",
-    version="0.7.0",
+    version="0.8.0",
     description="Local-only network operations sidecar. Allowlisted commands only.",
     docs_url="/docs" if settings.enable_api_docs else None,
     redoc_url=None,
@@ -1169,6 +1185,159 @@ def refresh_meraki_evidence():
 )
 def get_unified_lab_state():
     return get_unified_lab_service().state()
+
+
+# --- v0.8 Lab Assurance --------------------------------------------------
+
+
+@app.get(
+    "/api/lab-assurance/devices",
+    response_model=LabDeviceList,
+    response_model_by_alias=True,
+)
+def get_lab_assurance_devices():
+    return get_lab_assurance_service().configured_devices()
+
+
+@app.post(
+    "/api/lab-assurance/devices",
+    response_model=ConfiguredLabDevice,
+    response_model_by_alias=True,
+)
+def post_lab_assurance_device(req: LabDeviceCreateRequest):
+    try:
+        return get_lab_assurance_service().add_device(req)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/api/lab-assurance/devices/{device_id}")
+def delete_lab_assurance_device(device_id: str):
+    try:
+        removed = get_lab_assurance_service().remove_device(device_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="Configured Lab Assurance device not found.")
+    return {"removed": True}
+
+
+@app.get(
+    "/api/lab-assurance/state",
+    response_model=LabAssuranceState,
+    response_model_by_alias=True,
+)
+def get_lab_assurance_state():
+    return get_lab_assurance_service().state()
+
+
+@app.post(
+    "/api/lab-assurance/refresh",
+    response_model=LabRefreshResult,
+    response_model_by_alias=True,
+)
+def post_lab_assurance_refresh():
+    host = _current_device_host()
+    primary_id = f"primary-{device_key(host)[:16]}" if host else "primary-mock"
+    try:
+        primary = on_device(
+            "lab-assurance-primary",
+            lambda client: collect_lab_device(
+                client,
+                device_id=primary_id,
+                label="Primary Catalyst",
+                primary=True,
+            ),
+            priority=JobPriority.DIAGNOSTIC,
+            timeout=360.0,
+        )
+    except Exception:
+        primary = LabDeviceObservation(
+            device_id=primary_id,
+            configured_label="Primary Catalyst",
+            primary=True,
+            observed_at=datetime.now(timezone.utc),
+            outputs={symbol: "" for symbol in LAB_COMMANDS},
+            command_state={symbol: "failed" for symbol in LAB_COMMANDS},
+        )
+    return LabRefreshResult(
+        accepted=True,
+        state=get_lab_assurance_service().refresh(primary),
+    )
+
+
+@app.get(
+    "/api/lab-assurance/capabilities",
+    response_model=list[LabCapability],
+    response_model_by_alias=True,
+)
+def get_lab_assurance_capabilities():
+    return get_lab_assurance_service().state().capabilities
+
+
+@app.get(
+    "/api/lab-assurance/findings",
+    response_model=list[LabFinding],
+    response_model_by_alias=True,
+)
+def get_lab_assurance_findings():
+    return get_lab_assurance_service().state().findings
+
+
+@app.get(
+    "/api/lab-assurance/failures",
+    response_model=list[FailureScenario],
+    response_model_by_alias=True,
+)
+def get_lab_assurance_failures():
+    return get_lab_assurance_service().state().failures
+
+
+@app.get(
+    "/api/lab-assurance/paths",
+    response_model=list[LabPath],
+    response_model_by_alias=True,
+)
+def get_lab_assurance_paths(
+    fromNodeId: str | None = Query(default=None, max_length=200),
+    toNodeId: str | None = Query(default=None, max_length=200),
+):
+    paths = get_lab_assurance_service().state().paths
+    if fromNodeId:
+        paths = [item for item in paths if item.from_node_id == fromNodeId]
+    if toNodeId:
+        paths = [item for item in paths if item.to_node_id == toNodeId]
+    return paths
+
+
+@app.get(
+    "/api/lab-assurance/graph",
+    response_model=list[LabEdge],
+    response_model_by_alias=True,
+)
+def get_lab_assurance_graph():
+    return get_lab_assurance_service().state().edges
+
+
+@app.get(
+    "/api/lab-assurance/performance",
+    response_model=list[PerformanceObservation],
+    response_model_by_alias=True,
+)
+def get_lab_assurance_performance():
+    return get_lab_assurance_service().state().performance
+
+
+@app.post(
+    "/api/lab-assurance/performance/probe",
+    response_model=PerformanceObservation,
+    response_model_by_alias=True,
+)
+def post_lab_assurance_probe(req: PerformanceProbeRequest):
+    try:
+        return get_lab_assurance_service().probe(req.target, req.label, req.count)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post(

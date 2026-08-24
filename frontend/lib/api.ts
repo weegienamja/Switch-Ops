@@ -45,6 +45,13 @@ import type {
   MerakiSetupStatus,
   UnifiedLabState,
 } from "./unifiedTypes";
+import type {
+  ConfiguredLabDevice,
+  LabAssuranceState,
+  LabDeviceCreateRequest,
+  LabDeviceList,
+  PerformanceObservation,
+} from "./labTypes";
 
 export interface InterfaceStatusResponse {
   interfaces: import("./types").InterfaceStatus[];
@@ -142,6 +149,30 @@ export const api = {
     fetchJson<UnifiedLabState>("/api/unified-lab/identity-decision", {
       method: "POST",
       body: JSON.stringify({ linkId, decision }),
+    }),
+  labAssuranceState: () =>
+    fetchJson<LabAssuranceState>("/api/lab-assurance/state"),
+  labAssuranceDevices: () =>
+    fetchJson<LabDeviceList>("/api/lab-assurance/devices"),
+  addLabAssuranceDevice: (request: LabDeviceCreateRequest) =>
+    fetchJson<ConfiguredLabDevice>("/api/lab-assurance/devices", {
+      method: "POST",
+      body: JSON.stringify(request),
+    }),
+  removeLabAssuranceDevice: (deviceId: string) =>
+    fetchJson<{ removed: boolean }>(
+      `/api/lab-assurance/devices/${encodeURIComponent(deviceId)}`,
+      { method: "DELETE" },
+    ),
+  refreshLabAssurance: () =>
+    fetchJson<{ accepted: boolean; state: LabAssuranceState }>(
+      "/api/lab-assurance/refresh",
+      { method: "POST" },
+    ),
+  runLabProbe: (target: string, label: string, count = 4) =>
+    fetchJson<PerformanceObservation>("/api/lab-assurance/performance/probe", {
+      method: "POST",
+      body: JSON.stringify({ target, label, count }),
     }),
   summary: () => fetchJson<SwitchSummary>("/api/switch/summary"),
   dashboard: () => fetchJson<DashboardResponse>("/api/switch/dashboard"),

@@ -130,6 +130,34 @@ file or environment fallback for it. See
 [docs/V0.7-UNIFIED-LAB.md](docs/V0.7-UNIFIED-LAB.md) for the evidence contract
 and security boundary.
 
+## v0.8.0 development: Lab Assurance
+
+The current development branch adds a read-only, capability-driven view of an
+actual lab: what depends on what, which paths are proven, and what the observed
+graph says will be affected by a failure.
+
+- Additional IOS/IOS-XE targets are explicit and keyring-only. Their local
+  registry persists opaque IDs, not device addresses, usernames, labels, or
+  secrets.
+- Capabilities are `SUPPORTED`, `UNSUPPORTED`, or `UNKNOWN` based on current
+  command/configuration evidence. Vendor or model is never enough by itself.
+- CDP/LLDP can prove a direct adjacency. Reciprocal observations increase
+  confidence. MAC learning and ARP remain reachability/correlation evidence and
+  cannot manufacture a cable or device identity.
+- Findings cover resiliency, Layer 2 consistency, access-edge protections,
+  management exposure, PoE, capacity, interface errors, and evidence gaps.
+  SwitchOps deliberately does not assign a numeric network score.
+- Path Explorer labels every hop `PROVEN`, `INFERRED`, `EXPECTED`,
+  `AMBIGUOUS`, or `UNKNOWN`; failure scenarios explain consequence confidence
+  and possible loss of SwitchOps control reachability.
+- VLAN, trunk, SVI, gateway, and VRF concepts form the logical view. Different
+  VLANs are not called isolated without separate enforcement evidence.
+- Bounded PC-originated probes distinguish service health from link state and
+  report latency, jitter, loss, availability, and route changes where observed.
+
+See [docs/V0.8-LAB-ASSURANCE.md](docs/V0.8-LAB-ASSURANCE.md) for contracts,
+boundaries, and the current implementation scope.
+
 ## Interface write policy
 
 SwitchOps does not contain a public, device-specific port allowlist.

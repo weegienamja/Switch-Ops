@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { motion } from "motion/react";
 import { api } from "@/lib/api";
 import { mergeLiveInterfaces } from "@/lib/live";
@@ -59,7 +60,9 @@ import SummaryCards from "./SummaryCards";
 import SwitchHero from "./SwitchHero";
 import UnifiedLabPanel from "./UnifiedLabPanel";
 
-type View = "overview" | "unified" | "network" | "events" | "guide" | "change";
+const LabAssurancePanel = dynamic(() => import("./LabAssurancePanel"));
+
+type View = "overview" | "assurance" | "unified" | "network" | "events" | "guide" | "change";
 
 interface DashboardData {
   setup: SetupStatus;
@@ -88,6 +91,7 @@ interface DashboardData {
 
 const VIEWS: Array<{ id: View; label: string; description: string }> = [
   { id: "overview", label: "Overview", description: "Current and historical health" },
+  { id: "assurance", label: "Lab Assurance", description: "Paths, risks, failure domains" },
   { id: "unified", label: "Unified inventory", description: "Catalyst + Meraki evidence" },
   { id: "network", label: "Visual network", description: "Your device, port by port" },
   { id: "events", label: "What changed", description: "Meaningful network events" },
@@ -331,6 +335,12 @@ export default function DashboardShell() {
               ) : (
                 <section className="card"><p className="empty-note unified-empty">Unified evidence is temporarily unavailable. Catalyst views are unaffected.</p></section>
               )}
+            </motion.div>
+          ) : null}
+
+          {activeView === "assurance" ? (
+            <motion.div variants={fadeUp}>
+              <LabAssurancePanel />
             </motion.div>
           ) : null}
 

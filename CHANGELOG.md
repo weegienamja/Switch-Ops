@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.8.0 - Unreleased
+
+### Lab Assurance
+
+- Added a capability model derived from current allowlisted output and explicit
+  configuration evidence. Each feature is `SUPPORTED`, `UNSUPPORTED`, or
+  `UNKNOWN`; a Cisco model name alone never grants a capability.
+- Added keyring-only onboarding and sequential read-only observation for
+  additional explicitly configured Cisco IOS/IOS-XE devices. The on-disk
+  registry contains opaque IDs only, with labels, targets, usernames, and
+  secrets held in Windows Credential Manager.
+- Added an evidence-carrying physical and logical lab graph from CDP, LLDP,
+  interfaces, VLANs, trunks, SVIs, STP, EtherChannel, MAC, ARP, default
+  gateway, and visible routing-neighbour state. Exact device-name matches can
+  reconcile collected devices; MAC learning remains inferred reachability and
+  never becomes a proven cable.
+- Added deterministic design findings for current resiliency, Layer 2,
+  security, capacity, management exposure, PoE, errors, and evidence gaps.
+  There is no numeric network score.
+- Added read-only failure simulations and Path Explorer output with
+  `PROVEN`, `INFERRED`, `EXPECTED`, `AMBIGUOUS`, and `UNKNOWN` hop states.
+- Added bounded PC-originated reachability probes with loss, average latency,
+  jitter, route-change observation, and explicit `HEALTHY`, `DEGRADED`,
+  `UNREACHABLE`, or `INSUFFICIENT_EVIDENCE` state. Probe targets are strictly
+  validated and never become shell or IOS commands.
+- Added physical/logical segmentation views that report VLAN membership and
+  gateways while keeping inter-segment enforcement `POLICY_UNKNOWN` unless
+  separate policy evidence proves it.
+- Added a coherent Lab Assurance UI and stable local JSON endpoints plus
+  `switchops analyze|paths|failures|capabilities|performance` CLI concepts.
+
 ## 0.7.0 - Unreleased
 
 ### Unified Lab
