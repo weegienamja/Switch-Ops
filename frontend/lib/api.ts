@@ -52,6 +52,17 @@ import type {
   LabDeviceList,
   PerformanceObservation,
 } from "./labTypes";
+import type {
+  EWPSCandidatePath,
+  EWPSConfig,
+  EWPSExperimentSession,
+  EWPSMeta,
+  EWPSReplayResult,
+  EWPSSimulatorResult,
+  EWPSSimulatorScenario,
+  EWPSSummary,
+  EWPSTimeline,
+} from "./ewpsTypes";
 
 export interface InterfaceStatusResponse {
   interfaces: import("./types").InterfaceStatus[];
@@ -67,6 +78,26 @@ function url(path: string): string {
 
 export function backendEventStreamUrl(): string {
   return url("/api/live/stream");
+}
+
+export async function downloadEwpsExport(
+  experimentId: string,
+  format: "jsonl" | "json" | "csv",
+): Promise<void> {
+  const response = await fetch(
+    url(`/api/ewps/experiments/${encodeURIComponent(experimentId)}/export?format=${format}`),
+    { cache: "no-store" },
+  );
+  if (!response.ok) throw new Error(`EWPS export failed (${response.status}).`);
+  const blob = await response.blob();
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = `ewps-${experimentId}.${format}`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(href);
 }
 
 async function fetchJson<T>(
@@ -173,6 +204,46 @@ export const api = {
     fetchJson<PerformanceObservation>("/api/lab-assurance/performance/probe", {
       method: "POST",
       body: JSON.stringify({ target, label, count }),
+    }),
+  ewpsMeta: () => fetchJson<EWPSMeta>("/api/ewps/meta"),
+  ewpsCandidates: () => fetchJson<EWPSCandidatePath[]>("/api/ewps/candidates"),
+  ewpsExperiments: () => fetchJson<EWPSExperimentSession[]>("/api/ewps/experiments"),
+  ewpsCurrent: () => fetchJson<EWPSExperimentSession | null>("/api/ewps/experiments/current"),
+  ewpsCreate: (request: {
+    name: string;
+    workloadLabel: string;
+    candidatePathIds: string[];
+    config: EWPSConfig;
+  }) => fetchJson<EWPSExperimentSession>("/api/ewps/experiments", {
+    method: "POST",
+    body: JSON.stringify(request),
+  }),
+  ewpsStart: (experimentId: string) =>
+    fetchJson<EWPSExperimentSession>(`/api/ewps/experiments/${encodeURIComponent(experimentId)}/start`, { method: "POST" }),
+  ewpsPause: (experimentId: string) =>
+    fetchJson<EWPSExperimentSession>(`/api/ewps/experiments/${encodeURIComponent(experimentId)}/pause`, { method: "POST" }),
+  ewpsStop: (experimentId: string) =>
+    fetchJson<{ session: EWPSExperimentSession; summary: EWPSSummary }>(
+      `/api/ewps/experiments/${encodeURIComponent(experimentId)}/stop`,
+      { method: "POST" },
+    ),
+  ewpsTimeline: (experimentId: string, limit = 300) =>
+    fetchJson<EWPSTimeline>(
+      `/api/ewps/experiments/${encodeURIComponent(experimentId)}/timeline?limit=${limit}`,
+    ),
+  ewpsSummary: (experimentId: string) =>
+    fetchJson<EWPSSummary>(`/api/ewps/experiments/${encodeURIComponent(experimentId)}/summary`),
+  ewpsReplay: (experimentId: string, config?: EWPSConfig) =>
+    fetchJson<EWPSReplayResult>(`/api/ewps/experiments/${encodeURIComponent(experimentId)}/replay`, {
+      method: "POST",
+      body: JSON.stringify({ config: config || null }),
+    }),
+  ewpsSimulatorScenarios: () =>
+    fetchJson<EWPSSimulatorScenario[]>("/api/ewps/simulator/scenarios"),
+  ewpsRunSimulator: (scenarioId: string, config: EWPSConfig) =>
+    fetchJson<EWPSSimulatorResult>("/api/ewps/simulator/run", {
+      method: "POST",
+      body: JSON.stringify({ scenarioId, config }),
     }),
   summary: () => fetchJson<SwitchSummary>("/api/switch/summary"),
   dashboard: () => fetchJson<DashboardResponse>("/api/switch/dashboard"),

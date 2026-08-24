@@ -41,6 +41,8 @@ from .live_state import (
     set_collector,
 )
 from .errors import CommandNotAllowedError, SwitchOpsError
+from .ewps_api import router as ewps_router
+from .ewps_service import get_ewps_service
 from .health_logic import build_summary
 from .host_key_store import is_host_pinned
 from .guide import list_guide_operations, run_guide_operation
@@ -185,6 +187,7 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        get_ewps_service().shutdown()
         get_unified_lab_service().stop()
         _stop_live_operations()
         get_write_lock().lock()
@@ -275,6 +278,10 @@ _UNSUPPORTED_IOS_OUTPUT = re.compile(
     r"%\s*(?:Invalid input|Ambiguous command|Incomplete command|Unrecognized command)",
     re.IGNORECASE,
 )
+
+# Direct route registration preserves the existing app.routes contract used by
+# SwitchOps safety tests while retaining the APIRouter's versioned isolation.
+app.router.routes.extend(ewps_router.routes)
 
 
 def _current_device_host() -> str | None:

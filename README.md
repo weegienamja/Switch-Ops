@@ -158,6 +158,23 @@ graph says will be affected by a failure.
 See [docs/V0.8-LAB-ASSURANCE.md](docs/V0.8-LAB-ASSURANCE.md) for contracts,
 boundaries, and the current implementation scope.
 
+## Experimental research branch: EWPS v0.1 Alpha
+
+The separate `research/ewps-v0.1` branch adds the **EWPS Observatory** for
+evidence-weighted path-selection research. It is not SwitchOps v0.9 and does
+not change the normal SwitchOps release version or roadmap.
+
+- EWPS is observation/shadow mode only and has no route-changing execution
+  path.
+- Safe source-bound telemetry, comparison strategies, explicit hysteresis,
+  local SQLite recording, privacy-safe export, deterministic replay, and a
+  deterministic simulator share one versioned EWPS engine.
+- `P_cert` is a dimensionless evidence-confidence index built from heuristic
+  functions, not a statistically calibrated probability.
+
+See [docs/EWPS-V0.1-RESEARCH.md](docs/EWPS-V0.1-RESEARCH.md) for the model,
+methodology, safety boundary, limitations, and reproduction instructions.
+
 ## Interface write policy
 
 SwitchOps does not contain a public, device-specific port allowlist.

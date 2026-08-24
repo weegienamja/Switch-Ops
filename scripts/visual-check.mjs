@@ -42,6 +42,7 @@ const VIEWPORTS = [
 
 /** Tab label -> screenshot slug. Labels match the nav buttons. */
 const VIEWS = [
+  { label: "EWPS Observatory", slug: "ewps-observatory" },
   { label: "Overview", slug: "overview" },
   { label: "Lab Assurance", slug: "lab-assurance" },
   {

@@ -61,8 +61,9 @@ import SwitchHero from "./SwitchHero";
 import UnifiedLabPanel from "./UnifiedLabPanel";
 
 const LabAssurancePanel = dynamic(() => import("./LabAssurancePanel"));
+const EWPSObservatory = dynamic(() => import("./EWPSObservatory"));
 
-type View = "overview" | "assurance" | "unified" | "network" | "events" | "guide" | "change";
+type View = "ewps" | "overview" | "assurance" | "unified" | "network" | "events" | "guide" | "change";
 
 interface DashboardData {
   setup: SetupStatus;
@@ -90,6 +91,7 @@ interface DashboardData {
 }
 
 const VIEWS: Array<{ id: View; label: string; description: string }> = [
+  { id: "ewps", label: "EWPS Observatory", description: "Shadow path-selection research" },
   { id: "overview", label: "Overview", description: "Current and historical health" },
   { id: "assurance", label: "Lab Assurance", description: "Paths, risks, failure domains" },
   { id: "unified", label: "Unified inventory", description: "Catalyst + Meraki evidence" },
@@ -113,7 +115,8 @@ export default function DashboardShell() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [activeView, setActiveView] = useState<View>("overview");
+  const [activeView, setActiveView] = useState<View>("ewps");
+  const [showSetup, setShowSetup] = useState(false);
   const [selectedPort, setSelectedPort] = useState("");
   const [unifiedBusy, setUnifiedBusy] = useState<string | null>(null);
   const [unifiedError, setUnifiedError] = useState<string | null>(null);
@@ -225,7 +228,19 @@ export default function DashboardShell() {
   if (!data) return <ErrorState message="No data." onRetry={() => void loadAll()} />;
 
   if (!data.setup.configured && !data.setup.mockMode) {
-    return <SetupWizard onComplete={() => void loadAll()} />;
+    if (showSetup) return <SetupWizard onComplete={() => { setShowSetup(false); void loadAll(); }} />;
+    return (
+      <div className="app-shell">
+        <div className="local-banner"><span>LOCAL-ONLY</span>EWPS runs as a read-only shadow observer on this PC.</div>
+        <div className="container">
+          <header className="ewps-standalone-header">
+            <div className="ewps-standalone-header__brand"><div className="header__logo">SO</div><div><strong>SwitchOps Research</strong><span>EWPS v0.1 Alpha</span></div></div>
+            <button className="btn btn--ghost" onClick={() => setShowSetup(true)}>Configure Catalyst observation</button>
+          </header>
+          <EWPSObservatory />
+        </div>
+      </div>
+    );
   }
 
   const summary = data.summary;
@@ -298,6 +313,11 @@ export default function DashboardShell() {
           animate="show"
           variants={{ show: { transition: { staggerChildren: 0.04 } } }}
         >
+          {activeView === "ewps" ? (
+            <motion.div variants={fadeUp}>
+              <EWPSObservatory />
+            </motion.div>
+          ) : null}
           {activeView === "overview" ? (
             <>
               <motion.div variants={fadeUp}><SwitchHero summary={summary} /></motion.div>

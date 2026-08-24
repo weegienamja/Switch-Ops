@@ -76,6 +76,7 @@ desktop/binaries/
 *.zip
 *.bundle
 SHA256SUMS.txt
+release/
 
 # OS / IDE
 .DS_Store

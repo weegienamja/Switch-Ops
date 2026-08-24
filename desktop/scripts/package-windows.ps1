@@ -1,5 +1,9 @@
 # Package the Tauri Windows installer (NSIS + MSI).
 
+param(
+    [string]$ConfigPath = ""
+)
+
 $ErrorActionPreference = "Stop"
 
 $repoRoot   = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -23,7 +27,11 @@ Push-Location $desktopDir
 try {
     & pnpm install --frozen-lockfile
     if ($LASTEXITCODE -ne 0) { throw "pnpm install failed with exit code $LASTEXITCODE" }
-    & pnpm tauri build
+    $tauriArgs = @("tauri", "build")
+    if ($ConfigPath) {
+        $tauriArgs += @("--config", $ConfigPath)
+    }
+    & pnpm @tauriArgs
     if ($LASTEXITCODE -ne 0) { throw "Tauri build failed with exit code $LASTEXITCODE" }
 } finally {
     Pop-Location

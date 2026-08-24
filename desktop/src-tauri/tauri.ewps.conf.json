@@ -1,0 +1,33 @@
+{
+  "productName": "SwitchOps EWPS Observatory",
+  "version": "0.1.0",
+  "identifier": "app.switchops.desktop.ewps",
+  "app": {
+    "windows": [
+      {
+        "title": "EWPS Observatory — Shadow Mode",
+        "width": 1480,
+        "height": 940,
+        "minWidth": 1100,
+        "minHeight": 720,
+        "visible": false,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "fullscreen": false,
+        "center": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "icon": ["icons/icon.ico"],
+    "externalBin": ["../binaries/switchops-backend"],
+    "resources": [],
+    "copyright": "Copyright © 2026 SwitchOps contributors",
+    "category": "DeveloperTool",
+    "shortDescription": "Experimental evidence-weighted path selection observatory.",
+    "longDescription": "Read-only shadow-mode networking research observatory with safe telemetry, deterministic replay, persistent experiments, and no routing changes."
+  }
+}
