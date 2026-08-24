@@ -134,7 +134,8 @@ def _build_evidence(observation: LabDeviceObservation) -> list[LabEvidence]:
         state = observation.command_state.get(symbol, "failed")
         detail = {
             "observed": "The allowlisted command returned usable current output.",
-            "unsupported": "IOS explicitly rejected this command form as unsupported.",
+            "unsupported": "IOS explicitly reported that the feature is unsupported.",
+            "unavailable": "This allowlisted command form is unavailable; feature support remains unknown.",
             "empty": "The command completed but returned no usable rows.",
             "failed": "The command could not be collected; no conclusion is drawn.",
         }[state]
@@ -177,7 +178,7 @@ def _capabilities(observation: LabDeviceObservation, config: dict[str, Any]) -> 
         configured = configured_by_capability.get(capability_id)
         if command_state == "unsupported" and not configured:
             state = "UNSUPPORTED"
-            detail = "The device explicitly rejected the capability's allowlisted observation command."
+            detail = "IOS explicitly reported that the feature is unsupported."
         elif command_state == "observed" or configured:
             state = "SUPPORTED"
             detail = "Current read-only output or explicit running configuration proves support."
@@ -326,6 +327,7 @@ def _graph_from_observations(observations: list[LabDeviceObservation]):
                 "TRUNK" if str(row.vlan).casefold() == "trunk" else
                 "ACCESS" if str(row.vlan).isdigit() else "UNKNOWN"
             )
+            mode = mode if mode in {"ACCESS", "TRUNK", "ROUTED", "DYNAMIC"} else "UNKNOWN"
             status = row.status.casefold()
             interface_id = f"{observation.device_id}:{name}"
             poe_row = poe_by_port.get(name)
@@ -348,9 +350,13 @@ def _graph_from_observations(observations: list[LabDeviceObservation]):
                     name=name,
                     adminState="DOWN" if status in {"disabled", "err-disabled"} else "UP",
                     operState="UP" if status == "connected" else "DOWN",
-                    mode=mode if mode in {"ACCESS", "TRUNK", "ROUTED", "DYNAMIC"} else "UNKNOWN",
+                    mode=mode,
                     accessVlan=(switchport.get("access_vlan") or (int(row.vlan) if str(row.vlan).isdigit() else None)),
-                    nativeVlan=switchport.get("native_vlan") or config_item.get("native_vlan"),
+                    nativeVlan=(
+                        switchport.get("native_vlan") or config_item.get("native_vlan")
+                        if mode == "TRUNK"
+                        else None
+                    ),
                     allowedVlans=allowed,
                     speedMbps=speed_mbps,
                     description=row.name or config_item.get("description"),
@@ -670,6 +676,10 @@ def _findings(devices, interfaces, edges, logical, capabilities, evidence, obser
                     consequence="SwitchOps cannot simulate upstream loss reliably.",
                     remediation="Enable a supported discovery protocol or add another independently observed device.",
                     affectedIds=[device.id],
+                    evidenceIds=[
+                        _evidence_id(device.id, "show_cdp_neighbors_detail"),
+                        _evidence_id(device.id, "show_lldp_neighbors_detail"),
+                    ],
                 )
             )
         elif len(attached) == 1:
@@ -782,6 +792,21 @@ def _findings(devices, interfaces, edges, logical, capabilities, evidence, obser
                             evidenceIds=[_evidence_id(observation.device_id, "show_running_config")],
                         )
                     )
+            if not features.get("aaa"):
+                findings.append(
+                    LabFinding(
+                        id=f"finding-aaa-{observation.device_id}",
+                        category="SECURITY",
+                        severity="NOTICE",
+                        confidence="CONFIRMED",
+                        title="AAA new-model is not observed",
+                        detail="The complete current running configuration contains no explicit AAA new-model enablement.",
+                        consequence="Centralized authentication, authorization and accounting are not proved; local authentication may be intentional.",
+                        remediation="Review the intended management-access model before planning any AAA change.",
+                        affectedIds=[observation.device_id],
+                        evidenceIds=[_evidence_id(observation.device_id, "show_running_config")],
+                    )
+                )
         if features.get("http_server") or features.get("https_server"):
             findings.append(
                 LabFinding(
@@ -1011,6 +1036,46 @@ def _failures(devices: list[LabDevice], interfaces: list[LabInterface], edges: l
         return []
     all_ids = {item.id for item in devices}
     result: list[FailureScenario] = []
+    for interface in interfaces:
+        dependent_edges = [
+            edge
+            for edge in edges
+            if edge.from_node_id == interface.device_id
+            and edge.from_interface
+            and _short(edge.from_interface) == interface.name
+            and edge.kind in {"L2_MEMBERSHIP", "L3_GATEWAY"}
+        ]
+        if not dependent_edges:
+            continue
+        inferred_groups = sum(1 for edge in dependent_edges if edge.kind == "L2_MEMBERSHIP")
+        gateway_paths = sum(1 for edge in dependent_edges if edge.kind == "L3_GATEWAY")
+        consequences: list[str] = []
+        if inferred_groups:
+            subject = "group loses its" if inferred_groups == 1 else "groups lose their"
+            consequences.append(
+                f"{inferred_groups} inferred attachment {subject} observed forwarding path through this interface."
+            )
+        if gateway_paths:
+            subject = "relationship loses its" if gateway_paths == 1 else "relationships lose their"
+            consequences.append(
+                f"{gateway_paths} inferred gateway {subject} observed forwarding path through this interface."
+            )
+        result.append(
+            FailureScenario(
+                id=f"failure-interface-{_token(interface.id)}",
+                targetId=interface.id,
+                targetKind="INTERFACE",
+                title=f"Loss of {interface.name}",
+                confidence="HIGH",
+                consequences=consequences,
+                affectedIds=sorted({edge.to_node_id for edge in dependent_edges}),
+                controlImpact="Whether SwitchOps itself uses this interface path is unknown from the current evidence.",
+                evidenceIds=sorted(
+                    set(interface.evidence_ids)
+                    | {value for edge in dependent_edges for value in edge.evidence_ids}
+                ),
+            )
+        )
     for edge in [item for item in edges if item.kind in {"PHYSICAL", "ROUTING_ADJACENCY"}]:
         reachable = _reachable(primary.id, edges, omitted_edge=edge.id)
         affected = sorted(all_ids - reachable)
@@ -1038,17 +1103,39 @@ def _failures(devices: list[LabDevice], interfaces: list[LabInterface], edges: l
         reachable = _reachable(primary.id, edges, omitted_node=device.id)
         affected = sorted((all_ids - reachable) - {device.id})
         kind = "ACCESS_POINT" if device.role == "ACCESS_POINT" else "GATEWAY" if device.role == "GATEWAY" else "SWITCH"
+        incident = [edge for edge in edges if device.id in {edge.from_node_id, edge.to_node_id}]
+        independently_collected = device.collection_state in {"CURRENT", "PARTIAL", "FAILED"}
+        confidence = "HIGH"
+        if not independently_collected:
+            incident_confidence = {edge.confidence for edge in incident}
+            confidence = (
+                "UNKNOWN" if not incident or "UNKNOWN" in incident_confidence
+                else "HIGH" if "HIGH" in incident_confidence
+                else "CONFIRMED"
+            )
+        title_subject = (
+            f"a collected {device.role.lower().replace('_', ' ')}"
+            if independently_collected
+            else f"an observed {device.role.lower().replace('_', ' ')} relationship"
+        )
         result.append(
             FailureScenario(
                 id=f"failure-device-{device.id}",
                 targetId=device.id,
                 targetKind=kind,
-                title=f"Loss of a collected {device.role.lower().replace('_', ' ')}",
-                confidence="HIGH" if device.observed else "UNKNOWN",
-                consequences=[f"{len(affected)} additional graph nodes become unreachable from the primary collected device."],
+                title=f"Loss of {title_subject}",
+                confidence=confidence,
+                consequences=(
+                    [f"{len(affected)} additional graph nodes lose their current observed or inferred path from the primary collected device."]
+                    if affected
+                    else ["No additional graph nodes lose their current observed or inferred path; service impact beyond this relationship is unknown."]
+                ),
                 affectedIds=affected,
                 controlImpact="Control-path impact follows only the observed graph; out-of-band access is unknown.",
-                evidenceIds=device.evidence_ids,
+                evidenceIds=sorted(
+                    set(device.evidence_ids)
+                    | {value for edge in incident for value in edge.evidence_ids}
+                ),
             )
         )
     for edge in [item for item in edges if item.kind == "PORT_CHANNEL_MEMBER"]:

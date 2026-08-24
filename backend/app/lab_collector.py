@@ -11,8 +11,18 @@ from .tools.read_only import run_and_audit
 
 
 logger = logging.getLogger(__name__)
-UNSUPPORTED = re.compile(
+COMMAND_UNAVAILABLE = re.compile(
     r"%\s*(?:Invalid input|Ambiguous command|Incomplete command|Unrecognized command)",
+    re.IGNORECASE,
+)
+FEATURE_UNSUPPORTED = re.compile(
+    r"%?.*\b(?:feature|protocol|capability)\b.*\bnot supported\b|"
+    r"%?.*\bnot supported on (?:this|the) platform\b",
+    re.IGNORECASE,
+)
+INDETERMINATE_FAILURE = re.compile(
+    r"%\s*(?:Authorization failed|Permission denied|Command (?:authorization )?failed|"
+    r"Error|Cannot|Not enough|Unable to)",
     re.IGNORECASE,
 )
 
@@ -61,6 +71,19 @@ class LabDeviceObservation:
     command_state: dict[str, str] = field(default_factory=dict)
 
 
+def classify_command_output(output: str) -> tuple[str, str]:
+    """Classify IOS output without turning command syntax into feature truth."""
+    if FEATURE_UNSUPPORTED.search(output):
+        return "unsupported", ""
+    if COMMAND_UNAVAILABLE.search(output):
+        return "unavailable", ""
+    if INDETERMINATE_FAILURE.search(output):
+        return "failed", ""
+    if output.strip():
+        return "observed", output
+    return "empty", ""
+
+
 def collect_lab_device(
     client: SwitchClient,
     *,
@@ -77,15 +100,9 @@ def collect_lab_device(
     for symbol in LAB_COMMANDS:
         try:
             output = run_and_audit(client, symbol=symbol, actor="lab-assurance")
-            if UNSUPPORTED.search(output):
-                observation.outputs[symbol] = ""
-                observation.command_state[symbol] = "unsupported"
-            elif output.strip():
-                observation.outputs[symbol] = output
-                observation.command_state[symbol] = "observed"
-            else:
-                observation.outputs[symbol] = ""
-                observation.command_state[symbol] = "empty"
+            state, usable_output = classify_command_output(output)
+            observation.outputs[symbol] = usable_output
+            observation.command_state[symbol] = state
         except Exception as exc:
             logger.warning(
                 "Lab Assurance command %s failed on %s (%s)",

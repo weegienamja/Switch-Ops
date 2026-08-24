@@ -51,8 +51,11 @@ def parse_switchports(text: str) -> dict[str, dict[str, Any]]:
             r"^Trunking VLANs Enabled:\s*(.+?)\s*$", block, re.MULTILINE | re.IGNORECASE
         )
         item["switchport"] = enabled.group(1).lower() == "enabled" if enabled else None
-        mode_value = (operational or administrative)
-        mode = mode_value.group(1).lower() if mode_value else ""
+        operational_mode = operational.group(1).lower() if operational else ""
+        administrative_mode = administrative.group(1).lower() if administrative else ""
+        mode = operational_mode
+        if not any(token in mode for token in ("trunk", "access", "static", "dynamic", "routed")):
+            mode = administrative_mode
         item["mode"] = (
             "TRUNK" if "trunk" in mode else
             "ACCESS" if "access" in mode or "static" in mode else

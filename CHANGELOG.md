@@ -6,7 +6,9 @@
 
 - Added a capability model derived from current allowlisted output and explicit
   configuration evidence. Each feature is `SUPPORTED`, `UNSUPPORTED`, or
-  `UNKNOWN`; a Cisco model name alone never grants a capability.
+  `UNKNOWN`; a Cisco model name alone never grants a capability. An unavailable
+  command form or privilege failure remains `UNKNOWN`; only an explicit
+  feature-not-supported response yields `UNSUPPORTED`.
 - Added keyring-only onboarding and sequential read-only observation for
   additional explicitly configured Cisco IOS/IOS-XE devices. The on-disk
   registry contains opaque IDs only, with labels, targets, usernames, and
@@ -19,7 +21,8 @@
 - Added deterministic design findings for current resiliency, Layer 2,
   security, capacity, management exposure, PoE, errors, and evidence gaps.
   There is no numeric network score.
-- Added read-only failure simulations and Path Explorer output with
+- Added read-only interface, relationship, device, PoE, and port-channel
+  failure simulations and Path Explorer output with
   `PROVEN`, `INFERRED`, `EXPECTED`, `AMBIGUOUS`, and `UNKNOWN` hop states.
 - Added bounded PC-originated reachability probes with loss, average latency,
   jitter, route-change observation, and explicit `HEALTHY`, `DEGRADED`,
