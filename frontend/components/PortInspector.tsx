@@ -176,8 +176,8 @@ export default function PortInspector({
             <summary>Evidence details · {evidenceRecords.length}</summary>
             {evidenceRecords.length ? (
               <ul>
-                {evidenceRecords.map((record) => (
-                  <li key={record.id}>
+                {evidenceRecords.map((record, index) => (
+                  <li key={`${record.id}-${index}`}>
                     <div>
                       <strong>{record.evidenceType.replaceAll("_", " ")}</strong>
                       <span className={`freshness-tag freshness-tag--${record.freshness}`}>
@@ -232,7 +232,7 @@ export default function PortInspector({
           {recentEvents.length ? (
             <ul className="compact-events">
               {recentEvents.map((event, index) => (
-                <li key={event.id ?? `${event.timestamp}-${index}`}>
+                <li key={`${event.id ?? event.timestamp}-${index}`}>
                   <span className={`event-mark event-mark--${event.severity.toLowerCase()}`} aria-hidden />
                   <span>{event.title}</span>
                   <time dateTime={event.timestamp}>

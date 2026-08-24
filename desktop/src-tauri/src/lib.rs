@@ -7,6 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::{env, path::PathBuf};
 
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::process::CommandChild;
@@ -16,6 +17,35 @@ const BACKEND_HOST: &str = "127.0.0.1";
 const BACKEND_PORT: u16 = 8765;
 
 struct SidecarState(Mutex<Option<CommandChild>>);
+
+fn ewps_export_dir_from(base: PathBuf) -> PathBuf {
+    base.join("SwitchOps").join("data").join("ewps-exports")
+}
+
+#[tauri::command]
+fn open_ewps_export_folder() -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let local_app_data = env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .ok_or_else(|| "LOCALAPPDATA is unavailable.".to_string())?;
+        let export_dir = ewps_export_dir_from(local_app_data);
+        std::fs::create_dir_all(&export_dir)
+            .map_err(|error| format!("Could not prepare the EWPS export folder: {error}"))?;
+        std::process::Command::new("explorer.exe")
+            .arg(&export_dir)
+            .spawn()
+            .map_err(|error| format!("Could not open the EWPS export folder: {error}"))?;
+        return Ok(export_dir.to_string_lossy().into_owned());
+    }
+    #[cfg(not(windows))]
+    {
+        Err(
+            "Opening the EWPS export folder is available in the Windows desktop application only."
+                .to_string(),
+        )
+    }
+}
 
 #[cfg(windows)]
 fn stop_sidecar(child: CommandChild) {
@@ -64,6 +94,7 @@ pub fn run() {
     let sidecar_state_exit = sidecar_state.clone();
 
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![open_ewps_export_folder])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -76,16 +107,9 @@ pub fn run() {
             let sidecar = shell
                 .sidecar("switchops-backend")
                 .expect("failed to resolve switchops-backend sidecar")
-                .args([
-                    "--host",
-                    BACKEND_HOST,
-                    "--port",
-                    &BACKEND_PORT.to_string(),
-                ])
+                .args(["--host", BACKEND_HOST, "--port", &BACKEND_PORT.to_string()])
                 .env("SWITCH_MOCK_MODE", "false");
-            let (mut events, child) = sidecar
-                .spawn()
-                .expect("failed to spawn switchops-backend");
+            let (mut events, child) = sidecar.spawn().expect("failed to spawn switchops-backend");
             *sidecar_state_setup.0.lock().unwrap() = Some(child);
 
             tauri::async_runtime::spawn(async move {
@@ -116,4 +140,25 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ewps_export_dir_from;
+    use std::path::PathBuf;
+
+    #[test]
+    fn export_folder_is_fixed_below_local_app_data() {
+        let path = ewps_export_dir_from(PathBuf::from(r"C:\Users\researcher\AppData\Local"));
+        assert_eq!(
+            path,
+            PathBuf::from(r"C:\Users\researcher\AppData\Local\SwitchOps\data\ewps-exports")
+        );
+    }
+
+    #[test]
+    fn export_folder_command_accepts_no_user_path() {
+        let signature: fn() -> Result<String, String> = super::open_ewps_export_folder;
+        let _ = signature;
+    }
 }

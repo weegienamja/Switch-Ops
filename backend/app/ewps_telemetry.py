@@ -32,6 +32,10 @@ class ProbeResult:
     path_id: str
     observed_at: datetime
     raw: RawMetrics
+    collection_started_at: datetime | None = None
+    observation_validated_at: datetime | None = None
+    collection_duration_ms: float | None = None
+    probe_outcomes: tuple[bool, ...] = ()
     failure_reason: str | None = None
 
 
@@ -139,6 +143,27 @@ def _parse_probe_output(output: str, transmitted: int) -> tuple[list[float], int
     return times, received, min(100.0, max(0.0, loss))
 
 
+def _probe_outcomes(output: str, transmitted: int, received: int) -> tuple[bool, ...]:
+    """Retain bounded per-probe success/failure outcomes without payload data."""
+    windows: list[bool] = []
+    for line in output.splitlines():
+        lowered = line.casefold()
+        if "reply from" in lowered and ("time=" in lowered or "time<" in lowered):
+            windows.append(True)
+        elif "request timed out" in lowered or "destination host unreachable" in lowered:
+            windows.append(False)
+    if windows:
+        return tuple((windows + [False] * transmitted)[:transmitted])
+    sequences = {
+        int(value)
+        for value in re.findall(r"icmp_seq[= ](\d+)", output, re.IGNORECASE)
+    }
+    if sequences:
+        # iputils sequence numbers normally start at one.
+        return tuple(index in sequences for index in range(1, transmitted + 1))
+    return tuple([True] * received + [False] * max(0, transmitted - received))
+
+
 def measure_candidate(candidate: InternalCandidate, count: int) -> ProbeResult:
     """Run one fixed, bounded ICMP sample through a selected source adapter."""
     count = max(1, min(5, int(count)))
@@ -166,7 +191,7 @@ def measure_candidate(candidate: InternalCandidate, count: int) -> ProbeResult:
             FIXED_PROBE_TARGET,
         ]
     )
-    observed_at = datetime.now(timezone.utc)
+    collection_started_at = datetime.now(timezone.utc)
     output = ""
     failure: str | None = None
     try:
@@ -186,7 +211,9 @@ def measure_candidate(candidate: InternalCandidate, count: int) -> ProbeResult:
         failure = "probe_timeout"
     except OSError:
         failure = "probe_unavailable"
+    observed_at = datetime.now(timezone.utc)
     times, received, loss = _parse_probe_output(output, count) if output else ([], 0, None)
+    outcomes = _probe_outcomes(output, count, received)
     latency = statistics.fmean(times) if times else None
     jitter = statistics.pstdev(times) if len(times) > 1 else (0.0 if times else None)
     sent, received_packets, errors, drops = _interface_counters(candidate.public.adapter_name)
@@ -206,6 +233,13 @@ def measure_candidate(candidate: InternalCandidate, count: int) -> ProbeResult:
     return ProbeResult(
         path_id=candidate.public.path_id,
         observed_at=observed_at,
+        collection_started_at=collection_started_at,
+        observation_validated_at=observed_at if received > 0 else None,
+        collection_duration_ms=max(
+            0.0,
+            (observed_at - collection_started_at).total_seconds() * 1000.0,
+        ),
         raw=raw,
+        probe_outcomes=outcomes,
         failure_reason=failure,
     )

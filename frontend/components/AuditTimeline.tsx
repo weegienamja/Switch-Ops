@@ -27,7 +27,7 @@ export default function AuditTimeline({ events }: { events: AuditEvent[] }) {
             </thead>
             <tbody>
               {events.map((e, i) => (
-                <tr key={e.id ?? i}>
+                <tr key={`${e.id ?? e.timestamp}-${i}`}>
                   <td>{new Date(e.timestamp).toLocaleString()}</td>
                   <td>{e.actor}</td>
                   <td>{e.action}</td>

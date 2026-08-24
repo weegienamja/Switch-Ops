@@ -56,6 +56,10 @@ import type {
   EWPSCandidatePath,
   EWPSConfig,
   EWPSExperimentSession,
+  EWPSExportResult,
+  EWPSLabProfile,
+  EWPSLabScenario,
+  EWPSLabStatus,
   EWPSMeta,
   EWPSReplayResult,
   EWPSSimulatorResult,
@@ -78,26 +82,6 @@ function url(path: string): string {
 
 export function backendEventStreamUrl(): string {
   return url("/api/live/stream");
-}
-
-export async function downloadEwpsExport(
-  experimentId: string,
-  format: "jsonl" | "json" | "csv",
-): Promise<void> {
-  const response = await fetch(
-    url(`/api/ewps/experiments/${encodeURIComponent(experimentId)}/export?format=${format}`),
-    { cache: "no-store" },
-  );
-  if (!response.ok) throw new Error(`EWPS export failed (${response.status}).`);
-  const blob = await response.blob();
-  const href = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = href;
-  anchor.download = `ewps-${experimentId}.${format}`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(href);
 }
 
 async function fetchJson<T>(
@@ -245,6 +229,32 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ scenarioId, config }),
     }),
+  ewpsSaveExport: (experimentId: string, format: "jsonl" | "json" | "csv") =>
+    fetchJson<EWPSExportResult>(
+      `/api/ewps/experiments/${encodeURIComponent(experimentId)}/exports`,
+      { method: "POST", body: JSON.stringify({ format }) },
+    ),
+  ewpsLabStatus: () => fetchJson<EWPSLabStatus>("/api/ewps/lab/status"),
+  ewpsLabPrerequisites: () =>
+    fetchJson<EWPSLabStatus>("/api/ewps/lab/prerequisites", { method: "POST" }),
+  ewpsLabCreate: () =>
+    fetchJson<EWPSLabStatus>("/api/ewps/lab/create", { method: "POST" }),
+  ewpsLabVerify: () =>
+    fetchJson<EWPSLabStatus>("/api/ewps/lab/verify", { method: "POST" }),
+  ewpsLabTeardown: () =>
+    fetchJson<EWPSLabStatus>("/api/ewps/lab/teardown", { method: "POST" }),
+  ewpsLabProfile: (pathId: "lab-path-a" | "lab-path-b", profile: EWPSLabProfile) =>
+    fetchJson<EWPSLabStatus>("/api/ewps/lab/profile", {
+      method: "POST",
+      body: JSON.stringify({ pathId, profile }),
+    }),
+  ewpsLabPrepareScenario: (scenarioId: EWPSLabScenario) =>
+    fetchJson<EWPSLabStatus>("/api/ewps/lab/scenario/prepare", {
+      method: "POST",
+      body: JSON.stringify({ scenarioId }),
+    }),
+  ewpsLabAdvanceScenario: () =>
+    fetchJson<EWPSLabStatus>("/api/ewps/lab/scenario/advance", { method: "POST" }),
   summary: () => fetchJson<SwitchSummary>("/api/switch/summary"),
   dashboard: () => fetchJson<DashboardResponse>("/api/switch/dashboard"),
   interfaces: () =>

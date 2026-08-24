@@ -1,11 +1,11 @@
 {
   "productName": "SwitchOps EWPS Observatory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "app.switchops.desktop.ewps",
   "app": {
     "windows": [
       {
-        "title": "EWPS Observatory — Shadow Mode",
+        "title": "EWPS v0.2 Observatory — Shadow Mode",
         "width": 1480,
         "height": 940,
         "minWidth": 1100,
@@ -27,7 +27,7 @@
     "resources": [],
     "copyright": "Copyright © 2026 SwitchOps contributors",
     "category": "DeveloperTool",
-    "shortDescription": "Experimental evidence-weighted path selection observatory.",
-    "longDescription": "Read-only shadow-mode networking research observatory with safe telemetry, deterministic replay, persistent experiments, and no routing changes."
+    "shortDescription": "Experimental controlled dual-path EWPS observatory.",
+    "longDescription": "Read-only shadow-mode networking research observatory with a contained dual-path lab, calibrated evidence handling, deterministic replay, persistent experiments, and no routing changes."
   }
 }

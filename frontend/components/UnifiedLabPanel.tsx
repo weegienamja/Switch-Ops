@@ -161,8 +161,8 @@ export default function UnifiedLabPanel({
                       Evidence inspector · {evidence.length} claims · {records.length} provider records
                     </summary>
                     <div className="evidence-inspector__body">
-                      {records.map((record) => (
-                        <div className="provider-record" key={record.id}>
+                      {records.map((record, index) => (
+                        <div className="provider-record" key={`${record.id}-${index}`}>
                           <span className={`provider-badge provider-badge--${record.provider}`}>
                             {providerLabel(record.provider)}
                           </span>
@@ -173,8 +173,8 @@ export default function UnifiedLabPanel({
                         </div>
                       ))}
                       <ul className="claim-list">
-                        {evidence.map((item) => item ? (
-                          <li key={item.id}>
+                        {evidence.map((item, index) => item ? (
+                          <li key={`${item.id}-${index}`}>
                             <div>
                               <strong>{item.field}</strong>
                               <span>{item.strength} · {item.freshness}</span>

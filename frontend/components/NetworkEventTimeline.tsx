@@ -93,7 +93,7 @@ export default function NetworkEventTimeline({
       {filtered.length ? (
         <ol className="network-events-list">
           {visible.map((event, index) => (
-            <li key={event.id ?? `${event.timestamp}-${index}`}>
+            <li key={`${event.id ?? event.timestamp}-${index}`}>
               <div className={`event-severity event-severity--${event.severity.toLowerCase()}`}>
                 <span aria-hidden />
                 <small>{event.severity}</small>

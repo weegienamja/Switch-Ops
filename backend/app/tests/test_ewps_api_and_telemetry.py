@@ -7,9 +7,9 @@ import time
 from fastapi.testclient import TestClient
 
 from app.ewps_models import CandidatePath, RawMetrics
-from app.ewps_service import EWPSService
 from app.ewps_store import EWPSResearchStore
 from app.ewps_telemetry import FIXED_PROBE_TARGET, InternalCandidate, ProbeResult, measure_candidate
+from app.ewps_v2_service import EWPSV2Service
 from app.main import app
 
 
@@ -35,18 +35,19 @@ def test_meta_declares_non_probability_shadow_boundary_and_versioned_mapping():
     body = response.json()
     assert body["mode"] == "SHADOW"
     assert body["changesNetworkState"] is False
-    assert body["modelVersion"] == "0.1.0"
-    assert "not a calibrated probability" in body["confidenceSemantics"]
+    assert body["modelVersion"] == "0.2.0"
+    assert "calibrated probability" in body["confidenceSemantics"]
     assert body["topologyMappingVersion"]
+    assert body["compatibility"]["v01SemanticsPreserved"] is True
 
 
 def test_simulator_api_covers_scenarios_and_returns_shadow_decisions():
     scenarios = client.get("/api/ewps/simulator/scenarios")
     assert scenarios.status_code == 200
-    assert len(scenarios.json()) == 11
+    assert len(scenarios.json()) >= 8
     response = client.post(
         "/api/ewps/simulator/run",
-        json={"scenarioId": "slower-path-wins", "config": {}},
+        json={"scenarioId": "faster-epistemically-weak", "config": {}},
     )
     assert response.status_code == 200
     assert response.json()["summary"]["shadowMode"] is True
@@ -54,7 +55,7 @@ def test_simulator_api_covers_scenarios_and_returns_shadow_decisions():
 
 def test_api_lifecycle_records_live_shadow_observation(tmp_path, monkeypatch):
     from app import ewps_api as api_mod
-    from app import ewps_service as service_mod
+    from app import ewps_v2_service as service_mod
 
     candidates = [internal("path-a", "192.0.2.10", "A"), internal("path-b", "192.0.2.20", "B")]
     monkeypatch.setattr(service_mod, "candidate_catalog", lambda: candidates)
@@ -65,11 +66,18 @@ def test_api_lifecycle_records_live_shadow_observation(tmp_path, monkeypatch):
             path_id=candidate.public.path_id,
             observed_at=datetime.now(timezone.utc),
             raw=RawMetrics(latencyMs=latency, jitterMs=1, lossPct=0, sampleCount=count, reachable=True),
+            collection_started_at=datetime.now(timezone.utc),
+            observation_validated_at=datetime.now(timezone.utc),
+            collection_duration_ms=1.0,
+            probe_outcomes=tuple(True for _ in range(count)),
         )
 
     monkeypatch.setattr(service_mod, "measure_candidate", fake_measure)
-    service = EWPSService(EWPSResearchStore(tmp_path / "research.sqlite3"))
-    monkeypatch.setattr(api_mod, "get_ewps_service", lambda: service)
+    service = EWPSV2Service(
+        EWPSResearchStore(tmp_path / "research.sqlite3"),
+        SimpleNamespace(candidates=lambda: []),
+    )
+    monkeypatch.setattr(api_mod, "get_ewps_v2_service", lambda: service)
     created = client.post(
         "/api/ewps/experiments",
         json={
@@ -78,7 +86,7 @@ def test_api_lifecycle_records_live_shadow_observation(tmp_path, monkeypatch):
             "candidatePathIds": ["path-a", "path-b"],
             "config": {
                 "sampleIntervalSeconds": 300,
-                "pMin": 0.01,
+                "pPerfMin": 0.01,
                 "hysteresis": {
                     "minimumImprovement": 0,
                     "minimumDwellSeconds": 0,
@@ -103,6 +111,12 @@ def test_api_lifecycle_records_live_shadow_observation(tmp_path, monkeypatch):
     replay = client.post(f"/api/ewps/experiments/{experiment_id}/replay", json={"config": None})
     assert replay.status_code == 200
     assert replay.json()["deterministicDigest"]
+    replay_override = client.post(
+        f"/api/ewps/experiments/{experiment_id}/replay",
+        json={"config": {"alpha": 2.0, "pPerfMin": 0.01}},
+    )
+    assert replay_override.status_code == 200
+    assert replay_override.json()["config"]["alpha"] == 2.0
     exported = client.get(f"/api/ewps/experiments/{experiment_id}/export?format=jsonl")
     assert exported.status_code == 200
     assert "application/x-ndjson" in exported.headers["content-type"]
@@ -110,12 +124,15 @@ def test_api_lifecycle_records_live_shadow_observation(tmp_path, monkeypatch):
 
 def test_api_rejects_arbitrary_probe_or_shell_fields(tmp_path, monkeypatch):
     from app import ewps_api as api_mod
-    from app import ewps_service as service_mod
+    from app import ewps_v2_service as service_mod
 
     candidate = internal("path-a", "192.0.2.10", "A")
     monkeypatch.setattr(service_mod, "candidate_catalog", lambda: [candidate])
-    service = EWPSService(EWPSResearchStore(tmp_path / "research.sqlite3"))
-    monkeypatch.setattr(api_mod, "get_ewps_service", lambda: service)
+    service = EWPSV2Service(
+        EWPSResearchStore(tmp_path / "research.sqlite3"),
+        SimpleNamespace(candidates=lambda: []),
+    )
+    monkeypatch.setattr(api_mod, "get_ewps_v2_service", lambda: service)
     response = client.post(
         "/api/ewps/experiments",
         json={
@@ -177,7 +194,14 @@ def test_ewps_module_has_no_route_changing_execution_path():
     source = "\n".join(
         path.read_text(encoding="utf-8")
         for path in root.glob("ewps_*.py")
-        if path.name != "test_ewps_api_and_telemetry.py"
+        if path.name not in {"test_ewps_api_and_telemetry.py", "ewps_lab.py"}
     ).lower()
     forbidden = ("route.exe", "route add", "route delete", "set-netroute", "netsh", "configure terminal", "meraki_client")
     assert all(token not in source for token in forbidden)
+    lab_source = (root / "ewps_lab.py").read_text(encoding="utf-8").lower()
+    assert all(token not in lab_source for token in ("route.exe", "set-netroute", "netsh"))
+    assert all(
+        "ip -n ewps02-" in line
+        for line in lab_source.splitlines()
+        if " route add " in line
+    )

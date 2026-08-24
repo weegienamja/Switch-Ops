@@ -42,7 +42,7 @@ from .live_state import (
 )
 from .errors import CommandNotAllowedError, SwitchOpsError
 from .ewps_api import router as ewps_router
-from .ewps_service import get_ewps_service
+from .ewps_v2_service import get_ewps_v2_service
 from .health_logic import build_summary
 from .host_key_store import is_host_pinned
 from .guide import list_guide_operations, run_guide_operation
@@ -187,7 +187,7 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
-        get_ewps_service().shutdown()
+        get_ewps_v2_service().shutdown()
         get_unified_lab_service().stop()
         _stop_live_operations()
         get_write_lock().lock()

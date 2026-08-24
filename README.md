@@ -175,6 +175,30 @@ not change the normal SwitchOps release version or roadmap.
 See [docs/EWPS-V0.1-RESEARCH.md](docs/EWPS-V0.1-RESEARCH.md) for the model,
 methodology, safety boundary, limitations, and reproduction instructions.
 
+## Experimental research branch: EWPS v0.2 Alpha
+
+The separate `research/ewps-v0.2` branch extends the observatory with an
+operator-started controlled WSL2 dual-path lab and v0.2 calibration changes.
+It remains **SHADOW MODE — RECOMMENDATIONS ONLY**, does not steer normal
+traffic, is not SwitchOps v0.9, and is not merged into `main`.
+
+- Performance evidence confidence is separated from topology confidence;
+  weak/unknown structure stays visible without normally invalidating good
+  direct telemetry.
+- Freshness starts from observation validation, evidence density saturates
+  more slowly, and rolling loss uses retained per-probe outcomes.
+- Persistent candidate unavailability, transient failures, and recovery are
+  classified and summarized separately.
+- The contained lab exposes two independently probed controlled logical paths;
+  it makes no physical, ISP, or independent failure-domain diversity claim.
+- Successful exports now show their exact saved path and the desktop build can
+  open only the fixed EWPS export folder.
+- Stored v0.1 sessions remain readable and replay under unchanged `0.1.0`
+  semantics.
+
+See [docs/EWPS-V0.2-RESEARCH.md](docs/EWPS-V0.2-RESEARCH.md) and
+[docs/EWPS-V0.2-RELEASE-NOTES.md](docs/EWPS-V0.2-RELEASE-NOTES.md).
+
 ## Interface write policy
 
 SwitchOps does not contain a public, device-specific port allowlist.
