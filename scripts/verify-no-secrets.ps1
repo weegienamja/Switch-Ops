@@ -38,10 +38,7 @@ $exclude = @(
 $allowList = @(
     'scripts\\verify-no-secrets\.ps1$',
     'desktop\\scripts\\verify-no-secrets\.ps1$',
-    'AGENTS\.md$',
-    'CLAUDE\.md$',
     'README\.md$',
-    '\.github\\instructions\\security\.instructions\.md$',
     'backend\\app\\tests\\'
 )
 

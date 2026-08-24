@@ -1,6 +1,8 @@
 # Backend — SwitchOps
 
-FastAPI sidecar. Bind 127.0.0.1 only. Allowlist-driven. See [../AGENTS.md](../AGENTS.md).
+FastAPI sidecar. Bind 127.0.0.1 only. Allowlist-driven. See the public
+[security policy](../SECURITY.md) for supported reporting and operational
+boundaries.
 
 ## Dev
 
