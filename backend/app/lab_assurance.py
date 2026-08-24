@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from .command_registry import short_interface
-from .lab_collector import LAB_COMMANDS, LabDeviceObservation
+from .lab_collector import FAILED_COMMAND_STATES, LAB_COMMANDS, LabDeviceObservation
 from .models import (
     FailureScenario,
     LabAssuranceState,
@@ -51,10 +51,13 @@ def _token(*values: object, length: int = 16) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()[:length]
 
 
-def _safe_parse(parser, text: str, fallback):
+def _safe_parse(observation: LabDeviceObservation, symbol: str, parser, fallback):
+    if observation.command_state.get(symbol, "transport_failed") != "observed":
+        return fallback
     try:
-        return parser(text) if text else fallback
+        return parser(observation.outputs.get(symbol, ""))
     except Exception:
+        observation.command_state[symbol] = "parser_failed"
         return fallback
 
 
@@ -131,13 +134,16 @@ CONFIG_FEATURES: dict[str, str] = {
 def _build_evidence(observation: LabDeviceObservation) -> list[LabEvidence]:
     evidence: list[LabEvidence] = []
     for symbol in LAB_COMMANDS:
-        state = observation.command_state.get(symbol, "failed")
+        state = observation.command_state.get(symbol, "transport_failed")
         detail = {
             "observed": "The allowlisted command returned usable current output.",
             "unsupported": "IOS explicitly reported that the feature is unsupported.",
             "unavailable": "This allowlisted command form is unavailable; feature support remains unknown.",
             "empty": "The command completed but returned no usable rows.",
-            "failed": "The command could not be collected; no conclusion is drawn.",
+            "authorization_failed": "IOS refused this command; authorization and feature support remain distinct.",
+            "command_failed": "IOS reported a command execution failure; no feature conclusion is drawn.",
+            "transport_failed": "The command could not be collected because the device session was unavailable.",
+            "parser_failed": "Current output was returned but could not be parsed; no conclusion is drawn.",
         }[state]
         evidence.append(
             LabEvidence(
@@ -145,9 +151,9 @@ def _build_evidence(observation: LabDeviceObservation) -> list[LabEvidence]:
                 deviceId=observation.device_id,
                 kind=state.upper(),
                 command=symbol,
-                confidence="CONFIRMED" if state in {"observed", "unsupported"} else "UNKNOWN",
+                confidence="CONFIRMED" if state in {"observed", "empty", "unsupported"} else "UNKNOWN",
                 observedAt=observation.observed_at,
-                current=True,
+                current=state not in FAILED_COMMAND_STATES,
                 detail=detail,
             )
         )
@@ -157,6 +163,7 @@ def _build_evidence(observation: LabDeviceObservation) -> list[LabEvidence]:
 def _capabilities(observation: LabDeviceObservation, config: dict[str, Any]) -> list[LabCapability]:
     result: list[LabCapability] = []
     features = config.get("features", {}) if isinstance(config, dict) else {}
+    config_observed = observation.command_state.get("show_running_config") == "observed"
     configured_by_capability = {
         "cdp": features.get("cdp"),
         "lldp": features.get("lldp"),
@@ -172,9 +179,14 @@ def _capabilities(observation: LabDeviceObservation, config: dict[str, Any]) -> 
         "evpn": features.get("evpn"),
         "segment-routing": features.get("segment_routing"),
         "srv6": features.get("srv6"),
+        "etherchannel": any(
+            bool(item.get("channel_group"))
+            for item in config.get("interfaces", {}).values()
+            if isinstance(item, dict)
+        ) if config_observed and isinstance(config, dict) else None,
     }
     for capability_id, (name, symbol) in CAPABILITY_COMMANDS.items():
-        command_state = observation.command_state.get(symbol, "failed")
+        command_state = observation.command_state.get(symbol, "transport_failed")
         configured = configured_by_capability.get(capability_id)
         if command_state == "unsupported" and not configured:
             state = "UNSUPPORTED"
@@ -185,6 +197,9 @@ def _capabilities(observation: LabDeviceObservation, config: dict[str, Any]) -> 
         else:
             state = "UNKNOWN"
             detail = "Available evidence does not prove whether this capability is supported."
+        evidence_ids = [_evidence_id(observation.device_id, symbol)]
+        if isinstance(configured, bool):
+            evidence_ids.append(_evidence_id(observation.device_id, "show_running_config"))
         result.append(
             LabCapability(
                 id=f"cap-{_token(observation.device_id, capability_id)}",
@@ -194,7 +209,7 @@ def _capabilities(observation: LabDeviceObservation, config: dict[str, Any]) -> 
                 configured=configured if isinstance(configured, bool) else None,
                 observed=command_state == "observed",
                 detail=detail,
-                evidenceIds=[_evidence_id(observation.device_id, symbol)],
+                evidenceIds=evidence_ids,
             )
         )
     for feature_key, name in CONFIG_FEATURES.items():
@@ -222,21 +237,41 @@ def _capabilities(observation: LabDeviceObservation, config: dict[str, Any]) -> 
 
 def _observation_parts(observation: LabDeviceObservation) -> dict[str, Any]:
     outputs = observation.outputs
-    version = _safe_parse(parse_version, outputs.get("show_version", ""), {})
-    inventory = _safe_parse(parse_inventory, outputs.get("show_inventory", ""), {})
-    config = _safe_parse(parse_running_config, outputs.get("show_running_config", ""), {})
-    interfaces = _safe_parse(parse_interface_status, outputs.get("show_interfaces_status", ""), [])
-    errors = _safe_parse(parse_interface_errors, outputs.get("show_interfaces_counters_errors", ""), [])
-    macs = _safe_parse(parse_mac_table, outputs.get("show_mac_address_table", ""), [])
-    arp = _safe_parse(parse_arp, outputs.get("show_ip_arp", ""), [])
-    vlans = _safe_parse(parse_vlans, outputs.get("show_vlan_brief", ""), [])
-    poe = _safe_parse(parse_poe, outputs.get("show_power_inline", ""), None)
-    cdp = _safe_parse(parse_cdp, outputs.get("show_cdp_neighbors_detail", ""), [])
+    version = _safe_parse(observation, "show_version", parse_version, {})
+    inventory = _safe_parse(observation, "show_inventory", parse_inventory, {})
+    config = _safe_parse(observation, "show_running_config", parse_running_config, {})
+    interfaces = _safe_parse(observation, "show_interfaces_status", parse_interface_status, [])
+    errors = _safe_parse(
+        observation, "show_interfaces_counters_errors", parse_interface_errors, []
+    )
+    macs = _safe_parse(observation, "show_mac_address_table", parse_mac_table, [])
+    arp = _safe_parse(observation, "show_ip_arp", parse_arp, [])
+    vlans = _safe_parse(observation, "show_vlan_brief", parse_vlans, [])
+    poe = _safe_parse(observation, "show_power_inline", parse_poe, None)
+    cdp = _safe_parse(observation, "show_cdp_neighbors_detail", parse_cdp, [])
     lldp = _safe_parse(
+        observation,
+        "show_lldp_neighbors_detail",
         lambda detail: parse_lldp(detail, outputs.get("show_lldp_neighbors", "")),
-        outputs.get("show_lldp_neighbors_detail", ""),
         [],
     )
+    routing_neighbors: list[dict[str, str]] = []
+    for symbol in (
+        "show_ip_ospf_neighbor",
+        "show_ip_eigrp_neighbors",
+        "show_bgp_ipv4_unicast_summary",
+        "show_bfd_neighbors",
+    ):
+        routing_neighbors.extend(
+            _safe_parse(
+                observation,
+                symbol,
+                lambda text, current_symbol=symbol: parse_routing_neighbors(
+                    {current_symbol: text}
+                ),
+                [],
+            )
+        )
     return {
         "version": version,
         "inventory": inventory,
@@ -249,13 +284,19 @@ def _observation_parts(observation: LabDeviceObservation) -> dict[str, Any]:
         "poe": poe,
         "cdp": cdp,
         "lldp": lldp,
-        "switchports": parse_switchports(outputs.get("show_interfaces_switchport", "")),
-        "stp": parse_spanning_tree(outputs.get("show_spanning_tree", "")),
-        "etherchannels": parse_etherchannels(outputs.get("show_etherchannel_summary", "")),
-        "ip_interfaces": parse_ip_interfaces(outputs.get("show_ip_interface_brief", "")),
-        "default_route": parse_default_route(outputs.get("show_ip_route", "")),
-        "rates": parse_interface_rates(outputs.get("show_interfaces", "")),
-        "routing_neighbors": parse_routing_neighbors(outputs),
+        "switchports": _safe_parse(
+            observation, "show_interfaces_switchport", parse_switchports, {}
+        ),
+        "stp": _safe_parse(observation, "show_spanning_tree", parse_spanning_tree, []),
+        "etherchannels": _safe_parse(
+            observation, "show_etherchannel_summary", parse_etherchannels, []
+        ),
+        "ip_interfaces": _safe_parse(
+            observation, "show_ip_interface_brief", parse_ip_interfaces, []
+        ),
+        "default_route": _safe_parse(observation, "show_ip_route", parse_default_route, None),
+        "rates": _safe_parse(observation, "show_interfaces", parse_interface_rates, {}),
+        "routing_neighbors": routing_neighbors,
     }
 
 
@@ -288,7 +329,11 @@ def _graph_from_observations(observations: list[LabDeviceObservation]):
         version, config = parts["version"], parts["config"]
         label = str(config.get("hostname") or version.get("hostname") or observation.configured_label)
         hostname_to_device[label.casefold()] = observation.device_id
-        failed = sum(1 for state in observation.command_state.values() if state == "failed")
+        failed = sum(
+            1
+            for symbol in LAB_COMMANDS
+            if observation.command_state.get(symbol, "transport_failed") in FAILED_COMMAND_STATES
+        )
         collection_state = (
             "FAILED" if failed == len(LAB_COMMANDS) else "PARTIAL" if failed else "CURRENT"
         )
@@ -300,6 +345,7 @@ def _graph_from_observations(observations: list[LabDeviceObservation]):
                 model=str(version.get("model") or parts["inventory"].get("pid") or "") or None,
                 software=str(version.get("ios_version") or "") or None,
                 primary=observation.primary,
+                observed=collection_state != "FAILED",
                 collectionState=collection_state,
                 detail=(f"{len(LAB_COMMANDS) - failed} of {len(LAB_COMMANDS)} read-only observations completed."),
                 evidenceIds=[_evidence_id(observation.device_id, "show_version")],
@@ -1104,7 +1150,7 @@ def _failures(devices: list[LabDevice], interfaces: list[LabInterface], edges: l
         affected = sorted((all_ids - reachable) - {device.id})
         kind = "ACCESS_POINT" if device.role == "ACCESS_POINT" else "GATEWAY" if device.role == "GATEWAY" else "SWITCH"
         incident = [edge for edge in edges if device.id in {edge.from_node_id, edge.to_node_id}]
-        independently_collected = device.collection_state in {"CURRENT", "PARTIAL", "FAILED"}
+        independently_collected = device.collection_state in {"CURRENT", "PARTIAL"}
         confidence = "HIGH"
         if not independently_collected:
             incident_confidence = {edge.confidence for edge in incident}
@@ -1271,7 +1317,13 @@ def build_lab_assurance_state(
     failures = _failures(devices, interfaces, edges)
     paths = _paths(devices, edges)
     collected = [item for item in devices if item.collection_state in {"CURRENT", "PARTIAL", "FAILED"}]
-    collection_state = "PARTIAL" if any(item.collection_state != "CURRENT" for item in collected) else "CURRENT"
+    collection_state = (
+        "FAILED"
+        if collected and all(item.collection_state == "FAILED" for item in collected)
+        else "PARTIAL"
+        if any(item.collection_state != "CURRENT" for item in collected)
+        else "CURRENT"
+    )
     limitations = [
         "VLAN separation is not reported as isolation unless policy evidence proves enforcement.",
         "MAC and ARP observations express reachability, not guaranteed direct physical cabling.",

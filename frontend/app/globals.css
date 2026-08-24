@@ -1797,6 +1797,7 @@ a:focus-visible {
 .assurance-row, .assurance-finding, .assurance-table tr { content-visibility: auto; contain-intrinsic-size: 64px; }
 .assurance-row:last-child { border-bottom: 0; }.assurance-row > div:first-child { display: grid; gap: 4px; }
 .assurance-row strong { font-size: 12px; }.assurance-row span, .assurance-row p, .assurance-row li { color: var(--text-dim); font-size: 10px; line-height: 1.5; }
+.assurance-row strong, .assurance-row span, .assurance-row p, .assurance-finding p, .assurance-notes li { overflow-wrap: anywhere; }
 .assurance-row p, .assurance-row ul { grid-column: 1 / -1; margin: 2px 0 0; }.assurance-row ul { display: grid; gap: 5px; padding-left: 17px; }
 .assurance-row b { color: var(--text-muted); }.assurance-row--wide { padding-block: 16px; }
 .assurance-notes { display: grid; gap: 12px; margin: 0; padding: 16px 24px 18px 34px; color: var(--text-muted); font-size: 11px; line-height: 1.55; }
@@ -1823,4 +1824,4 @@ a:focus-visible {
 .assurance-table td strong { margin-bottom: 4px; color: var(--text); font-size: 11px; }.assurance-table td span { max-width: 460px; color: var(--text-dim); font-size: 9px; line-height: 1.45; }
 @media (max-width: 1120px) { .assurance-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 820px) { .assurance-hero { flex-direction: column; }.assurance-hero__actions { justify-content: flex-start; }.assurance-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 560px) { .assurance-metrics { grid-template-columns: 1fr; }.assurance-finding__head { flex-direction: column; } }
+@media (max-width: 560px) { .assurance-metrics { grid-template-columns: 1fr; }.assurance-finding__head { flex-direction: column; }.assurance-tabs { flex-wrap: nowrap; overflow-x: auto; }.assurance-tabs button { flex: 0 0 auto; } }

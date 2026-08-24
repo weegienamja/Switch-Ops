@@ -8,7 +8,12 @@ from .credential_store import get_credential_store
 from .config import get_settings
 from .interface_policy import device_key
 from .lab_assurance import build_lab_assurance_state
-from .lab_collector import LAB_COMMANDS, LabDeviceObservation, collect_lab_device
+from .lab_collector import (
+    LAB_COMMANDS,
+    LabDeviceObservation,
+    classify_collection_exception,
+    collect_lab_device,
+)
 from .lab_device_store import get_lab_device_store
 from .models import (
     ConfiguredLabDevice,
@@ -79,7 +84,7 @@ class LabAssuranceService:
                     primary=False,
                     observed_at=self._state.generated_at,
                     outputs={symbol: "" for symbol in LAB_COMMANDS},
-                    command_state={symbol: "failed" for symbol in LAB_COMMANDS},
+                    command_state={symbol: "transport_failed" for symbol in LAB_COMMANDS},
                 )
                 observations.append(failed)
                 continue
@@ -95,7 +100,8 @@ class LabAssuranceService:
                         primary=False,
                     )
                 )
-            except Exception:
+            except Exception as exc:
+                failure_state = classify_collection_exception(exc)
                 observations.append(
                     LabDeviceObservation(
                         device_id=item.id,
@@ -103,7 +109,7 @@ class LabAssuranceService:
                         primary=False,
                         observed_at=self._state.generated_at,
                         outputs={symbol: "" for symbol in LAB_COMMANDS},
-                        command_state={symbol: "failed" for symbol in LAB_COMMANDS},
+                        command_state={symbol: failure_state for symbol in LAB_COMMANDS},
                     )
                 )
             finally:

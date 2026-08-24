@@ -8,6 +8,7 @@
     "build": "pnpm --filter @switchops/frontend build",
     "test": "pnpm --filter @switchops/frontend typecheck",
     "lint": "pnpm --filter @switchops/frontend lint",
+    "test:e2e:lab": "node scripts/lab-assurance-e2e.mjs",
     "desktop:dev": "pnpm --filter @switchops/desktop tauri dev",
     "desktop:build": "pnpm --filter @switchops/desktop tauri build",
     "verify:secrets": "powershell -ExecutionPolicy Bypass -File scripts/verify-no-secrets.ps1"

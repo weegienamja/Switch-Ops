@@ -139,13 +139,21 @@ export default function LabAssurancePanel() {
     () => new Map(state?.devices.map((item) => [item.id, item.label]) || []),
     [state?.devices],
   );
+  const topologyEdges = useMemo(
+    () => state?.edges.filter((edge) => edge.kind !== "PORT_CHANNEL_MEMBER") || [],
+    [state?.edges],
+  );
 
   if (!state || !devices) {
     return <section className="card assurance-loading">{error || "Loading Lab Assurance…"}</section>;
   }
 
   return (
-    <section className="lab-assurance">
+    <section
+      className="lab-assurance"
+      data-assurance-view={active}
+      data-collection-state={state.collectionState}
+    >
       <div className="card assurance-hero">
         <div>
           <div className="eyebrow">LAB ASSURANCE · READ ONLY</div>
@@ -190,7 +198,9 @@ export default function LabAssurancePanel() {
             </div>
             <div className="card col-5 assurance-card">
               <div className="card__head"><div><div className="eyebrow">Interpretation boundary</div><h3 className="card__title">Known limitations</h3></div></div>
-              <ul className="assurance-notes">{state.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
+              {state.limitations.length ? (
+                <ul className="assurance-notes">{state.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
+              ) : <p className="empty-note">No limitation notes are available for this collection.</p>}
             </div>
           </div>
         </div>
@@ -208,12 +218,13 @@ export default function LabAssurancePanel() {
                   <p>{device.detail}</p>
                 </article>
               ))}
+              {!state.devices.length ? <p className="empty-note">No IOS/IOS-XE device observations are available yet.</p> : null}
             </div>
           </div>
           <div className="card col-7 assurance-card">
             <div className="card__head"><div><div className="eyebrow">Evidence on every edge</div><h3 className="card__title">Relationships</h3></div></div>
             <div className="assurance-list">
-              {state.edges.filter((edge) => edge.kind !== "PORT_CHANNEL_MEMBER").map((edge) => {
+              {topologyEdges.map((edge) => {
                 const from = deviceLabels.get(edge.fromNodeId) || edge.fromNodeId;
                 const to = deviceLabels.get(edge.toNodeId) || edge.toNodeId;
                 return (
@@ -224,7 +235,7 @@ export default function LabAssurancePanel() {
                   </article>
                 );
               })}
-              {!state.edges.length ? <p className="empty-note">No evidence-backed relationships were collected.</p> : null}
+              {!topologyEdges.length ? <p className="empty-note">No evidence-backed relationships were collected.</p> : null}
             </div>
           </div>
         </div>
@@ -307,6 +318,7 @@ export default function LabAssurancePanel() {
           <div className="card__head"><div><div className="eyebrow">LOGICAL NETWORK</div><h3 className="card__title">VLANs, gateways and policy boundaries</h3></div></div>
           <div className="assurance-table-wrap"><table className="assurance-table"><thead><tr><th>Network</th><th>Gateways</th><th>Access members</th><th>Trunks</th><th>Isolation</th></tr></thead><tbody>
             {state.logicalNetworks.map((network) => <tr key={network.id}><td><strong>{network.name}</strong><span>{network.vlanId === null ? "Routed domain" : `VLAN ${network.vlanId}`}{network.vrf ? ` · VRF ${network.vrf}` : ""}</span></td><td>{network.gatewayNodes.length}</td><td>{network.memberInterfaces.length} ports · {network.endpointNodes.length} endpoints</td><td>{network.trunkInterfaces.length}</td><td><StateChip value={network.isolationState} /></td></tr>)}
+            {!state.logicalNetworks.length ? <tr><td colSpan={5}><p className="empty-note">No logical networks are available from current evidence.</p></td></tr> : null}
           </tbody></table></div>
           <p className="assurance-detail">Separate VLANs are separate broadcast domains. Inter-VLAN isolation remains POLICY UNKNOWN until ACL, firewall or equivalent enforcement evidence proves it.</p>
         </div>
@@ -325,6 +337,7 @@ export default function LabAssurancePanel() {
             <div className="card__head"><div><div className="eyebrow">SUPPORTED · UNSUPPORTED · UNKNOWN</div><h3 className="card__title">Observed capability model</h3></div></div>
             <div className="assurance-table-wrap"><table className="assurance-table"><thead><tr><th>Device</th><th>Capability</th><th>Support</th><th>Configured</th></tr></thead><tbody>
               {state.capabilities.map((capability) => <tr key={capability.id}><td>{deviceLabels.get(capability.deviceId) || "Device"}</td><td><strong>{capability.name}</strong><span>{capability.detail}</span></td><td><StateChip value={capability.state} /></td><td>{capability.configured === null ? "UNKNOWN" : capability.configured ? "YES" : "NO"}</td></tr>)}
+              {!state.capabilities.length ? <tr><td colSpan={4}><p className="empty-note">No capability observations are available yet.</p></td></tr> : null}
             </tbody></table></div>
           </div>
           <div className="col-5 assurance-stack">
@@ -332,6 +345,7 @@ export default function LabAssurancePanel() {
               <div className="card__head"><div><div className="eyebrow">EXPLICIT TARGETS</div><h3 className="card__title">IOS/IOS-XE devices</h3></div></div>
               <div className="assurance-list compact">
                 {devices.devices.map((device) => <article key={device.id} className="assurance-row"><div><strong>{device.label}</strong><span>{device.deviceType} · {device.storage}</span></div>{device.primary ? <StateChip value="PRIMARY" /> : <button type="button" className="btn btn--ghost" disabled={busy !== null} onClick={() => void removeDevice(device)}>Remove</button>}</article>)}
+                {!devices.devices.length ? <p className="empty-note">No IOS/IOS-XE targets are configured.</p> : null}
               </div>
             </div>
             <form className="card assurance-card assurance-form" onSubmit={(event) => void addDevice(event)}>

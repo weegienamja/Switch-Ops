@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 from backend.app.lab_assurance import build_lab_assurance_state
 from backend.app.cli import _privacy_safe
-from backend.app.lab_collector import LAB_COMMANDS, LabDeviceObservation, classify_command_output
+from backend.app.lab_collector import (
+    LAB_COMMANDS,
+    LabDeviceObservation,
+    classify_collection_exception,
+    classify_command_output,
+)
 from backend.app.credential_store import KeyringCredentialVault
 from backend.app.lab_device_store import LabDeviceStore
 from backend.app.models import LabDeviceCreateRequest
@@ -286,7 +291,7 @@ def test_failed_secondary_keeps_primary_evidence_current():
         primary=False,
         observed_at=NOW,
         outputs={symbol: "" for symbol in LAB_COMMANDS},
-        command_state={symbol: "failed" for symbol in LAB_COMMANDS},
+        command_state={symbol: "transport_failed" for symbol in LAB_COMMANDS},
     )
 
     state = build_lab_assurance_state([primary, secondary])
@@ -356,11 +361,149 @@ def test_cisco_identity_alone_never_grants_capabilities():
 
 def test_command_form_and_privilege_failures_do_not_claim_feature_unsupported():
     assert classify_command_output("% Invalid input detected at '^' marker.") == ("unavailable", "")
-    assert classify_command_output("% Authorization failed.") == ("failed", "")
+    assert classify_command_output("% Invalid command at '^' marker.") == ("unavailable", "")
+    assert classify_command_output("% Authorization failed.") == ("authorization_failed", "")
+    assert classify_command_output("Permission denied.") == ("authorization_failed", "")
+    assert classify_command_output("% Authorization failed: feature is not supported for this account.") == (
+        "authorization_failed",
+        "",
+    )
+    assert classify_command_output("% Error opening device.") == ("command_failed", "")
     assert classify_command_output("% This feature is not supported on this platform.") == (
         "unsupported",
         "",
     )
+
+
+def test_collection_exceptions_separate_authorization_from_transport():
+    class NetmikoAuthenticationException(Exception):
+        pass
+
+    assert classify_collection_exception(NetmikoAuthenticationException("refused")) == (
+        "authorization_failed"
+    )
+    assert classify_collection_exception(TimeoutError("unreachable")) == "transport_failed"
+
+
+def test_empty_and_unavailable_are_current_but_do_not_create_capability_certainty():
+    observation = LabDeviceObservation(
+        device_id="device-a",
+        configured_label="SYNTH-SW1",
+        primary=True,
+        observed_at=NOW,
+        outputs={symbol: "" for symbol in LAB_COMMANDS},
+        command_state={symbol: "empty" for symbol in LAB_COMMANDS},
+    )
+    observation.command_state["show_vrf"] = "unavailable"
+
+    state = build_lab_assurance_state([observation])
+
+    device = next(item for item in state.devices if item.id == "device-a")
+    vrf = next(item for item in state.capabilities if item.name == "VRF inventory")
+    empty = next(item for item in state.evidence if item.command == "show_vlan_brief")
+    unavailable = next(item for item in state.evidence if item.command == "show_vrf")
+    assert device.collection_state == "CURRENT"
+    assert vrf.state == "UNKNOWN"
+    assert empty.kind == "EMPTY" and empty.current is True
+    assert unavailable.kind == "UNAVAILABLE" and unavailable.current is True
+
+
+def test_parser_failure_is_partial_and_cannot_prove_support(monkeypatch):
+    observation = LabDeviceObservation(
+        device_id="device-a",
+        configured_label="SYNTH-SW1",
+        primary=True,
+        observed_at=NOW,
+        outputs={symbol: "" for symbol in LAB_COMMANDS},
+        command_state={symbol: "empty" for symbol in LAB_COMMANDS},
+    )
+    observation.outputs["show_vlan_brief"] = "current but unexpected output"
+    observation.command_state["show_vlan_brief"] = "observed"
+
+    def fail_parse(_output: str):
+        raise ValueError("synthetic parser failure")
+
+    monkeypatch.setattr("backend.app.lab_assurance.parse_vlans", fail_parse)
+    state = build_lab_assurance_state([observation])
+
+    device = next(item for item in state.devices if item.id == "device-a")
+    vlans = next(item for item in state.capabilities if item.name == "VLAN inventory")
+    evidence = next(item for item in state.evidence if item.command == "show_vlan_brief")
+    assert device.collection_state == "PARTIAL"
+    assert vlans.state == "UNKNOWN"
+    assert evidence.kind == "PARSER_FAILED"
+    assert evidence.current is False
+
+
+def test_running_config_parser_failure_does_not_become_not_configured(monkeypatch):
+    observation = LabDeviceObservation(
+        device_id="device-a",
+        configured_label="SYNTH-SW1",
+        primary=True,
+        observed_at=NOW,
+        outputs={symbol: "" for symbol in LAB_COMMANDS},
+        command_state={symbol: "empty" for symbol in LAB_COMMANDS},
+    )
+    observation.outputs["show_running_config"] = "current but unparseable configuration"
+    observation.command_state["show_running_config"] = "observed"
+
+    def fail_parse(_output: str):
+        raise ValueError("synthetic configuration parser failure")
+
+    monkeypatch.setattr("backend.app.lab_assurance.parse_running_config", fail_parse)
+    state = build_lab_assurance_state([observation])
+
+    etherchannel = next(item for item in state.capabilities if item.name == "EtherChannel")
+    assert etherchannel.state == "UNKNOWN"
+    assert etherchannel.configured is None
+    assert next(
+        item for item in state.evidence if item.command == "show_running_config"
+    ).kind == "PARSER_FAILED"
+
+
+def test_partial_collection_preserves_distinct_failed_observations():
+    observation = LabDeviceObservation(
+        device_id="device-a",
+        configured_label="SYNTH-SW1",
+        primary=True,
+        observed_at=NOW,
+        outputs={symbol: "" for symbol in LAB_COMMANDS},
+        command_state={symbol: "empty" for symbol in LAB_COMMANDS},
+    )
+    observation.command_state["show_vrf"] = "authorization_failed"
+    observation.command_state["show_bfd_neighbors"] = "command_failed"
+    observation.command_state["show_nve_peers"] = "transport_failed"
+
+    state = build_lab_assurance_state([observation])
+
+    assert state.devices[0].collection_state == "PARTIAL"
+    evidence = {item.command: item for item in state.evidence}
+    assert evidence["show_vrf"].kind == "AUTHORIZATION_FAILED"
+    assert evidence["show_bfd_neighbors"].kind == "COMMAND_FAILED"
+    assert evidence["show_nve_peers"].kind == "TRANSPORT_FAILED"
+    assert all(
+        item.state == "UNKNOWN"
+        for item in state.capabilities
+        if item.name in {"VRF inventory", "BFD neighbours", "VXLAN/NVE"}
+    )
+
+
+def test_all_transport_failures_make_device_and_overall_collection_failed():
+    observation = LabDeviceObservation(
+        device_id="device-a",
+        configured_label="Unavailable device",
+        primary=True,
+        observed_at=NOW,
+        outputs={symbol: "" for symbol in LAB_COMMANDS},
+        command_state={symbol: "transport_failed" for symbol in LAB_COMMANDS},
+    )
+
+    state = build_lab_assurance_state([observation])
+
+    assert state.collection_state == "FAILED"
+    assert state.devices[0].collection_state == "FAILED"
+    assert state.devices[0].observed is False
+    assert all(item.kind == "TRANSPORT_FAILED" and item.current is False for item in state.evidence)
 
 
 def test_capability_states_distinguish_unsupported_from_unknown():
@@ -379,6 +522,22 @@ def test_capability_states_distinguish_unsupported_from_unknown():
     observation.command_state["show_bgp_ipv4_unicast_summary"] = "unsupported"
     unsupported = build_lab_assurance_state([observation])
     assert next(item for item in unsupported.capabilities if item.name == "BGP IPv4 unicast").state == "UNSUPPORTED"
+
+
+def test_configuration_backed_capability_references_running_config_evidence():
+    observation = _observation("device-a", "SYNTH-SW1", "UNOBSERVED-PEER", 99)
+
+    state = build_lab_assurance_state([observation])
+
+    layer3 = next(item for item in state.capabilities if item.name == "Layer 3 routing")
+    etherchannel = next(item for item in state.capabilities if item.name == "EtherChannel")
+    running_config_id = next(
+        item.id for item in state.evidence if item.command == "show_running_config"
+    )
+    assert layer3.state == "SUPPORTED" and layer3.configured is True
+    assert running_config_id in layer3.evidence_ids
+    assert etherchannel.state == "UNKNOWN" and etherchannel.configured is False
+    assert running_config_id in etherchannel.evidence_ids
 
 
 def test_down_access_port_keeps_administrative_mode():

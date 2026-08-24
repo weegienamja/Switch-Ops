@@ -104,7 +104,12 @@ from .meraki_models import (
     MerakiSetupStatus,
 )
 from .interface_policy import device_key, get_interface_policy_store
-from .lab_collector import LAB_COMMANDS, LabDeviceObservation, collect_lab_device
+from .lab_collector import (
+    LAB_COMMANDS,
+    LabDeviceObservation,
+    classify_collection_exception,
+    collect_lab_device,
+)
 from .models import (
     ConfiguredLabDevice,
     FailureScenario,
@@ -1251,14 +1256,15 @@ def post_lab_assurance_refresh():
             priority=JobPriority.DIAGNOSTIC,
             timeout=360.0,
         )
-    except Exception:
+    except Exception as exc:
+        failure_state = classify_collection_exception(exc)
         primary = LabDeviceObservation(
             device_id=primary_id,
             configured_label="Primary Catalyst",
             primary=True,
             observed_at=datetime.now(timezone.utc),
             outputs={symbol: "" for symbol in LAB_COMMANDS},
-            command_state={symbol: "failed" for symbol in LAB_COMMANDS},
+            command_state={symbol: failure_state for symbol in LAB_COMMANDS},
         )
     return LabRefreshResult(
         accepted=True,
