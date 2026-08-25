@@ -10,7 +10,9 @@ import json
 from pathlib import Path
 import statistics
 import threading
+import time
 from typing import Deque
+import uuid
 
 from .config import get_settings
 from .ewps_engine import EWPSDecisionEngine
@@ -24,17 +26,22 @@ from .ewps_v2_models import (
     EWPSV2Config,
     ExportSaveResult,
     LabProfileName,
+    LabScenarioAdvanceResponse,
     LabScenarioName,
     LabStatus,
     V2CandidatePath,
     V2CandidateSnapshot,
+    V2CadenceObservation,
+    V2DecisionPoint,
     V2EvidenceInput,
     V2ExperimentCreateRequest,
+    V2ExperimentEvent,
     V2ExperimentSession,
     V2ExperimentSummary,
     V2ExperimentTimeline,
     V2RawMetrics,
     V2ReplayResult,
+    V2ScenarioPhaseSnapshot,
 )
 from .live_state import get_live_state
 
@@ -72,14 +79,20 @@ class EWPSV2Service:
         self.store = store or get_ewps_store()
         self.lab = lab or get_ewps_lab()
         self._lock = threading.RLock()
+        self._cycle_lock = threading.RLock()
         self._active_id: str | None = None
         self._runtime: V2EngineRuntime | None = None
         self._candidates: dict[str, V2InternalCandidate] = {}
         self._known_lifecycles: dict[str, str] = {}
         self._stop = threading.Event()
         self._run = threading.Event()
+        self._scheduler_wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._lab_lost_recorded = False
+        self._previous_cycle_started_monotonic: float | None = None
+        self._cadence_overrun_count = 0
+        self._monotonic = time.monotonic
+        self._utcnow = lambda: datetime.now(timezone.utc)
         for recorded in self.store.list(500):
             if recorded.status == "RUNNING":
                 recovered = self.store.transition(recorded.experiment_id, "PAUSED")
@@ -161,6 +174,9 @@ class EWPSV2Service:
                 raise ValueError("Controlled experiment startup requires passing WSL2 prerequisites.")
             if not status.ready or not all(path.independently_validated for path in status.paths):
                 raise ValueError("Controlled experiment startup requires two freshly verified telemetry paths.")
+            initial_phase = self.lab.current_phase_snapshot()
+            if initial_phase is None or initial_phase.phase_index != 0:
+                raise ValueError("Reset the controlled scenario to its authoritative initial phase before creating an experiment.")
             catalog = {
                 item.public.path_id: item
                 for item in self._catalog()
@@ -175,6 +191,7 @@ class EWPSV2Service:
                 status.topology_version,
                 "VERIFIED",
                 status.scenario_id,
+                initial_phase,
             )
 
         if request.controlled_scenario is not None:
@@ -187,10 +204,17 @@ class EWPSV2Service:
         missing = [path_id for path_id in selected_ids if path_id not in catalog]
         if missing:
             raise ValueError("REAL_INTERFACES can contain only currently discovered real-interface candidates.")
-        return ([catalog[path_id] for path_id in selected_ids], None, None, "NOT_APPLICABLE", None)
+        return ([catalog[path_id] for path_id in selected_ids], None, None, "NOT_APPLICABLE", None, None)
 
     def create(self, request: V2ExperimentCreateRequest) -> V2ExperimentSession:
-        selected, lab_instance_id, topology_version, verification, scenario = self._creation_binding(request)
+        (
+            selected,
+            lab_instance_id,
+            topology_version,
+            verification,
+            scenario,
+            initial_scenario_phase,
+        ) = self._creation_binding(request)
         with self._lock:
             if self._active_id:
                 active = self.store.get(self._active_id)
@@ -203,6 +227,7 @@ class EWPSV2Service:
                 lab_topology_version=topology_version,
                 initial_verification_status=verification,
                 controlled_scenario=scenario,
+                initial_scenario_phase=initial_scenario_phase,
             )
             self._active_id = session.experiment_id
             return session
@@ -252,6 +277,18 @@ class EWPSV2Service:
                 or session.lab_topology_version != LAB_TOPOLOGY_VERSION
             ):
                 raise ValueError("The current controlled lab is not the immutable lab instance recorded by this experiment.")
+            actual_phase = self.lab.current_phase_snapshot()
+            recorded = self.store.timeline(session.experiment_id)
+            successful_events = [event for event in recorded.events if event.application_succeeded]
+            expected_index = (
+                successful_events[-1].new_phase_index
+                if successful_events else (
+                    session.initial_scenario_phase.phase_index
+                    if session.initial_scenario_phase is not None else None
+                )
+            )
+            if actual_phase is None or actual_phase.phase_index != expected_index:
+                raise ValueError("The controlled lab phase does not match the experiment's immutable phase timeline.")
             return {
                 path_id: V2InternalCandidate(public=self._public_from_snapshot(snapshots[path_id]))
                 for path_id in session.candidate_path_ids
@@ -320,6 +357,17 @@ class EWPSV2Service:
                 raise RuntimeError("The v0.2 session changed model version unexpectedly.")
             self._stop.clear()
             self._run.set()
+            self._previous_cycle_started_monotonic = None
+            timeline = self.store.timeline(experiment_id)
+            self._cadence_overrun_count = max(
+                (
+                    point.cadence.cadence_overrun_count
+                    for point in timeline.decisions
+                    if isinstance(point, V2DecisionPoint) and point.cadence is not None
+                ),
+                default=0,
+            )
+            self._scheduler_wake.set()
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(
                     target=self._collector_loop,
@@ -334,6 +382,8 @@ class EWPSV2Service:
             if experiment_id != self._active_id:
                 raise ValueError("This is not the active EWPS experiment.")
             self._run.clear()
+            self._previous_cycle_started_monotonic = None
+            self._scheduler_wake.set()
             return self.store.transition(experiment_id, "PAUSED")
 
     def stop(self, experiment_id: str):
@@ -343,6 +393,7 @@ class EWPSV2Service:
                 raise ValueError("This EWPS experiment is already complete.")
             self._run.clear()
             self._stop.set()
+            self._scheduler_wake.set()
             completed = self.store.transition(experiment_id, "COMPLETED")
             thread = self._thread
         if thread and thread is not threading.current_thread():
@@ -354,21 +405,54 @@ class EWPSV2Service:
             self._active_id = None
         return completed, self.store.summary(experiment_id)
 
+    @staticmethod
+    def _seconds_until_next_cycle(
+        configured_interval_seconds: float,
+        cycle_started_monotonic: float,
+        ready_for_next_cycle_monotonic: float,
+    ) -> float:
+        """Return the remaining start-to-start delay without allowing overlap."""
+
+        elapsed = max(0.0, ready_for_next_cycle_monotonic - cycle_started_monotonic)
+        return max(0.0, configured_interval_seconds - elapsed)
+
     def _collector_loop(self) -> None:
         while not self._stop.is_set():
             if not self._run.wait(timeout=0.5):
                 continue
-            try:
-                self.sample_once()
-            except Exception:
-                pass
-            with self._lock:
-                if not self._active_id:
-                    break
-                session = self.store.get(self._active_id)
-                interval = session.config.sample_interval_seconds if isinstance(session, V2ExperimentSession) else 5.0
-            if self._stop.wait(timeout=interval):
-                break
+            with self._cycle_lock:
+                with self._lock:
+                    if not self._active_id:
+                        break
+                    session = self.store.get(self._active_id)
+                    interval = session.config.sample_interval_seconds if isinstance(session, V2ExperimentSession) else 5.0
+                    cycle_started_monotonic = self._monotonic()
+                    cycle_started_at = self._utcnow()
+                    actual_start_to_start = (
+                        None
+                        if self._previous_cycle_started_monotonic is None
+                        else max(0.0, cycle_started_monotonic - self._previous_cycle_started_monotonic)
+                    )
+                    self._previous_cycle_started_monotonic = cycle_started_monotonic
+                try:
+                    self.sample_once(
+                        cycle_started_at=cycle_started_at,
+                        cycle_started_monotonic=cycle_started_monotonic,
+                        actual_start_to_start_seconds=actual_start_to_start,
+                    )
+                except Exception:
+                    pass
+            remaining = self._seconds_until_next_cycle(
+                interval,
+                cycle_started_monotonic,
+                self._monotonic(),
+            )
+            if remaining <= 0 or self._stop.is_set() or not self._run.is_set():
+                continue
+            self._scheduler_wake.clear()
+            if self._stop.is_set() or not self._run.is_set():
+                continue
+            self._scheduler_wake.wait(timeout=remaining)
 
     def _measure(self, candidate: V2InternalCandidate, count: int) -> ProbeResult:
         if candidate.public.source_kind == "controlled_lab":
@@ -405,7 +489,44 @@ class EWPSV2Service:
             failure_reason="controlled_lab_lost",
         )
 
-    def sample_once(self) -> None:
+    def _recorded_phase_snapshot(self, session: V2ExperimentSession) -> V2ScenarioPhaseSnapshot | None:
+        timeline = self.store.timeline(session.experiment_id)
+        if not isinstance(timeline, V2ExperimentTimeline):
+            return None
+        successful = [event for event in timeline.events if event.application_succeeded]
+        if not successful:
+            return session.initial_scenario_phase
+        event = successful[-1]
+        return V2ScenarioPhaseSnapshot(
+            scenarioId=event.scenario_id,
+            phaseIndex=event.new_phase_index,
+            phaseId=event.new_phase_id,
+            labInstanceId=event.lab_instance_id,
+            pathProfiles=event.path_profiles,
+        )
+
+    def sample_once(
+        self,
+        *,
+        cycle_started_at: datetime | None = None,
+        cycle_started_monotonic: float | None = None,
+        actual_start_to_start_seconds: float | None = None,
+    ) -> None:
+        # A phase transition may occur only between complete probe cycles.
+        with self._cycle_lock:
+            self._sample_once_locked(
+                cycle_started_at=cycle_started_at,
+                cycle_started_monotonic=cycle_started_monotonic,
+                actual_start_to_start_seconds=actual_start_to_start_seconds,
+            )
+
+    def _sample_once_locked(
+        self,
+        *,
+        cycle_started_at: datetime | None = None,
+        cycle_started_monotonic: float | None = None,
+        actual_start_to_start_seconds: float | None = None,
+    ) -> None:
         with self._lock:
             experiment_id = self._active_id
             runtime = self._runtime
@@ -419,6 +540,14 @@ class EWPSV2Service:
             session.source_mode == "CONTROLLED_DUAL_PATH"
             and not self.lab.binding_is_current(session.lab_instance_id, session.lab_topology_version)
         )
+        phase_snapshot: V2ScenarioPhaseSnapshot | None = None
+        if session.source_mode == "CONTROLLED_DUAL_PATH":
+            phase_snapshot = (
+                self._recorded_phase_snapshot(session)
+                if controlled_lab_lost else self.lab.current_phase_snapshot()
+            )
+            if phase_snapshot is None or phase_snapshot.lab_instance_id != session.lab_instance_id:
+                raise RuntimeError("The controlled phase snapshot does not match the experiment's immutable lab binding.")
         cycle = runtime.engine.decision_index
         results: dict[str, ProbeResult] = {}
         to_probe: list[V2InternalCandidate] = []
@@ -453,6 +582,22 @@ class EWPSV2Service:
                             collection_duration_ms=0.0,
                             failure_reason="probe_unavailable",
                         )
+        cadence: V2CadenceObservation | None = None
+        if cycle_started_at is not None and cycle_started_monotonic is not None:
+            cycle_completed_at = self._utcnow()
+            collection_duration_seconds = max(0.0, self._monotonic() - cycle_started_monotonic)
+            with self._lock:
+                if collection_duration_seconds > session.config.sample_interval_seconds:
+                    self._cadence_overrun_count += 1
+                cadence_overrun_count = self._cadence_overrun_count
+            cadence = V2CadenceObservation(
+                configuredIntervalSeconds=session.config.sample_interval_seconds,
+                cycleStartedAt=cycle_started_at,
+                cycleCompletedAt=cycle_completed_at,
+                collectionDurationMs=collection_duration_seconds * 1000.0,
+                actualStartToStartSeconds=actual_start_to_start_seconds,
+                cadenceOverrunCount=cadence_overrun_count,
+            )
         timestamp = max((item.observed_at for item in results.values()), default=datetime.now(timezone.utc))
         path_inputs: list[tuple[str, V2RawMetrics, V2EvidenceInput]] = []
         for candidate in candidates:
@@ -571,6 +716,10 @@ class EWPSV2Service:
             )
             path_inputs.append((path_id, raw, evidence))
         point = runtime.engine.evaluate(timestamp, path_inputs)
+        if cadence is not None:
+            point = point.model_copy(update={"cadence": cadence})
+        if phase_snapshot is not None:
+            point = point.model_copy(update={"scenario_phase": phase_snapshot})
         if controlled_lab_lost and not self._lab_lost_recorded:
             point = point.model_copy(update={"events": [*point.events, "CONTROLLED_LAB_LOST"]})
             self._lab_lost_recorded = True
@@ -594,15 +743,27 @@ class EWPSV2Service:
             if not isinstance(replay_config, EWPSV2Config):
                 raise ValueError("A v0.2 replay requires v0.2 parameters.")
             engine = EWPSV2DecisionEngine(replay_config)
-            decisions = [
-                engine.evaluate(
+            decisions = []
+            for point in timeline.decisions:
+                replayed = engine.evaluate(
                     point.timestamp,
                     [(item.path_id, item.raw, item.evidence) for item in point.calculations],
                 )
-                for point in timeline.decisions
-            ]
+                if point.cadence is not None:
+                    replayed = replayed.model_copy(update={"cadence": point.cadence})
+                if point.scenario_phase is not None:
+                    replayed = replayed.model_copy(update={"scenario_phase": point.scenario_phase})
+                decisions.append(replayed)
+            canonical_decisions = []
+            for item in decisions:
+                payload = item.model_dump(by_alias=True, mode="json")
+                # Cadence is instrumentation, not an EWPS engine input. Leaving
+                # it out preserves every historical v0.2 deterministic digest.
+                payload.pop("cadence", None)
+                payload.pop("scenarioPhase", None)
+                canonical_decisions.append(payload)
             canonical = json.dumps(
-                [item.model_dump(by_alias=True, mode="json") for item in decisions],
+                canonical_decisions,
                 sort_keys=True,
                 separators=(",", ":"),
             )
@@ -616,6 +777,7 @@ class EWPSV2Service:
                 config=replay_config,
                 deterministicDigest=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
                 decisions=decisions,
+                events=timeline.events,
             )
         replay_config = (
             EWPSConfig.model_validate(config)
@@ -653,10 +815,15 @@ class EWPSV2Service:
             media_type = "text/csv"
         elif format_name == "json":
             summary = self.store.summary(experiment_id)
+            export_timeline = self.store.timeline(experiment_id)
             content = json.dumps(
                 {
                     "experiment": self.store.get(experiment_id).model_dump(by_alias=True, mode="json"),
                     "summary": summary.model_dump(by_alias=True, mode="json"),
+                    "phaseEvents": [
+                        event.model_dump(by_alias=True, mode="json")
+                        for event in export_timeline.events
+                    ] if isinstance(export_timeline, V2ExperimentTimeline) else [],
                     "records": [
                         json.loads(line)
                         for line in self.store.privacy_safe_jsonl(experiment_id).splitlines()
@@ -704,13 +871,53 @@ class EWPSV2Service:
         return self.lab.teardown()
 
     def lab_profile(self, path_id: str, profile: LabProfileName) -> LabStatus:
+        current = self.current()
+        if current and current.status in {"CREATED", "RUNNING", "PAUSED"}:
+            raise ValueError("Stop the active experiment before changing a lab profile directly.")
         return self.lab.apply_profile(path_id, profile)
 
     def lab_prepare_scenario(self, scenario_id: LabScenarioName) -> LabStatus:
+        current = self.current()
+        if current and current.status in {"CREATED", "RUNNING", "PAUSED"}:
+            raise ValueError("Stop the active experiment before preparing or resetting a scenario.")
         return self.lab.prepare_scenario(scenario_id)
 
-    def lab_advance_scenario(self) -> LabStatus:
-        return self.lab.advance_scenario()
+    def lab_advance_scenario(self) -> LabScenarioAdvanceResponse:
+        requested_at = self._utcnow()
+        with self._cycle_lock:
+            session = self.current()
+            if (
+                not isinstance(session, V2ExperimentSession)
+                or session.status != "RUNNING"
+                or session.source_mode != "CONTROLLED_DUAL_PATH"
+            ):
+                raise ValueError("A running controlled dual-path experiment is required to advance a phase.")
+            if not self.lab.binding_is_current(session.lab_instance_id, session.lab_topology_version):
+                raise ValueError("The active experiment's controlled-lab binding is no longer current.")
+            transition = self.lab.advance_scenario(requested_at)
+            event = V2ExperimentEvent(
+                eventId=f"ewps-event-{uuid.uuid4()}",
+                eventType=(
+                    "SCENARIO_PHASE_CHANGED"
+                    if transition.application_succeeded else "SCENARIO_PHASE_APPLY_FAILED"
+                ),
+                timestamp=transition.requested_at,
+                completedAt=transition.completed_at,
+                experimentId=session.experiment_id,
+                scenarioId=transition.scenario_id,
+                previousPhaseIndex=transition.previous_phase_index,
+                previousPhaseId=transition.previous_phase_id,
+                newPhaseIndex=transition.new_phase_index,
+                newPhaseId=transition.new_phase_id,
+                applicationSucceeded=transition.application_succeeded,
+                labInstanceId=transition.lab_instance_id,
+                affectedPathIds=transition.affected_path_ids,
+                pathProfiles=transition.path_profiles,
+                verification=transition.verification,
+                detail=transition.detail,
+            )
+            self.store.append_event(event)
+            return LabScenarioAdvanceResponse(status=self.lab.status(), event=event)
 
     def lab_verify(self) -> LabStatus:
         return self.lab.verify()
@@ -720,6 +927,7 @@ class EWPSV2Service:
             active_id = self._active_id
             self._run.clear()
             self._stop.set()
+            self._scheduler_wake.set()
             if active_id:
                 try:
                     session = self.store.get(active_id)

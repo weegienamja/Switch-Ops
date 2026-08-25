@@ -46,6 +46,10 @@ def ewps_meta():
             for key, (score, description) in TOPOLOGY_CONFIDENCE.items()
         },
         "defaultConfig": EWPSV2Config().model_dump(by_alias=True),
+        "sampleIntervalSemantics": (
+            "non-overlapping measurement-cycle start-to-start cadence; overruns start the next "
+            "cycle as soon as the current collector is safe"
+        ),
         "fixedProbeTargetToken": FIXED_PROBE_TARGET_TOKEN,
         "privacyBoundary": (
             "ICMP outcomes and aggregate interface counters only; no payloads, URLs, DNS history, "
@@ -55,6 +59,8 @@ def ewps_meta():
             "v01Replay": True,
             "v01SemanticsPreserved": True,
             "historicalRowsReinterpreted": False,
+            "cadenceInstrumentationAdditive": True,
+            "scenarioPhaseProvenanceAdditive": True,
         },
     }
 

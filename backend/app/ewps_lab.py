@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import math
 import os
 import statistics
@@ -18,11 +19,15 @@ import uuid
 from .ewps_telemetry import ProbeResult, _parse_probe_output, _probe_outcomes
 from .ewps_models import RawMetrics
 from .ewps_v2_models import (
+    LabPhaseTransitionResult,
     LabPathStatus,
     LabProfileName,
     LabScenarioName,
     LabStatus,
     V2CandidatePath,
+    V2NormalizedNetemConfig,
+    V2PhasePathProfile,
+    V2ScenarioPhaseSnapshot,
 )
 
 
@@ -90,6 +95,110 @@ SCENARIO_PHASES: dict[LabScenarioName, tuple[dict[str, LabProfileName], ...]] = 
         {"lab-path-a": "recovery", "lab-path-b": "slow-stable"},
     ),
 }
+
+SCENARIO_PHASE_IDS: dict[LabScenarioName, tuple[str, ...]] = {
+    "conventional-agreement": ("baseline",),
+    "faster-epistemically-weak": ("baseline", "fast-noisy", "telemetry-stale"),
+    "raw-metric-flapping": (
+        "fast-stable-vs-moderate-jitter",
+        "slow-stable-vs-fast-stable",
+        "fast-stable-vs-slow-stable",
+    ),
+    "evidence-outage": ("baseline", "telemetry-stale"),
+    "recovery": ("temporary-failure", "recovery"),
+}
+
+
+def _milliseconds(value: str) -> float:
+    if not value.endswith("ms"):
+        raise ValueError("Only bounded millisecond netem values are supported.")
+    return round(float(value[:-2]), 6)
+
+
+def _percentage(value: str) -> float:
+    if not value.endswith("%"):
+        raise ValueError("Only bounded percentage netem values are supported.")
+    return round(float(value[:-1]), 6)
+
+
+def _requested_netem(profile: ImpairmentProfile) -> V2NormalizedNetemConfig:
+    tokens = list(profile.netem_args)
+    values: dict[str, object] = {}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "delay":
+            values["delayMs"] = _milliseconds(tokens[index + 1])
+            index += 2
+            if index < len(tokens) and tokens[index].endswith("ms"):
+                values["jitterMs"] = _milliseconds(tokens[index])
+                index += 1
+            if index < len(tokens) and tokens[index].endswith("%"):
+                values["delayCorrelationPct"] = _percentage(tokens[index])
+                index += 1
+        elif token == "distribution":
+            values["distribution"] = tokens[index + 1]
+            index += 2
+        elif token == "loss":
+            values["lossPct"] = _percentage(tokens[index + 1])
+            index += 2
+            if index < len(tokens) and tokens[index].endswith("%"):
+                values["lossCorrelationPct"] = _percentage(tokens[index])
+                index += 1
+        else:
+            raise ValueError(f"Unsupported fixed netem profile token: {token}")
+    return V2NormalizedNetemConfig(**values)
+
+
+def _normalized_actual_netem(payload: str) -> V2NormalizedNetemConfig | None:
+    try:
+        entries = json.loads(payload)
+        entry = next(item for item in entries if item.get("kind") == "netem")
+        options = entry.get("options") or {}
+    except (json.JSONDecodeError, StopIteration, TypeError, AttributeError):
+        return None
+    values: dict[str, object] = {}
+    delay = options.get("delay")
+    if isinstance(delay, dict):
+        if isinstance(delay.get("delay"), (int, float)):
+            values["delayMs"] = round(float(delay["delay"]) * 1000.0, 6)
+        if isinstance(delay.get("jitter"), (int, float)):
+            values["jitterMs"] = round(float(delay["jitter"]) * 1000.0, 6)
+        if isinstance(delay.get("correlation"), (int, float)):
+            values["delayCorrelationPct"] = round(float(delay["correlation"]) * 100.0, 6)
+    loss = options.get("loss")
+    if isinstance(loss, dict):
+        random_loss = loss.get("random", loss)
+        if isinstance(random_loss, dict):
+            probability = random_loss.get("probability", random_loss.get("loss"))
+            correlation = random_loss.get("correlation")
+            if isinstance(probability, (int, float)):
+                values["lossPct"] = round(float(probability) * 100.0, 6)
+            if isinstance(correlation, (int, float)):
+                values["lossCorrelationPct"] = round(float(correlation) * 100.0, 6)
+        elif isinstance(random_loss, (int, float)):
+            values["lossPct"] = round(float(random_loss) * 100.0, 6)
+    return V2NormalizedNetemConfig(**values)
+
+
+def _netem_matches(requested: V2NormalizedNetemConfig, applied: V2NormalizedNetemConfig | None) -> bool:
+    if applied is None:
+        return False
+    # iproute2 does not echo the distribution-table identifier. Every numeric
+    # parameter it does expose must match the fixed requested profile.
+    fields = (
+        "delay_ms", "jitter_ms", "delay_correlation_pct",
+        "loss_pct", "loss_correlation_pct",
+    )
+    for field in fields:
+        expected = getattr(requested, field)
+        actual = getattr(applied, field)
+        if expected is None:
+            if actual not in {None, 0.0}:
+                return False
+        elif actual is None or abs(expected - actual) > 0.01:
+            return False
+    return True
 
 
 SETUP_SCRIPT = r"""
@@ -382,6 +491,10 @@ class EWPSLabManager:
             message=message or self._message,
             scenarioId=self._scenario,
             scenarioPhase=self._phase,
+            scenarioPhaseId=(
+                SCENARIO_PHASE_IDS[self._scenario][self._phase] if self._scenario is not None else None
+            ),
+            scenarioPhaseCount=(len(SCENARIO_PHASES[self._scenario]) if self._scenario is not None else 0),
             paths=paths,
         )
 
@@ -483,7 +596,7 @@ class EWPSLabManager:
             for path_id, definition in LAB_PATHS.items()
         ]
 
-    def apply_profile(self, path_id: str, profile_name: LabProfileName) -> LabStatus:
+    def _apply_profile_command(self, path_id: str, profile_name: LabProfileName) -> None:
         if path_id not in LAB_PATHS or profile_name not in PROFILES:
             raise KeyError("Unknown controlled lab path or profile.")
         if not self._created:
@@ -499,10 +612,93 @@ class EWPSLabManager:
         if completed.returncode != 0:
             detail = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "tc netem failed"
             raise RuntimeError(detail[:180])
-        self._profiles[path_id] = profile_name
-        self._write_marker()
-        self._message = f"{LAB_PATHS[path_id]['label']} now uses the {profile_name} profile."
-        return self._status()
+
+    def _query_profile(
+        self,
+        path_id: str,
+        requested_profile: LabProfileName,
+        *,
+        current_profile: LabProfileName | None = None,
+    ) -> V2PhasePathProfile:
+        definition = LAB_PATHS[path_id]
+        requested = _requested_netem(PROFILES[requested_profile])
+        try:
+            completed = _wsl([
+                "ip", "netns", "exec", definition["gateway_namespace"],
+                "tc", "-j", "qdisc", "show", "dev", definition["gateway_interface"],
+            ], timeout=5.0)
+            applied = _normalized_actual_netem(completed.stdout) if completed.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            applied = None
+        matched = _netem_matches(requested, applied)
+        applied_profile: LabProfileName | None = requested_profile if matched else None
+        if not matched and applied is not None and current_profile is not None:
+            if _netem_matches(_requested_netem(PROFILES[current_profile]), applied):
+                applied_profile = current_profile
+        return V2PhasePathProfile(
+            requestedProfileId=requested_profile,
+            appliedProfileId=applied_profile,
+            requestedConfiguration=requested,
+            appliedConfiguration=applied,
+            verification="PASSED" if matched else "FAILED",
+            verificationDetail=(
+                "Owned namespace tc -j qdisc state matches every kernel-reported numeric netem parameter."
+                if matched else
+                "Owned namespace tc -j qdisc state does not match the requested fixed profile."
+            ),
+        )
+
+    def _phase_snapshot(
+        self,
+        scenario: LabScenarioName,
+        phase: int,
+        profiles: dict[str, LabProfileName],
+    ) -> V2ScenarioPhaseSnapshot:
+        if not self._instance_id:
+            raise RuntimeError("The controlled lab has no owned instance identity.")
+        return V2ScenarioPhaseSnapshot(
+            scenarioId=scenario,
+            phaseIndex=phase,
+            phaseId=SCENARIO_PHASE_IDS[scenario][phase],
+            labInstanceId=self._instance_id,
+            pathProfiles={
+                path_id: self._query_profile(
+                    path_id,
+                    profile,
+                    current_profile=self._profiles.get(path_id),
+                )
+                for path_id, profile in profiles.items()
+            },
+        )
+
+    def current_phase_snapshot(self) -> V2ScenarioPhaseSnapshot | None:
+        """Return the committed phase that owns collection, never telemetry inference."""
+
+        with self._lock:
+            if not self._created or self._scenario is None or not self._instance_id:
+                return None
+            snapshot = self._phase_snapshot(self._scenario, self._phase, dict(self._profiles))
+            if any(item.verification != "PASSED" for item in snapshot.path_profiles.values()):
+                self._ready = False
+                self._state = "LAB_UNVERIFIED"
+                self._message = "The committed scenario phase no longer matches the owned qdisc state."
+                raise RuntimeError(self._message)
+            return snapshot
+
+    def apply_profile(self, path_id: str, profile_name: LabProfileName) -> LabStatus:
+        with self._lock:
+            self._apply_profile_command(path_id, profile_name)
+            proof = self._query_profile(path_id, profile_name, current_profile=self._profiles.get(path_id))
+            if proof.verification != "PASSED":
+                self._ready = False
+                self._state = "LAB_UNVERIFIED"
+                raise RuntimeError(proof.verification_detail)
+            self._profiles[path_id] = profile_name
+            self._scenario = None
+            self._phase = 0
+            self._write_marker()
+            self._message = f"{LAB_PATHS[path_id]['label']} now uses the verified {profile_name} profile."
+            return self._status()
 
     def prepare_scenario(self, scenario_id: LabScenarioName) -> LabStatus:
         if scenario_id not in SCENARIO_PHASES:
@@ -510,25 +706,97 @@ class EWPSLabManager:
         if not self._created:
             raise ValueError("Create the controlled lab before preparing a scenario.")
         with self._lock:
+            target = dict(SCENARIO_PHASES[scenario_id][0])
+            for path_id, profile in target.items():
+                self._apply_profile_command(path_id, profile)
+            proof = self._phase_snapshot(scenario_id, 0, target)
+            if any(item.verification != "PASSED" for item in proof.path_profiles.values()):
+                self._ready = False
+                self._state = "LAB_UNVERIFIED"
+                raise RuntimeError("Scenario phase 0 qdisc verification failed.")
             self._scenario = scenario_id
             self._phase = 0
-            for path_id, profile in SCENARIO_PHASES[scenario_id][0].items():
-                self.apply_profile(path_id, profile)
+            self._profiles = target
             self._write_marker()
             self._message = f"Scenario {scenario_id} prepared at phase 1. No experiment was started."
             return self.verify()
 
-    def advance_scenario(self) -> LabStatus:
+    def advance_scenario(self, requested_at: datetime | None = None) -> LabPhaseTransitionResult:
         with self._lock:
             if self._scenario is None:
                 raise ValueError("Prepare a scenario before advancing its impairment phase.")
-            phases = SCENARIO_PHASES[self._scenario]
-            self._phase = min(self._phase + 1, len(phases) - 1)
-            for path_id, profile in phases[self._phase].items():
-                self.apply_profile(path_id, profile)
-            self._write_marker()
-            self._message = f"Scenario {self._scenario} advanced to phase {self._phase + 1}."
-            return self._status()
+            scenario = self._scenario
+            phases = SCENARIO_PHASES[scenario]
+            if self._phase + 1 >= len(phases):
+                raise ValueError("The prepared scenario is already at its final impairment phase.")
+            request_time = requested_at or datetime.now(timezone.utc)
+            previous_phase = self._phase
+            new_phase = previous_phase + 1
+            previous_profiles = dict(self._profiles)
+            target_profiles = dict(phases[new_phase])
+            affected = [
+                path_id for path_id in LAB_PATHS
+                if previous_profiles[path_id] != target_profiles[path_id]
+            ]
+            apply_error: str | None = None
+            for path_id in affected:
+                try:
+                    self._apply_profile_command(path_id, target_profiles[path_id])
+                except RuntimeError as exc:
+                    apply_error = str(exc)
+                    break
+            proof = self._phase_snapshot(scenario, new_phase, target_profiles)
+            succeeded = apply_error is None and all(
+                item.verification == "PASSED" for item in proof.path_profiles.values()
+            )
+            if succeeded:
+                self._phase = new_phase
+                self._profiles = target_profiles
+                self._write_marker()
+                self._ready = True
+                self._state = "LAB_READY"
+                detail = "Requested profiles match normalized qdisc state in both owned gateway namespaces."
+                self._message = f"Scenario {scenario} advanced to verified phase {new_phase + 1}."
+            else:
+                rollback_ok = True
+                for path_id, profile in previous_profiles.items():
+                    try:
+                        self._apply_profile_command(path_id, profile)
+                    except RuntimeError:
+                        rollback_ok = False
+                rollback_proof = self._phase_snapshot(scenario, previous_phase, previous_profiles)
+                rollback_ok = rollback_ok and all(
+                    item.verification == "PASSED" for item in rollback_proof.path_profiles.values()
+                )
+                self._profiles = previous_profiles
+                self._phase = previous_phase
+                if rollback_ok:
+                    self._write_marker()
+                    self._ready = True
+                    self._state = "LAB_READY"
+                else:
+                    self._ready = False
+                    self._state = "LAB_UNVERIFIED"
+                detail = (
+                    f"Phase application failed ({apply_error or 'qdisc mismatch'}); "
+                    f"rollback {'verified' if rollback_ok else 'could not be verified'}."
+                )
+                self._message = detail
+            return LabPhaseTransitionResult(
+                requestedAt=request_time,
+                completedAt=datetime.now(timezone.utc),
+                scenarioId=scenario,
+                previousPhaseIndex=previous_phase,
+                previousPhaseId=SCENARIO_PHASE_IDS[scenario][previous_phase],
+                newPhaseIndex=new_phase,
+                newPhaseId=SCENARIO_PHASE_IDS[scenario][new_phase],
+                applicationSucceeded=succeeded,
+                labInstanceId=self._instance_id or "",
+                affectedPathIds=affected,
+                pathProfiles=proof.path_profiles,
+                verification="PASSED" if succeeded else "FAILED",
+                detail=detail,
+            )
 
     def profile(self, path_id: str) -> ImpairmentProfile:
         return PROFILES[self._profiles[path_id]]
@@ -599,6 +867,15 @@ class EWPSLabManager:
             self._ready = False
             self._state = "LAB_LOST"
             self._message = "CONTROLLED LAB LOST. Ownership or topology validation failed."
+            return self._status(message=self._message)
+        qdisc_proofs = {
+            path_id: self._query_profile(path_id, profile, current_profile=profile)
+            for path_id, profile in self._profiles.items()
+        }
+        if any(proof.verification != "PASSED" for proof in qdisc_proofs.values()):
+            self._ready = False
+            self._state = "LAB_UNVERIFIED"
+            self._message = "The owned lab exists, but its normalized qdisc state does not match the marker."
             return self._status(message=self._message)
         results = {path_id: self.measure(path_id, 3) for path_id in LAB_PATHS}
         self._last_results = results

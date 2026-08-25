@@ -53,7 +53,7 @@ export interface EWPSConfig {
 
 export interface EWPSMeta {
   modelVersion: "0.2.0";
-  releaseId: "ewps-v0.2.0-alpha" | "ewps-v0.2.1-alpha";
+  releaseId: "ewps-v0.2.0-alpha" | "ewps-v0.2.1-alpha" | "ewps-v0.2.2-alpha" | "ewps-v0.2.3-alpha";
   mode: "SHADOW";
   modeLabel: string;
   changesNetworkState: false;
@@ -61,12 +61,15 @@ export interface EWPSMeta {
   topologyMappingVersion: string;
   topologyMapping: Record<TopologyEvidenceKey, { score: number; description: string }>;
   defaultConfig: EWPSConfig;
+  sampleIntervalSemantics: string;
   fixedProbeTargetToken: string;
   privacyBoundary: string;
   compatibility: {
     v01Replay: boolean;
     v01SemanticsPreserved: boolean;
     historicalRowsReinterpreted: boolean;
+    cadenceInstrumentationAdditive: boolean;
+    scenarioPhaseProvenanceAdditive?: boolean;
   };
 }
 
@@ -110,6 +113,7 @@ export interface EWPSExperimentSession {
   labTopologyVersion?: string | null;
   initialVerificationStatus: "VERIFIED" | "NOT_APPLICABLE" | "LEGACY_UNKNOWN";
   controlledImpairmentScenario?: EWPSLabScenario | null;
+  initialScenarioPhase?: EWPSScenarioPhase | null;
   createdAt: string;
   startedAt?: string | null;
   endedAt?: string | null;
@@ -193,11 +197,67 @@ export interface EWPSDecisionPoint {
   };
   events: string[];
   explanation: string;
+  cadence?: {
+    configuredIntervalSeconds: number;
+    cycleStartedAt: string;
+    cycleCompletedAt: string;
+    collectionDurationMs: number;
+    actualStartToStartSeconds?: number | null;
+    cadenceOverrunCount: number;
+  } | null;
+  scenarioPhase?: EWPSScenarioPhase | null;
+}
+
+export interface EWPSNormalizedNetemConfig {
+  kind: "netem";
+  delayMs?: number | null;
+  jitterMs?: number | null;
+  delayCorrelationPct?: number | null;
+  distribution?: string | null;
+  lossPct?: number | null;
+  lossCorrelationPct?: number | null;
+}
+
+export interface EWPSPhasePathProfile {
+  requestedProfileId: EWPSLabProfile;
+  appliedProfileId?: EWPSLabProfile | null;
+  requestedConfiguration: EWPSNormalizedNetemConfig;
+  appliedConfiguration?: EWPSNormalizedNetemConfig | null;
+  verification: "PASSED" | "FAILED" | "NOT_APPLICABLE";
+  verificationDetail: string;
+}
+
+export interface EWPSScenarioPhase {
+  scenarioId: EWPSLabScenario;
+  phaseIndex: number;
+  phaseId: string;
+  labInstanceId: string;
+  pathProfiles: Record<string, EWPSPhasePathProfile>;
+}
+
+export interface EWPSExperimentEvent {
+  eventId: string;
+  eventType: "SCENARIO_PHASE_CHANGED" | "SCENARIO_PHASE_APPLY_FAILED";
+  timestamp: string;
+  completedAt: string;
+  experimentId: string;
+  scenarioId: EWPSLabScenario;
+  previousPhaseIndex: number;
+  previousPhaseId: string;
+  newPhaseIndex: number;
+  newPhaseId: string;
+  applicationSucceeded: boolean;
+  labInstanceId: string;
+  affectedPathIds: string[];
+  pathProfiles: Record<string, EWPSPhasePathProfile>;
+  verification: "PASSED" | "FAILED" | "NOT_APPLICABLE";
+  detail: string;
 }
 
 export interface EWPSTimeline {
   session: EWPSExperimentSession;
   decisions: EWPSDecisionPoint[];
+  events: EWPSExperimentEvent[];
 }
 
 export interface EWPSDistribution {
@@ -212,6 +272,10 @@ export interface EWPSSummary {
   durationSeconds: number;
   totalSamples: number;
   decisionPoints: number;
+  configuredIntervalSeconds: number;
+  observedStartToStartSeconds: EWPSDistribution;
+  observedCollectionDurationMs: EWPSDistribution;
+  cadenceOverrunCount: number;
   measurementsPerPath: Record<string, number>;
   usablePathCountOverTime: Array<{ timestamp: string; count: number }>;
   unavailableCandidateCount: number;
@@ -234,6 +298,27 @@ export interface EWPSSummary {
   disagreementEvidenceComponents: Record<string, number>;
   mostCommonDisagreementComponent?: string | null;
   notableDecisionEvents: string[];
+  phaseSummaries: EWPSPhaseSummary[];
+}
+
+export interface EWPSPhaseSummary {
+  scenarioId: EWPSLabScenario;
+  phaseIndex: number;
+  phaseId: string;
+  startedAt: string;
+  endedAt: string;
+  durationSeconds: number;
+  decisionPoints: number;
+  measurementsPerPath: Record<string, number>;
+  performanceConfidencePerPath: Record<string, EWPSDistribution>;
+  rawCostDistributionPerPath: Record<string, EWPSDistribution>;
+  ewpsCostDistributionPerPath: Record<string, EWPSDistribution>;
+  algorithmPreferenceCounts: Record<string, Record<string, number>>;
+  algorithmDisagreementCount: number;
+  hysteresisSuppressions: number;
+  pathEligibilitySeconds: Record<string, number>;
+  telemetryFailures: number;
+  staleEvents: number;
 }
 
 export interface EWPSSimulatorScenario {
@@ -262,6 +347,7 @@ export interface EWPSReplayResult {
   config: EWPSConfig;
   deterministicDigest: string;
   decisions: EWPSDecisionPoint[];
+  events: EWPSExperimentEvent[];
 }
 
 export type EWPSLabProfile =
@@ -296,6 +382,8 @@ export interface EWPSLabStatus {
   message: string;
   scenarioId?: EWPSLabScenario | null;
   scenarioPhase: number;
+  scenarioPhaseId?: string | null;
+  scenarioPhaseCount: number;
   paths: Array<{
     pathId: "lab-path-a" | "lab-path-b";
     displayLabel: string;
@@ -304,6 +392,11 @@ export interface EWPSLabStatus {
     lastLatencyMs?: number | null;
     lastValidatedAt?: string | null;
   }>;
+}
+
+export interface EWPSLabScenarioAdvanceResponse {
+  status: EWPSLabStatus;
+  event?: EWPSExperimentEvent | null;
 }
 
 export interface EWPSExportResult {

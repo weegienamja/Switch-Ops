@@ -59,6 +59,7 @@ import type {
   EWPSExportResult,
   EWPSLabProfile,
   EWPSLabScenario,
+  EWPSLabScenarioAdvanceResponse,
   EWPSLabStatus,
   EWPSMeta,
   EWPSReplayResult,
@@ -256,7 +257,7 @@ export const api = {
       body: JSON.stringify({ scenarioId }),
     }),
   ewpsLabAdvanceScenario: () =>
-    fetchJson<EWPSLabStatus>("/api/ewps/lab/scenario/advance", { method: "POST" }),
+    fetchJson<EWPSLabScenarioAdvanceResponse>("/api/ewps/lab/scenario/advance", { method: "POST" }),
   summary: () => fetchJson<SwitchSummary>("/api/switch/summary"),
   dashboard: () => fetchJson<DashboardResponse>("/api/switch/dashboard"),
   interfaces: () =>

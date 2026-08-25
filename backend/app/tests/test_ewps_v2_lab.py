@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from datetime import datetime, timezone
+import json
 
 import pytest
 
@@ -7,10 +8,40 @@ from app import ewps_lab
 from app.ewps_lab import EWPSLabManager, LAB_PATHS, LAB_TOPOLOGY_VERSION, PROFILES, SCENARIO_PHASES
 from app.ewps_models import RawMetrics
 from app.ewps_telemetry import ProbeResult
+from app.ewps_v2_models import V2PhasePathProfile
 
 
 def completed(returncode=0, stdout="", stderr=""):
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def qdisc_json(profile_name):
+    config = ewps_lab._requested_netem(PROFILES[profile_name])
+    options = {}
+    if config.delay_ms is not None:
+        options["delay"] = {
+            "delay": config.delay_ms / 1000.0,
+            "jitter": (config.jitter_ms or 0.0) / 1000.0,
+            "correlation": (config.delay_correlation_pct or 0.0) / 100.0,
+        }
+    if config.loss_pct is not None:
+        options["loss"] = {"random": {
+            "probability": config.loss_pct / 100.0,
+            "correlation": (config.loss_correlation_pct or 0.0) / 100.0,
+        }}
+    return json.dumps([{"kind": "netem", "options": options}])
+
+
+def verified_profile(profile_name):
+    config = ewps_lab._requested_netem(PROFILES[profile_name])
+    return V2PhasePathProfile(
+        requestedProfileId=profile_name,
+        appliedProfileId=profile_name,
+        requestedConfiguration=config,
+        appliedConfiguration=config,
+        verification="PASSED",
+        verificationDetail="test proof",
+    )
 
 
 def test_wsl_wrapper_uses_a_fixed_argument_array_without_a_shell(monkeypatch):
@@ -81,9 +112,9 @@ def test_lab_surface_is_fixed_to_two_paths_profiles_and_named_scenarios():
 
 
 def test_manager_requires_explicit_create_and_reports_missing_facilities(monkeypatch):
+    monkeypatch.setattr(ewps_lab, "_wsl", lambda args, timeout: completed(returncode=1))
     manager = EWPSLabManager()
     assert not manager.status().ready
-    monkeypatch.setattr(ewps_lab, "_wsl", lambda args, timeout: completed(returncode=1))
     status = manager.create()
     assert not status.available
     assert not status.ready
@@ -95,6 +126,7 @@ def test_create_verify_scenario_and_complete_teardown_are_auditable(monkeypatch)
     namespaces_present = False
     marker: list[str] = []
     calls: list[list[str]] = []
+    applied = {"ewps02-gwa": "fast-stable", "ewps02-gwb": "slow-stable"}
     ping = (
         "64 bytes from 10.254.11.2: icmp_seq=1 ttl=63 time=16.1 ms\n"
         "64 bytes from 10.254.11.2: icmp_seq=2 ttl=63 time=16.3 ms\n"
@@ -127,8 +159,12 @@ def test_create_verify_scenario_and_complete_teardown_are_auditable(monkeypatch)
             return completed(stdout=names)
         if "ping" in args:
             return completed(stdout=ping)
-        if "tc" in args:
+        if "tc" in args and "replace" in args:
+            profile_args = tuple(args[args.index("netem") + 1:])
+            applied[args[3]] = next(name for name, profile in PROFILES.items() if profile.netem_args == profile_args)
             return completed()
+        if "tc" in args and "-j" in args:
+            return completed(stdout=qdisc_json(applied[args[3]]))
         return completed(returncode=1, stderr="unexpected test command")
 
     monkeypatch.setattr(ewps_lab, "_wsl", fake_wsl)
@@ -149,7 +185,8 @@ def test_create_verify_scenario_and_complete_teardown_are_auditable(monkeypatch)
     assert scenario.scenario_id == "faster-epistemically-weak"
     assert scenario.scenario_phase == 0
     advanced = manager.advance_scenario()
-    assert advanced.scenario_phase == 1
+    assert advanced.application_succeeded
+    assert manager.status().scenario_phase == 1
     assert manager.profile("lab-path-a").name == "fast-noisy"
     assert manager.profile("lab-path-b").name == "slow-stable"
 
@@ -199,6 +236,9 @@ def test_restart_reconciles_owned_topology_then_reverifies_both_paths(monkeypatc
             return completed(stdout="\n".join(marker) + "\n")
         if "ping" in args:
             return completed(stdout=ping)
+        if "tc" in args and "-j" in args:
+            profile = "fast-stable" if args[3] == "ewps02-gwa" else "slow-stable"
+            return completed(stdout=qdisc_json(profile))
         if args == ["ip", "netns", "list"]:
             return completed(stdout="ewps02-src\newps02-gwa\newps02-gwb\newps02-target\n")
         return completed(returncode=1)
@@ -258,6 +298,11 @@ def test_failed_path_verification_revokes_ready_and_candidates(monkeypatch):
         )
 
     monkeypatch.setattr(manager, "measure", measure)
+    monkeypatch.setattr(
+        manager,
+        "_query_profile",
+        lambda path_id, profile, current_profile=None: verified_profile(profile),
+    )
     status = manager.verify()
     assert status.state == "LAB_UNVERIFIED"
     assert not status.ready

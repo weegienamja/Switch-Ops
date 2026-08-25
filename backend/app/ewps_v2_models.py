@@ -21,7 +21,7 @@ from .ewps_models import (
 
 
 EWPS_V2_MODEL_VERSION = "0.2.0"
-EWPS_V2_RELEASE_ID = "ewps-v0.2.1-alpha"
+EWPS_V2_RELEASE_ID = "ewps-v0.2.3-alpha"
 
 CandidateLifecycle = Literal[
     "VIABLE",
@@ -153,6 +153,90 @@ class V2EWPSCalculation(EWPSBaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class V2CadenceObservation(EWPSBaseModel):
+    """Scheduler instrumentation attached to a live measurement cycle.
+
+    This is deliberately separate from the EWPS evidence inputs: cadence
+    describes when the collector ran and never participates in model math.
+    Historical v0.2 decision rows omit it and continue to validate unchanged.
+    """
+
+    configured_interval_seconds: float = Field(gt=0.0)
+    cycle_started_at: datetime
+    cycle_completed_at: datetime
+    collection_duration_ms: float = Field(ge=0.0)
+    actual_start_to_start_seconds: float | None = Field(default=None, ge=0.0)
+    cadence_overrun_count: int = Field(default=0, ge=0)
+
+
+PhaseVerification = Literal["PASSED", "FAILED", "NOT_APPLICABLE"]
+ExperimentEventType = Literal["SCENARIO_PHASE_CHANGED", "SCENARIO_PHASE_APPLY_FAILED"]
+
+
+class V2NormalizedNetemConfig(EWPSBaseModel):
+    """Privacy-safe, deterministic netem parameters; never shell text."""
+
+    kind: Literal["netem"] = "netem"
+    delay_ms: float | None = Field(default=None, ge=0.0)
+    jitter_ms: float | None = Field(default=None, ge=0.0)
+    delay_correlation_pct: float | None = Field(default=None, ge=0.0, le=100.0)
+    distribution: str | None = None
+    loss_pct: float | None = Field(default=None, ge=0.0, le=100.0)
+    loss_correlation_pct: float | None = Field(default=None, ge=0.0, le=100.0)
+
+
+class V2PhasePathProfile(EWPSBaseModel):
+    requested_profile_id: "LabProfileName"
+    applied_profile_id: "LabProfileName | None" = None
+    requested_configuration: V2NormalizedNetemConfig
+    applied_configuration: V2NormalizedNetemConfig | None = None
+    verification: PhaseVerification
+    verification_detail: str
+
+
+class V2ScenarioPhaseSnapshot(EWPSBaseModel):
+    scenario_id: "LabScenarioName"
+    phase_index: int = Field(ge=0)
+    phase_id: str = Field(min_length=1, max_length=80)
+    lab_instance_id: str
+    path_profiles: dict[str, V2PhasePathProfile]
+
+
+class V2ExperimentEvent(EWPSBaseModel):
+    event_id: str
+    event_type: ExperimentEventType
+    timestamp: datetime
+    completed_at: datetime
+    experiment_id: str
+    scenario_id: "LabScenarioName"
+    previous_phase_index: int = Field(ge=0)
+    previous_phase_id: str
+    new_phase_index: int = Field(ge=0)
+    new_phase_id: str
+    application_succeeded: bool
+    lab_instance_id: str
+    affected_path_ids: list[str]
+    path_profiles: dict[str, V2PhasePathProfile]
+    verification: PhaseVerification
+    detail: str
+
+
+class LabPhaseTransitionResult(EWPSBaseModel):
+    requested_at: datetime
+    completed_at: datetime
+    scenario_id: "LabScenarioName"
+    previous_phase_index: int
+    previous_phase_id: str
+    new_phase_index: int
+    new_phase_id: str
+    application_succeeded: bool
+    lab_instance_id: str
+    affected_path_ids: list[str]
+    path_profiles: dict[str, V2PhasePathProfile]
+    verification: PhaseVerification
+    detail: str
+
+
 class V2DecisionPoint(EWPSBaseModel):
     timestamp: datetime
     decision_index: int = Field(ge=0)
@@ -161,6 +245,8 @@ class V2DecisionPoint(EWPSBaseModel):
     hysteresis: HysteresisDecision
     events: list[str] = Field(default_factory=list)
     explanation: str
+    cadence: V2CadenceObservation | None = None
+    scenario_phase: V2ScenarioPhaseSnapshot | None = None
 
 
 class V2CandidatePath(EWPSBaseModel):
@@ -226,7 +312,12 @@ class V2ExperimentSession(EWPSBaseModel):
     kind: Literal["live", "simulator"] = "live"
     mode: Literal["SHADOW"] = "SHADOW"
     ewps_model_version: Literal["0.2.0"] = EWPS_V2_MODEL_VERSION
-    release_id: Literal["ewps-v0.2.0-alpha", "ewps-v0.2.1-alpha"] = EWPS_V2_RELEASE_ID
+    release_id: Literal[
+        "ewps-v0.2.0-alpha",
+        "ewps-v0.2.1-alpha",
+        "ewps-v0.2.2-alpha",
+        "ewps-v0.2.3-alpha",
+    ] = EWPS_V2_RELEASE_ID
     config: EWPSV2Config
     source_mode: ExperimentSourceMode = "LEGACY_UNBOUND"
     candidate_path_ids: list[str]
@@ -235,6 +326,7 @@ class V2ExperimentSession(EWPSBaseModel):
     lab_topology_version: str | None = None
     initial_verification_status: InitialVerificationStatus = "LEGACY_UNKNOWN"
     controlled_impairment_scenario: "LabScenarioName | None" = None
+    initial_scenario_phase: V2ScenarioPhaseSnapshot | None = None
     created_at: datetime
     started_at: datetime | None = None
     ended_at: datetime | None = None
@@ -246,6 +338,7 @@ class V2ExperimentSession(EWPSBaseModel):
 class V2ExperimentTimeline(EWPSBaseModel):
     session: V2ExperimentSession
     decisions: list[V2DecisionPoint]
+    events: list[V2ExperimentEvent] = Field(default_factory=list)
 
 
 class DistributionSummary(EWPSBaseModel):
@@ -260,6 +353,10 @@ class V2ExperimentSummary(EWPSBaseModel):
     duration_seconds: float
     total_samples: int
     decision_points: int
+    configured_interval_seconds: float
+    observed_start_to_start_seconds: DistributionSummary
+    observed_collection_duration_ms: DistributionSummary
+    cadence_overrun_count: int
     measurements_per_path: dict[str, int]
     usable_path_count_over_time: list[dict[str, Any]]
     unavailable_candidate_count: int
@@ -282,6 +379,27 @@ class V2ExperimentSummary(EWPSBaseModel):
     disagreement_evidence_components: dict[str, int]
     most_common_disagreement_component: str | None = None
     notable_decision_events: list[str]
+    phase_summaries: list["V2PhaseSummary"] = Field(default_factory=list)
+
+
+class V2PhaseSummary(EWPSBaseModel):
+    scenario_id: "LabScenarioName"
+    phase_index: int = Field(ge=0)
+    phase_id: str
+    started_at: datetime
+    ended_at: datetime
+    duration_seconds: float = Field(ge=0.0)
+    decision_points: int = Field(ge=0)
+    measurements_per_path: dict[str, int]
+    performance_confidence_per_path: dict[str, DistributionSummary]
+    raw_cost_distribution_per_path: dict[str, DistributionSummary]
+    ewps_cost_distribution_per_path: dict[str, DistributionSummary]
+    algorithm_preference_counts: dict[str, dict[str, int]]
+    algorithm_disagreement_count: int = Field(ge=0)
+    hysteresis_suppressions: int = Field(ge=0)
+    path_eligibility_seconds: dict[str, float]
+    telemetry_failures: int = Field(ge=0)
+    stale_events: int = Field(ge=0)
 
 
 class V2ReplayResult(EWPSBaseModel):
@@ -295,6 +413,7 @@ class V2ReplayResult(EWPSBaseModel):
     config: EWPSV2Config
     deterministic_digest: str
     decisions: list[V2DecisionPoint]
+    events: list[V2ExperimentEvent] = Field(default_factory=list)
 
 
 class V2ReplayRequest(EWPSBaseModel):
@@ -391,4 +510,11 @@ class LabStatus(EWPSBaseModel):
     message: str
     scenario_id: LabScenarioName | None = None
     scenario_phase: int = 0
+    scenario_phase_id: str | None = None
+    scenario_phase_count: int = 0
     paths: list[LabPathStatus] = Field(default_factory=list)
+
+
+class LabScenarioAdvanceResponse(EWPSBaseModel):
+    status: LabStatus
+    event: V2ExperimentEvent | None = None

@@ -51,9 +51,10 @@ const meta: EWPSMeta = {
     unknown: { score: 0, description: "unknown" },
   },
   defaultConfig: config,
+  sampleIntervalSemantics: "non-overlapping measurement-cycle start-to-start cadence",
   fixedProbeTargetToken: "fixed-token",
   privacyBoundary: "no payloads",
-  compatibility: { v01Replay: true, v01SemanticsPreserved: true, historicalRowsReinterpreted: false },
+  compatibility: { v01Replay: true, v01SemanticsPreserved: true, historicalRowsReinterpreted: false, cadenceInstrumentationAdditive: true },
 };
 
 const candidates: EWPSCandidatePath[] = [
@@ -74,6 +75,8 @@ const lab: EWPSLabStatus = {
   message: "Both controlled logical paths independently returned validated telemetry.",
   scenarioId: "faster-epistemically-weak",
   scenarioPhase: 0,
+  scenarioPhaseId: "baseline",
+  scenarioPhaseCount: 3,
   paths: [
     { pathId: "lab-path-a", displayLabel: "Path A", profile: "fast-stable", independentlyValidated: true, lastLatencyMs: 15 },
     { pathId: "lab-path-b", displayLabel: "Path B", profile: "slow-stable", independentlyValidated: true, lastLatencyMs: 25 },
@@ -151,6 +154,14 @@ const point: EWPSDecisionPoint = {
   hysteresis: { preferredPathId: "lab-path-b", challengerPathId: "lab-path-b", recommendationChanged: true, suppressed: false, wouldSwitch: true, reason: "changed", switchBlockedBy: "shadow_mode" },
   events: ["algorithm_preference_crossing:lowest_latency", "rolling_loss_event:lab-path-a"],
   explanation: "Path A is faster, but stability limits its performance confidence. Path B has lower EWPS cost.",
+  cadence: {
+    configuredIntervalSeconds: 5,
+    cycleStartedAt: "2026-08-25T00:09:50Z",
+    cycleCompletedAt: "2026-08-25T00:09:54Z",
+    collectionDurationMs: 4000,
+    actualStartToStartSeconds: 5.01,
+    cadenceOverrunCount: 0,
+  },
 };
 
 const summary: EWPSSummary = {
@@ -158,6 +169,10 @@ const summary: EWPSSummary = {
   durationSeconds: 600,
   totalSamples: 40,
   decisionPoints: 20,
+  configuredIntervalSeconds: 5,
+  observedStartToStartSeconds: { minimum: 4.99, mean: 5.01, median: 5, maximum: 5.04 },
+  observedCollectionDurationMs: { minimum: 3990, mean: 4010, median: 4000, maximum: 4060 },
+  cadenceOverrunCount: 0,
   measurementsPerPath: { "lab-path-a": 20, "lab-path-b": 20 },
   usablePathCountOverTime: [{ timestamp: point.timestamp, count: 2 }],
   unavailableCandidateCount: 0,
@@ -175,6 +190,7 @@ const summary: EWPSSummary = {
   ewpsVsLowestLatencyDifferencePercentage: 40,
   disagreementEvidenceComponents: { stability: 8 }, mostCommonDisagreementComponent: "stability",
   notableDecisionEvents: [],
+  phaseSummaries: [],
 };
 
 
@@ -184,7 +200,7 @@ function mockBase(current: EWPSExperimentSession | null = session) {
   vi.spyOn(api, "ewpsCurrent").mockResolvedValue(current);
   vi.spyOn(api, "ewpsSimulatorScenarios").mockResolvedValue([{ scenarioId: "faster-epistemically-weak", name: "Faster but weak", description: "comparison", expectedResearchPattern: "possible disagreement" }]);
   vi.spyOn(api, "ewpsLabStatus").mockResolvedValue(lab);
-  vi.spyOn(api, "ewpsTimeline").mockResolvedValue({ session, decisions: [point] });
+  vi.spyOn(api, "ewpsTimeline").mockResolvedValue({ session, decisions: [point], events: [] });
   vi.spyOn(api, "ewpsSummary").mockResolvedValue(summary);
 }
 
@@ -206,6 +222,15 @@ describe("EWPS v0.2 Observatory", () => {
     expect(screen.getAllByText("ROLLING LATENCY")).toHaveLength(2);
     expect(screen.getByText("performance only")).toBeTruthy();
     expect(screen.getByText(/Path A is faster/)).toBeTruthy();
+    expect(screen.getByText("OBSERVED CADENCE")).toBeTruthy();
+    expect(screen.getAllByText("5.01 s").length).toBeGreaterThan(0);
+  });
+
+  it("offers a generic background streaming workload without rewriting session history", async () => {
+    mockBase(null);
+    render(<EWPSObservatory />);
+    expect(await screen.findByRole("option", { name: "Background streaming" })).toBeTruthy();
+    expect(session.workloadLabel).toBe("Amazon Prime Video");
   });
 
   it("shows a successful export popup with the exact selectable path and browser fallback", async () => {
@@ -302,5 +327,25 @@ describe("EWPS v0.2 Observatory", () => {
     expect(await screen.findByText("CONTROLLED LAB LOST.")).toBeTruthy();
     expect(screen.queryByText("NOT YET VERIFIED")).toBeNull();
     expect(screen.getAllByText("CONTROLLED LAB LOST")).toHaveLength(2);
+  });
+
+  it("E2E phase provenance: advances explicitly and renders the immutable transition marker", async () => {
+    const running = { ...session, status: "RUNNING" as const, endedAt: null };
+    const pathProfiles = {
+      "lab-path-a": { requestedProfileId: "fast-noisy" as const, appliedProfileId: "fast-noisy" as const, requestedConfiguration: { kind: "netem" as const, delayMs: 8, jitterMs: 12, delayCorrelationPct: 25, distribution: "normal" }, appliedConfiguration: { kind: "netem" as const, delayMs: 8, jitterMs: 12, delayCorrelationPct: 25 }, verification: "PASSED" as const, verificationDetail: "verified" },
+      "lab-path-b": { requestedProfileId: "slow-stable" as const, appliedProfileId: "slow-stable" as const, requestedConfiguration: { kind: "netem" as const, delayMs: 28, jitterMs: .5, delayCorrelationPct: 10 }, appliedConfiguration: { kind: "netem" as const, delayMs: 28, jitterMs: .5, delayCorrelationPct: 10 }, verification: "PASSED" as const, verificationDetail: "verified" },
+    };
+    const event = { eventId: "ewps-event-one", eventType: "SCENARIO_PHASE_CHANGED" as const, timestamp: "2026-08-25T03:07:13Z", completedAt: "2026-08-25T03:07:13.020Z", experimentId: session.experimentId, scenarioId: "faster-epistemically-weak" as const, previousPhaseIndex: 0, previousPhaseId: "baseline", newPhaseIndex: 1, newPhaseId: "fast-noisy", applicationSucceeded: true, labInstanceId: "11111111-1111-4111-8111-111111111111", affectedPathIds: ["lab-path-a"], pathProfiles, verification: "PASSED" as const, detail: "verified" };
+    const noisyPoint = { ...point, decisionIndex: 2, timestamp: "2026-08-25T03:07:18Z", scenarioPhase: { scenarioId: "faster-epistemically-weak" as const, phaseIndex: 1, phaseId: "fast-noisy", labInstanceId: event.labInstanceId, pathProfiles } };
+    mockBase(running);
+    vi.mocked(api.ewpsTimeline).mockResolvedValue({ session: running, decisions: [point, noisyPoint], events: [event] });
+    vi.spyOn(api, "ewpsLabAdvanceScenario").mockResolvedValue({ status: { ...lab, scenarioPhase: 1, scenarioPhaseId: "fast-noisy" }, event });
+    render(<EWPSObservatory />);
+    const advance = await screen.findByRole("button", { name: "Advance to Phase 2" });
+    expect((advance as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(advance);
+    expect(await screen.findByText("Scenario phase changed")).toBeTruthy();
+    expect(screen.getByText("Baseline → Fast Noisy")).toBeTruthy();
+    expect(screen.getAllByText("Fast Noisy").length).toBeGreaterThan(0);
   });
 });

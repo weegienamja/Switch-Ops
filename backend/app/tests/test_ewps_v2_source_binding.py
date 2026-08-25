@@ -15,6 +15,9 @@ from app.ewps_v2_models import (
     V2CandidatePath,
     V2CandidateSnapshot,
     V2ExperimentCreateRequest,
+    V2NormalizedNetemConfig,
+    V2PhasePathProfile,
+    V2ScenarioPhaseSnapshot,
 )
 from app.ewps_v2_service import EWPSV2Service, V2EngineRuntime, V2InternalCandidate
 
@@ -74,6 +77,9 @@ def lab_status(*, ready: bool, verified_a: bool = True, verified_b: bool = True)
         topologyVersion=LAB_TOPOLOGY_VERSION,
         message="test status",
         scenarioId=SCENARIO,
+        scenarioPhase=0,
+        scenarioPhaseId="baseline",
+        scenarioPhaseCount=3,
         paths=[
             LabPathStatus(pathId="lab-path-a", displayLabel="Path A", profile="fast-stable", independentlyValidated=verified_a),
             LabPathStatus(pathId="lab-path-b", displayLabel="Path B", profile="slow-stable", independentlyValidated=verified_b),
@@ -95,6 +101,33 @@ class FakeLab:
         if not self.current_status.ready:
             return []
         return [controlled_public("lab-path-a"), controlled_public("lab-path-b")]
+
+    def current_phase_snapshot(self):
+        profiles = {}
+        for path_id, profile_id, delay in (
+            ("lab-path-a", "fast-stable", 8.0),
+            ("lab-path-b", "slow-stable", 28.0),
+        ):
+            config_value = V2NormalizedNetemConfig(
+                delayMs=delay,
+                jitterMs=.5,
+                delayCorrelationPct=10,
+            )
+            profiles[path_id] = V2PhasePathProfile(
+                requestedProfileId=profile_id,
+                appliedProfileId=profile_id,
+                requestedConfiguration=config_value,
+                appliedConfiguration=config_value,
+                verification="PASSED",
+                verificationDetail="test proof",
+            )
+        return V2ScenarioPhaseSnapshot(
+            scenarioId=SCENARIO,
+            phaseIndex=0,
+            phaseId="baseline",
+            labInstanceId=INSTANCE_ID,
+            pathProfiles=profiles,
+        )
 
     def binding_is_current(self, instance_id, topology_version):
         return self.binding_current and instance_id == INSTANCE_ID and topology_version == LAB_TOPOLOGY_VERSION

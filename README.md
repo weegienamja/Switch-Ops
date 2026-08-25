@@ -182,9 +182,10 @@ operator-started controlled WSL2 dual-path lab and v0.2 calibration changes.
 It remains **SHADOW MODE — RECOMMENDATIONS ONLY**, does not steer normal
 traffic, is not SwitchOps v0.9, and is not merged into `main`.
 
-The current `ewps-v0.2.1-alpha` corrective release makes controlled-path
-source binding backend-authoritative; the published v0.2.0 release remains
-unchanged as the historical record of the integration defect.
+The current `ewps-v0.2.3-alpha` instrumentation release adds authoritative,
+immutable scenario-phase provenance to every new controlled measurement and
+retains the start-to-start cadence correction from v0.2.2. The published older
+releases remain unchanged as historical records.
 
 - Performance evidence confidence is separated from topology confidence;
   weak/unknown structure stays visible without normally invalidating good
@@ -197,11 +198,17 @@ unchanged as the historical record of the integration defect.
   it makes no physical, ISP, or independent failure-domain diversity claim.
 - Successful exports now show their exact saved path and the desktop build can
   open only the fixed EWPS export folder.
+- Live decisions and exports record configured cadence, cycle start/completion,
+  collection duration, observed start-to-start interval, and cumulative
+  cadence overruns.
+- Schema-v4 experiments record the backend-owned phase/profile snapshot for
+  each measurement plus verified, immutable phase transition events and
+  phase-level summaries. Phase metadata is not an EWPS model input.
 - Stored v0.1 sessions remain readable and replay under unchanged `0.1.0`
   semantics.
 
 See [docs/EWPS-V0.2-RESEARCH.md](docs/EWPS-V0.2-RESEARCH.md) and
-[docs/EWPS-V0.2.1-RELEASE-NOTES.md](docs/EWPS-V0.2.1-RELEASE-NOTES.md).
+[docs/EWPS-V0.2.3-RELEASE-NOTES.md](docs/EWPS-V0.2.3-RELEASE-NOTES.md).
 
 ## Interface write policy
 
