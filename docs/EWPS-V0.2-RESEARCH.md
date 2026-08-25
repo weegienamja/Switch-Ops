@@ -1,6 +1,10 @@
 # EWPS v0.2 — Controlled Dual-Path Experimentation and Model Calibration
 
-Release identifier: `ewps-v0.2.0-alpha`
+Current corrective release identifier: `ewps-v0.2.1-alpha`
+
+The EWPS mathematics and model version remain `0.2.0`. The `0.2.1` release
+corrects controlled-lab source binding and provenance; it does not reinterpret
+historical observations or alter the scoring equations.
 
 Model version: `0.2.0`
 

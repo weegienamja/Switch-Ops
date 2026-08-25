@@ -13,6 +13,12 @@ export type EWPSCandidateLifecycle =
   | "RECOVERING"
   | "DISABLED";
 
+export type EWPSSourceMode =
+  | "REAL_INTERFACES"
+  | "CONTROLLED_DUAL_PATH"
+  | "SIMULATOR"
+  | "LEGACY_UNBOUND";
+
 export interface EWPSWeights {
   freshness: number;
   stability: number;
@@ -47,7 +53,7 @@ export interface EWPSConfig {
 
 export interface EWPSMeta {
   modelVersion: "0.2.0";
-  releaseId: "ewps-v0.2.0-alpha";
+  releaseId: "ewps-v0.2.0-alpha" | "ewps-v0.2.1-alpha";
   mode: "SHADOW";
   modeLabel: string;
   changesNetworkState: false;
@@ -77,6 +83,16 @@ export interface EWPSCandidatePath {
   eligibleForLiveMeasurement: boolean;
 }
 
+export interface EWPSCandidateSnapshot {
+  pathId: string;
+  displayLabel: string;
+  adapterName: string;
+  sourceKind: "real_interface" | "controlled_lab";
+  topologyEvidence: TopologyEvidenceKey;
+  topologyDetail: string;
+  diversityClaim: string;
+}
+
 export interface EWPSExperimentSession {
   experimentId: string;
   name: string;
@@ -87,7 +103,13 @@ export interface EWPSExperimentSession {
   ewpsModelVersion: string;
   releaseId: string;
   config: EWPSConfig;
+  sourceMode: EWPSSourceMode;
   candidatePathIds: string[];
+  candidateSnapshot: EWPSCandidateSnapshot[];
+  labInstanceId?: string | null;
+  labTopologyVersion?: string | null;
+  initialVerificationStatus: "VERIFIED" | "NOT_APPLICABLE" | "LEGACY_UNKNOWN";
+  controlledImpairmentScenario?: EWPSLabScenario | null;
   createdAt: string;
   startedAt?: string | null;
   endedAt?: string | null;
@@ -108,7 +130,7 @@ export interface EWPSRawMetrics {
   probeOutcomes: boolean[];
   reachable?: boolean | null;
   routingMetricsUsable: boolean;
-  telemetryState: "validated" | "transient_failure" | "candidate_unavailable" | "reprobe_deferred" | "evidence_stale";
+  telemetryState: "validated" | "transient_failure" | "candidate_unavailable" | "reprobe_deferred" | "evidence_stale" | "controlled_lab_lost";
   candidateLifecycle: EWPSCandidateLifecycle;
   transientFailure: boolean;
   candidateUnavailableEvent: boolean;
@@ -232,6 +254,11 @@ export interface EWPSSimulatorResult {
 export interface EWPSReplayResult {
   sourceExperimentId: string;
   modelVersion: string;
+  sourceMode: EWPSSourceMode;
+  candidateSnapshot: EWPSCandidateSnapshot[];
+  labInstanceId?: string | null;
+  labTopologyVersion?: string | null;
+  controlledImpairmentScenario?: EWPSLabScenario | null;
   config: EWPSConfig;
   deterministicDigest: string;
   decisions: EWPSDecisionPoint[];
@@ -259,6 +286,10 @@ export type EWPSLabScenario =
 export interface EWPSLabStatus {
   available: boolean;
   ready: boolean;
+  state: "LAB_NOT_CREATED" | "LAB_UNVERIFIED" | "LAB_READY" | "LAB_LOST";
+  prerequisitesPassed: boolean;
+  labInstanceId?: string | null;
+  topologyVersion: string;
   explicitStartRequired: boolean;
   architecture: string;
   diversityClaim: string;

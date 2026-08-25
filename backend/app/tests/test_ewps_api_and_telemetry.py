@@ -36,6 +36,7 @@ def test_meta_declares_non_probability_shadow_boundary_and_versioned_mapping():
     assert body["mode"] == "SHADOW"
     assert body["changesNetworkState"] is False
     assert body["modelVersion"] == "0.2.0"
+    assert body["releaseId"] == "ewps-v0.2.1-alpha"
     assert "calibrated probability" in body["confidenceSemantics"]
     assert body["topologyMappingVersion"]
     assert body["compatibility"]["v01SemanticsPreserved"] is True
@@ -50,6 +51,7 @@ def test_simulator_api_covers_scenarios_and_returns_shadow_decisions():
         json={"scenarioId": "faster-epistemically-weak", "config": {}},
     )
     assert response.status_code == 200
+    assert response.json()["sourceMode"] == "SIMULATOR"
     assert response.json()["summary"]["shadowMode"] is True
 
 
@@ -83,6 +85,7 @@ def test_api_lifecycle_records_live_shadow_observation(tmp_path, monkeypatch):
         json={
             "name": "API session",
             "workloadLabel": "Idle baseline",
+            "sourceMode": "REAL_INTERFACES",
             "candidatePathIds": ["path-a", "path-b"],
             "config": {
                 "sampleIntervalSeconds": 300,
@@ -111,6 +114,7 @@ def test_api_lifecycle_records_live_shadow_observation(tmp_path, monkeypatch):
     replay = client.post(f"/api/ewps/experiments/{experiment_id}/replay", json={"config": None})
     assert replay.status_code == 200
     assert replay.json()["deterministicDigest"]
+    assert replay.json()["sourceMode"] == "REAL_INTERFACES"
     replay_override = client.post(
         f"/api/ewps/experiments/{experiment_id}/replay",
         json={"config": {"alpha": 2.0, "pPerfMin": 0.01}},

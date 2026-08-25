@@ -221,6 +221,7 @@ def test_simulator_includes_agreement_slower_choice_and_adversarial_controls():
     recovery = run_v2_scenario("recovery", EWPSV2Config())
     adversarial = run_v2_scenario("adversarial-model", EWPSV2Config())
     calibration = run_v2_scenario("experiment-001-calibration", EWPSV2Config())
+    assert agreement.source_mode == "SIMULATOR"
     assert agreement.summary["disagreementPoints"] == 0
     assert weak.summary["disagreementPoints"] > 0
     weak_last = {item.algorithm: item.path_id for item in weak.decisions[-1].algorithms}

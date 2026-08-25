@@ -21,7 +21,7 @@ from .ewps_models import (
 
 
 EWPS_V2_MODEL_VERSION = "0.2.0"
-EWPS_V2_RELEASE_ID = "ewps-v0.2.0-alpha"
+EWPS_V2_RELEASE_ID = "ewps-v0.2.1-alpha"
 
 CandidateLifecycle = Literal[
     "VIABLE",
@@ -31,12 +31,20 @@ CandidateLifecycle = Literal[
     "DISABLED",
 ]
 CandidateSourceKind = Literal["real_interface", "controlled_lab"]
+ExperimentSourceMode = Literal[
+    "REAL_INTERFACES",
+    "CONTROLLED_DUAL_PATH",
+    "SIMULATOR",
+    "LEGACY_UNBOUND",
+]
+InitialVerificationStatus = Literal["VERIFIED", "NOT_APPLICABLE", "LEGACY_UNKNOWN"]
 TelemetryState = Literal[
     "validated",
     "transient_failure",
     "candidate_unavailable",
     "reprobe_deferred",
     "evidence_stale",
+    "controlled_lab_lost",
 ]
 EligibilityState = Literal[
     "ELIGIBLE",
@@ -168,10 +176,24 @@ class V2CandidatePath(EWPSBaseModel):
     eligible_for_live_measurement: bool = True
 
 
+class V2CandidateSnapshot(EWPSBaseModel):
+    """Immutable, privacy-safe identity and provenance captured at creation."""
+
+    path_id: str
+    display_label: str
+    adapter_name: str
+    source_kind: CandidateSourceKind
+    topology_evidence: TopologyEvidenceKey
+    topology_detail: str
+    diversity_claim: str = "No physical, ISP, or independent failure-domain diversity is claimed."
+
+
 class V2ExperimentCreateRequest(EWPSBaseModel):
     name: str = Field(min_length=1, max_length=100)
     workload_label: str = Field(min_length=1, max_length=80)
+    source_mode: Literal["REAL_INTERFACES", "CONTROLLED_DUAL_PATH"]
     candidate_path_ids: list[str] = Field(min_length=1, max_length=8)
+    controlled_scenario: "LabScenarioName | None" = None
     config: EWPSV2Config = Field(default_factory=EWPSV2Config)
 
     @field_validator("name", "workload_label")
@@ -189,6 +211,12 @@ class V2ExperimentCreateRequest(EWPSBaseModel):
             raise ValueError("Candidate path IDs must be unique.")
         return value
 
+    @model_validator(mode="after")
+    def source_and_scenario_agree(self) -> "V2ExperimentCreateRequest":
+        if self.source_mode == "REAL_INTERFACES" and self.controlled_scenario is not None:
+            raise ValueError("A real-interface experiment cannot reference a controlled-lab scenario.")
+        return self
+
 
 class V2ExperimentSession(EWPSBaseModel):
     experiment_id: str
@@ -198,9 +226,15 @@ class V2ExperimentSession(EWPSBaseModel):
     kind: Literal["live", "simulator"] = "live"
     mode: Literal["SHADOW"] = "SHADOW"
     ewps_model_version: Literal["0.2.0"] = EWPS_V2_MODEL_VERSION
-    release_id: Literal["ewps-v0.2.0-alpha"] = EWPS_V2_RELEASE_ID
+    release_id: Literal["ewps-v0.2.0-alpha", "ewps-v0.2.1-alpha"] = EWPS_V2_RELEASE_ID
     config: EWPSV2Config
+    source_mode: ExperimentSourceMode = "LEGACY_UNBOUND"
     candidate_path_ids: list[str]
+    candidate_snapshot: list[V2CandidateSnapshot] = Field(default_factory=list)
+    lab_instance_id: str | None = None
+    lab_topology_version: str | None = None
+    initial_verification_status: InitialVerificationStatus = "LEGACY_UNKNOWN"
+    controlled_impairment_scenario: "LabScenarioName | None" = None
     created_at: datetime
     started_at: datetime | None = None
     ended_at: datetime | None = None
@@ -253,6 +287,11 @@ class V2ExperimentSummary(EWPSBaseModel):
 class V2ReplayResult(EWPSBaseModel):
     source_experiment_id: str
     model_version: Literal["0.2.0"] = EWPS_V2_MODEL_VERSION
+    source_mode: ExperimentSourceMode
+    candidate_snapshot: list[V2CandidateSnapshot]
+    lab_instance_id: str | None = None
+    lab_topology_version: str | None = None
+    controlled_impairment_scenario: "LabScenarioName | None" = None
     config: EWPSV2Config
     deterministic_digest: str
     decisions: list[V2DecisionPoint]
@@ -281,6 +320,7 @@ class V2SimulatorRunRequest(EWPSBaseModel):
 
 
 class V2SimulatorRunResult(EWPSBaseModel):
+    source_mode: Literal["SIMULATOR"] = "SIMULATOR"
     scenario: V2SimulatorScenario
     config: EWPSV2Config
     decisions: list[V2DecisionPoint]
@@ -341,6 +381,10 @@ class LabPathStatus(EWPSBaseModel):
 class LabStatus(EWPSBaseModel):
     available: bool
     ready: bool
+    state: Literal["LAB_NOT_CREATED", "LAB_UNVERIFIED", "LAB_READY", "LAB_LOST"]
+    prerequisites_passed: bool = False
+    lab_instance_id: str | None = None
+    topology_version: str
     explicit_start_required: bool = True
     architecture: str = "contained WSL2 network namespaces with two separate gateway/veth chains"
     diversity_claim: str = "Controlled logical test paths; no physical, ISP, or independent failure-domain diversity is claimed."

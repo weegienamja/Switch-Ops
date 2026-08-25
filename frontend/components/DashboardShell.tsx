@@ -234,7 +234,7 @@ export default function DashboardShell() {
         <div className="local-banner"><span>LOCAL-ONLY</span>EWPS runs as a read-only shadow observer on this PC.</div>
         <div className="container">
           <header className="ewps-standalone-header">
-            <div className="ewps-standalone-header__brand"><div className="header__logo">SO</div><div><strong>SwitchOps Research</strong><span>EWPS v0.2 Alpha · Controlled Dual Path</span></div></div>
+            <div className="ewps-standalone-header__brand"><div className="header__logo">SO</div><div><strong>SwitchOps Research</strong><span>EWPS v0.2.1 Alpha · Controlled Path Binding Fix</span></div></div>
             <button className="btn btn--ghost" onClick={() => setShowSetup(true)}>Configure Catalyst observation</button>
           </header>
           <EWPSObservatory />

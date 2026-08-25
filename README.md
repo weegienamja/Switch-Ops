@@ -182,6 +182,10 @@ operator-started controlled WSL2 dual-path lab and v0.2 calibration changes.
 It remains **SHADOW MODE — RECOMMENDATIONS ONLY**, does not steer normal
 traffic, is not SwitchOps v0.9, and is not merged into `main`.
 
+The current `ewps-v0.2.1-alpha` corrective release makes controlled-path
+source binding backend-authoritative; the published v0.2.0 release remains
+unchanged as the historical record of the integration defect.
+
 - Performance evidence confidence is separated from topology confidence;
   weak/unknown structure stays visible without normally invalidating good
   direct telemetry.
@@ -197,7 +201,7 @@ traffic, is not SwitchOps v0.9, and is not merged into `main`.
   semantics.
 
 See [docs/EWPS-V0.2-RESEARCH.md](docs/EWPS-V0.2-RESEARCH.md) and
-[docs/EWPS-V0.2-RELEASE-NOTES.md](docs/EWPS-V0.2-RELEASE-NOTES.md).
+[docs/EWPS-V0.2.1-RELEASE-NOTES.md](docs/EWPS-V0.2.1-RELEASE-NOTES.md).
 
 ## Interface write policy
 

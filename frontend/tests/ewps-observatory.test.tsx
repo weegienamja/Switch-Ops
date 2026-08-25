@@ -57,13 +57,17 @@ const meta: EWPSMeta = {
 };
 
 const candidates: EWPSCandidatePath[] = [
-  { pathId: "lab-path-a", displayLabel: "Path A", adapterName: "Controlled logical Path A", sourceKind: "controlled_lab", lifecycle: "VIABLE", topologyEvidence: "reciprocal_independent_direct", topologyDetail: "Contained chain A.", diversityClaim: "No physical diversity claimed.", eligibleForLiveMeasurement: true },
-  { pathId: "lab-path-b", displayLabel: "Path B", adapterName: "Controlled logical Path B", sourceKind: "controlled_lab", lifecycle: "VIABLE", topologyEvidence: "reciprocal_independent_direct", topologyDetail: "Contained chain B.", diversityClaim: "No physical diversity claimed.", eligibleForLiveMeasurement: true },
+  { pathId: "lab-path-a", displayLabel: "Controlled Path A", adapterName: "Fast Stable", sourceKind: "controlled_lab", lifecycle: "VIABLE", topologyEvidence: "reciprocal_independent_direct", topologyDetail: "Contained chain A.", diversityClaim: "No physical diversity claimed.", eligibleForLiveMeasurement: true },
+  { pathId: "lab-path-b", displayLabel: "Controlled Path B", adapterName: "Slow Stable", sourceKind: "controlled_lab", lifecycle: "VIABLE", topologyEvidence: "reciprocal_independent_direct", topologyDetail: "Contained chain B.", diversityClaim: "No physical diversity claimed.", eligibleForLiveMeasurement: true },
 ];
 
 const lab: EWPSLabStatus = {
   available: true,
   ready: true,
+  state: "LAB_READY",
+  prerequisitesPassed: true,
+  labInstanceId: "11111111-1111-4111-8111-111111111111",
+  topologyVersion: "switchops-ewps-contained-dual-path-v1",
   explicitStartRequired: true,
   architecture: "contained WSL2 network namespaces",
   diversityClaim: "Controlled logical test paths; no physical diversity.",
@@ -86,7 +90,13 @@ const session: EWPSExperimentSession = {
   ewpsModelVersion: "0.2.0",
   releaseId: "ewps-v0.2.0-alpha",
   config,
+  sourceMode: "CONTROLLED_DUAL_PATH",
   candidatePathIds: ["lab-path-a", "lab-path-b"],
+  candidateSnapshot: candidates.map(({ pathId, displayLabel, adapterName, sourceKind, topologyEvidence, topologyDetail, diversityClaim }) => ({ pathId, displayLabel, adapterName, sourceKind, topologyEvidence, topologyDetail, diversityClaim })),
+  labInstanceId: lab.labInstanceId,
+  labTopologyVersion: lab.topologyVersion,
+  initialVerificationStatus: "VERIFIED",
+  controlledImpairmentScenario: "faster-epistemically-weak",
   createdAt: "2026-08-25T00:00:00Z",
   startedAt: "2026-08-25T00:00:00Z",
   endedAt: "2026-08-25T00:10:00Z",
@@ -247,9 +257,50 @@ describe("EWPS v0.2 Observatory", () => {
   it("renders the empty candidate state and contained-lab creation action", async () => {
     mockBase(null);
     vi.mocked(api.ewpsCandidates).mockResolvedValue([]);
-    vi.mocked(api.ewpsLabStatus).mockResolvedValue({ ...lab, ready: false, paths: [], message: "Explicit creation required." });
+    vi.mocked(api.ewpsLabStatus).mockResolvedValue({ ...lab, ready: false, state: "LAB_NOT_CREATED", prerequisitesPassed: false, labInstanceId: null, paths: [], message: "Explicit creation required." });
     render(<EWPSObservatory />);
-    expect(await screen.findByText(/No active real interface/)).toBeTruthy();
+    expect(await screen.findByText(/Create, verify, and prepare/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Create contained lab" })).toBeTruthy();
+  });
+
+  it("E2E regression: a controlled run cannot inherit real-interface candidates from the pre-lab screen", async () => {
+    const real: EWPSCandidatePath = { pathId: "path-real-a", displayLabel: "Real Path A", adapterName: "Ethernet", sourceKind: "real_interface", lifecycle: "VIABLE", topologyEvidence: "weak_inference", topologyDetail: "Local attachment.", diversityClaim: "No physical diversity claimed.", eligibleForLiveMeasurement: true };
+    const notCreated: EWPSLabStatus = { ...lab, ready: false, state: "LAB_NOT_CREATED", prerequisitesPassed: false, labInstanceId: null, scenarioId: null, paths: [], message: "LAB NOT CREATED." };
+    mockBase(null);
+    vi.mocked(api.ewpsCandidates).mockResolvedValueOnce([real]).mockResolvedValue([real, ...candidates]);
+    vi.mocked(api.ewpsLabStatus).mockResolvedValue(notCreated);
+    vi.spyOn(api, "ewpsLabCreate").mockResolvedValue(lab);
+    const created = { ...session, status: "CREATED" as const, startedAt: null, endedAt: null };
+    const running = { ...created, status: "RUNNING" as const, startedAt: "2026-08-25T00:00:00Z" };
+    const create = vi.spyOn(api, "ewpsCreate").mockResolvedValue(created);
+    vi.spyOn(api, "ewpsStart").mockResolvedValue(running);
+    render(<EWPSObservatory />);
+    expect(await screen.findByText(/Create, verify, and prepare/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Start experiment" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Create contained lab" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Start experiment" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Start experiment" }));
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      sourceMode: "CONTROLLED_DUAL_PATH",
+      candidatePathIds: ["lab-path-a", "lab-path-b"],
+      controlledScenario: "faster-epistemically-weak",
+    }));
+    expect(create.mock.calls[0][0].candidatePathIds).not.toContain("path-real-a");
+  });
+
+  it("does not present a controlled running session as merely not yet verified", async () => {
+    mockBase({ ...session, status: "RUNNING", endedAt: null });
+    vi.mocked(api.ewpsLabStatus).mockResolvedValue({
+      ...lab,
+      ready: false,
+      state: "LAB_LOST",
+      paths: lab.paths.map((path) => ({ ...path, independentlyValidated: false })),
+      message: "CONTROLLED LAB LOST.",
+    });
+    render(<EWPSObservatory />);
+    expect(await screen.findByText("CONTROLLED LAB LOST.")).toBeTruthy();
+    expect(screen.queryByText("NOT YET VERIFIED")).toBeNull();
+    expect(screen.getAllByText("CONTROLLED LAB LOST")).toHaveLength(2);
   });
 });

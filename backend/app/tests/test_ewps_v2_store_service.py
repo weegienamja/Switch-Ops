@@ -14,6 +14,7 @@ from app.ewps_v2_engine import EWPSV2DecisionEngine
 from app.ewps_v2_models import (
     EWPSV2Config,
     V2CandidatePath,
+    V2CandidateSnapshot,
     V2EvidenceInput,
     V2ExperimentCreateRequest,
     V2ExperimentTimeline,
@@ -42,6 +43,7 @@ def v2_request(run_config: EWPSV2Config | None = None) -> V2ExperimentCreateRequ
     return V2ExperimentCreateRequest(
         name="PRIVATE V2 OPERATOR NAME",
         workloadLabel="Controlled calibration",
+        sourceMode="REAL_INTERFACES",
         candidatePathIds=["path-a", "path-b"],
         config=run_config or config(),
     )
@@ -87,7 +89,14 @@ def v2_inputs(step: int):
 
 def recorded_v2_store(tmp_path):
     store = EWPSResearchStore(tmp_path / "ewps-v2.sqlite3")
-    session = store.create_v2(v2_request())
+    session = store.create_v2(
+        v2_request(),
+        candidate_snapshot=[snapshot("path-a"), snapshot("path-b")],
+        lab_instance_id=None,
+        lab_topology_version=None,
+        initial_verification_status="NOT_APPLICABLE",
+        controlled_scenario=None,
+    )
     store.transition(session.experiment_id, "RUNNING")
     engine = EWPSV2DecisionEngine(session.config)
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -100,12 +109,23 @@ def recorded_v2_store(tmp_path):
     return store, session.experiment_id
 
 
+def snapshot(path_id: str) -> V2CandidateSnapshot:
+    return V2CandidateSnapshot(
+        pathId=path_id,
+        displayLabel=path_id,
+        adapterName="Test adapter",
+        sourceKind="real_interface",
+        topologyEvidence="reciprocal_independent_direct",
+        topologyDetail="Privacy-safe synthetic candidate.",
+    )
+
+
 def candidate(path_id: str) -> V2InternalCandidate:
     return V2InternalCandidate(public=V2CandidatePath(
         pathId=path_id,
         displayLabel=path_id,
         adapterName="Test adapter",
-        sourceKind="controlled_lab",
+        sourceKind="real_interface",
         topologyEvidence="reciprocal_independent_direct",
         topologyDetail="Privacy-safe synthetic candidate.",
     ))
@@ -146,9 +166,12 @@ def lifecycle_service(tmp_path, monkeypatch):
     session = store.create_v2(V2ExperimentCreateRequest(
         name="Lifecycle",
         workloadLabel="Controlled calibration",
+        sourceMode="REAL_INTERFACES",
         candidatePathIds=["path-a"],
         config=config(),
-    ))
+    ), candidate_snapshot=[snapshot("path-a")], lab_instance_id=None,
+        lab_topology_version=None, initial_verification_status="NOT_APPLICABLE",
+        controlled_scenario=None)
     store.transition(session.experiment_id, "RUNNING")
     service._active_id = session.experiment_id
     service._runtime = V2EngineRuntime(session.config)
@@ -159,7 +182,7 @@ def lifecycle_service(tmp_path, monkeypatch):
 def test_v02_schema_timeline_summary_and_raw_replay_inputs_are_preserved(tmp_path):
     store, experiment_id = recorded_v2_store(tmp_path)
     with sqlite3.connect(store.path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
     timeline = store.timeline(experiment_id)
     summary = store.summary(experiment_id)
     assert isinstance(timeline, V2ExperimentTimeline)
@@ -176,6 +199,17 @@ def test_v02_schema_timeline_summary_and_raw_replay_inputs_are_preserved(tmp_pat
     assert first.evidence.observation_validated_at is not None
     assert first.confidence.performance > 0
     assert first.confidence.topology_penalty >= 1
+    assert timeline.session.source_mode == "REAL_INTERFACES"
+    assert [item.path_id for item in timeline.session.candidate_snapshot] == ["path-a", "path-b"]
+
+
+def test_source_binding_columns_are_database_immutable(tmp_path):
+    store, experiment_id = recorded_v2_store(tmp_path)
+    with sqlite3.connect(store.path) as connection, pytest.raises(sqlite3.IntegrityError, match="source binding is immutable"):
+        connection.execute(
+            "UPDATE ewps_experiments SET source_mode = 'CONTROLLED_DUAL_PATH' WHERE experiment_id = ?",
+            (experiment_id,),
+        )
 
 
 def test_v02_replay_is_deterministic_and_override_never_mutates_record(tmp_path):
@@ -293,6 +327,8 @@ def test_v02_privacy_safe_export_contains_replay_fields_and_fixed_local_path(tmp
     assert "PRIVATE V2 OPERATOR NAME" not in content
     record = json.loads(content.splitlines()[0])
     assert record["schema_version"] == 2
+    assert record["source_mode"] == "REAL_INTERFACES"
+    assert record["candidate_provenance"]["path_id"] == record["path_id"]
     assert record["ewps_version"] == "0.2.0"
     assert record["raw"]["probe_outcomes"] == [True] * 5
     assert record["model"]["beta"] == pytest.approx(0.25)

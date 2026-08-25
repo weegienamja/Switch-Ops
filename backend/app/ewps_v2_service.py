@@ -14,7 +14,7 @@ from typing import Deque
 
 from .config import get_settings
 from .ewps_engine import EWPSDecisionEngine
-from .ewps_lab import EWPSLabManager, get_ewps_lab
+from .ewps_lab import LAB_PATHS, LAB_TOPOLOGY_VERSION, EWPSLabManager, get_ewps_lab
 from .ewps_models import EWPSConfig, ExperimentSession, ReplayResult, RawMetrics
 from .ewps_service import EWPSService as LegacyEWPSService
 from .ewps_store import EWPSResearchStore, get_ewps_store
@@ -27,6 +27,7 @@ from .ewps_v2_models import (
     LabScenarioName,
     LabStatus,
     V2CandidatePath,
+    V2CandidateSnapshot,
     V2EvidenceInput,
     V2ExperimentCreateRequest,
     V2ExperimentSession,
@@ -78,6 +79,7 @@ class EWPSV2Service:
         self._stop = threading.Event()
         self._run = threading.Event()
         self._thread: threading.Thread | None = None
+        self._lab_lost_recorded = False
         for recorded in self.store.list(500):
             if recorded.status == "RUNNING":
                 recovered = self.store.transition(recorded.experiment_id, "PAUSED")
@@ -120,17 +122,88 @@ class EWPSV2Service:
     def candidates(self) -> list[V2CandidatePath]:
         return [item.public for item in self._catalog()]
 
-    def create(self, request: V2ExperimentCreateRequest) -> V2ExperimentSession:
-        available = {item.public.path_id for item in self._catalog()}
-        missing = sorted(set(request.candidate_path_ids) - available)
+    @staticmethod
+    def _snapshot(candidate: V2InternalCandidate) -> V2CandidateSnapshot:
+        public = candidate.public
+        return V2CandidateSnapshot(
+            pathId=public.path_id,
+            displayLabel=public.display_label,
+            adapterName=public.adapter_name,
+            sourceKind=public.source_kind,
+            topologyEvidence=public.topology_evidence,
+            topologyDetail=public.topology_detail,
+            diversityClaim=public.diversity_claim,
+        )
+
+    @staticmethod
+    def _public_from_snapshot(snapshot: V2CandidateSnapshot) -> V2CandidatePath:
+        return V2CandidatePath(
+            pathId=snapshot.path_id,
+            displayLabel=snapshot.display_label,
+            adapterName=snapshot.adapter_name,
+            sourceKind=snapshot.source_kind,
+            lifecycle="PROBING",
+            topologyEvidence=snapshot.topology_evidence,
+            topologyDetail=snapshot.topology_detail,
+            diversityClaim=snapshot.diversity_claim,
+        )
+
+    def _creation_binding(self, request: V2ExperimentCreateRequest):
+        selected_ids = list(request.candidate_path_ids)
+        if request.source_mode == "CONTROLLED_DUAL_PATH":
+            expected = list(LAB_PATHS)
+            if selected_ids != expected:
+                raise ValueError("CONTROLLED_DUAL_PATH requires exactly lab-path-a and lab-path-b in stable order.")
+            if request.controlled_scenario is None:
+                raise ValueError("CONTROLLED_DUAL_PATH requires an explicitly prepared controlled scenario.")
+            status = self.lab.validate_for_experiment(request.controlled_scenario)
+            if not status.prerequisites_passed:
+                raise ValueError("Controlled experiment startup requires passing WSL2 prerequisites.")
+            if not status.ready or not all(path.independently_validated for path in status.paths):
+                raise ValueError("Controlled experiment startup requires two freshly verified telemetry paths.")
+            catalog = {
+                item.public.path_id: item
+                for item in self._catalog()
+                if item.public.source_kind == "controlled_lab"
+            }
+            if list(catalog) != expected:
+                raise ValueError("The verified contained lab did not produce exactly two controlled candidates.")
+            selected = [catalog[path_id] for path_id in expected]
+            return (
+                selected,
+                status.lab_instance_id,
+                status.topology_version,
+                "VERIFIED",
+                status.scenario_id,
+            )
+
+        if request.controlled_scenario is not None:
+            raise ValueError("REAL_INTERFACES cannot reference a controlled-lab scenario.")
+        catalog = {
+            item.public.path_id: item
+            for item in self._catalog()
+            if item.public.source_kind == "real_interface"
+        }
+        missing = [path_id for path_id in selected_ids if path_id not in catalog]
         if missing:
-            raise ValueError("One or more selected candidate paths are unavailable or the lab is not ready.")
+            raise ValueError("REAL_INTERFACES can contain only currently discovered real-interface candidates.")
+        return ([catalog[path_id] for path_id in selected_ids], None, None, "NOT_APPLICABLE", None)
+
+    def create(self, request: V2ExperimentCreateRequest) -> V2ExperimentSession:
+        selected, lab_instance_id, topology_version, verification, scenario = self._creation_binding(request)
         with self._lock:
             if self._active_id:
                 active = self.store.get(self._active_id)
                 if active.status in {"CREATED", "RUNNING", "PAUSED"}:
                     raise ValueError("Stop the active EWPS experiment before creating another.")
-            session = self.store.create_v2(request)
+            session = self.store.create_v2(
+                request,
+                candidate_snapshot=[self._snapshot(item) for item in selected],
+                lab_instance_id=lab_instance_id,
+                lab_topology_version=topology_version,
+                initial_verification_status=verification,
+                controlled_scenario=scenario,
+            )
             self._active_id = session.experiment_id
             return session
 
@@ -160,11 +233,50 @@ class EWPSV2Service:
             return None
 
     def _resolve_candidates(self, session: V2ExperimentSession) -> dict[str, V2InternalCandidate]:
-        available = {item.public.path_id: item for item in self._catalog()}
-        missing = [path_id for path_id in session.candidate_path_ids if path_id not in available]
+        if session.source_mode == "LEGACY_UNBOUND":
+            raise ValueError("Legacy v0.2.0 sessions without source provenance are replay-only.")
+        snapshots = {item.path_id: item for item in session.candidate_snapshot}
+        if list(session.candidate_path_ids) != [item.path_id for item in session.candidate_snapshot]:
+            raise ValueError("The immutable candidate snapshot does not match the recorded candidate IDs.")
+        if session.source_mode == "CONTROLLED_DUAL_PATH":
+            if session.candidate_path_ids != list(LAB_PATHS):
+                raise ValueError("The controlled experiment does not contain the exact controlled dual-path identity set.")
+            if any(item.source_kind != "controlled_lab" for item in session.candidate_snapshot):
+                raise ValueError("The controlled experiment contains contradictory candidate provenance.")
+            status = self.lab.validate_for_experiment(session.controlled_impairment_scenario)
+            if not status.ready or not status.prerequisites_passed:
+                raise ValueError("The controlled lab must pass fresh two-path verification before start or resume.")
+            if (
+                status.lab_instance_id != session.lab_instance_id
+                or status.topology_version != session.lab_topology_version
+                or session.lab_topology_version != LAB_TOPOLOGY_VERSION
+            ):
+                raise ValueError("The current controlled lab is not the immutable lab instance recorded by this experiment.")
+            return {
+                path_id: V2InternalCandidate(public=self._public_from_snapshot(snapshots[path_id]))
+                for path_id in session.candidate_path_ids
+            }
+
+        if session.source_mode != "REAL_INTERFACES":
+            raise ValueError("Simulator sessions cannot enter the live collector.")
+        if any(item.source_kind != "real_interface" for item in session.candidate_snapshot):
+            raise ValueError("The real-interface experiment contains contradictory candidate provenance.")
+        discovered = {
+            item.public.path_id: item
+            for item in self._catalog()
+            if item.public.source_kind == "real_interface"
+        }
+        missing = [path_id for path_id in session.candidate_path_ids if path_id not in discovered]
         if missing:
-            raise ValueError("A recorded candidate is unavailable. Recreate the controlled lab if it was selected.")
-        return {path_id: available[path_id] for path_id in session.candidate_path_ids}
+            raise ValueError("A recorded real-interface binding is no longer available.")
+        return {
+            path_id: V2InternalCandidate(
+                public=self._public_from_snapshot(snapshots[path_id]),
+                source_ip=discovered[path_id].source_ip,
+                legacy=discovered[path_id].legacy,
+            )
+            for path_id in session.candidate_path_ids
+        }
 
     def _restore_runtime(self, session: V2ExperimentSession) -> V2EngineRuntime:
         runtime = V2EngineRuntime(session.config)
@@ -199,6 +311,7 @@ class EWPSV2Service:
                 if active.status in {"CREATED", "RUNNING", "PAUSED"}:
                     raise ValueError("Another EWPS experiment is active.")
             self._candidates = self._resolve_candidates(session)
+            self._lab_lost_recorded = False
             if self._runtime is None or self._active_id != experiment_id:
                 self._runtime = self._restore_runtime(session)
             self._active_id = experiment_id
@@ -278,6 +391,20 @@ class EWPSV2Service:
             failure_reason="candidate_reprobe_deferred",
         )
 
+    @staticmethod
+    def _controlled_lab_lost_result(path_id: str) -> ProbeResult:
+        now = datetime.now(timezone.utc)
+        return ProbeResult(
+            path_id=path_id,
+            observed_at=now,
+            raw=RawMetrics(sampleCount=0, reachable=False),
+            collection_started_at=now,
+            observation_validated_at=None,
+            collection_duration_ms=0.0,
+            probe_outcomes=(),
+            failure_reason="controlled_lab_lost",
+        )
+
     def sample_once(self) -> None:
         with self._lock:
             experiment_id = self._active_id
@@ -288,13 +415,18 @@ class EWPSV2Service:
         session = self.store.get(experiment_id)
         if not isinstance(session, V2ExperimentSession) or session.status != "RUNNING":
             return
-        refreshed = {item.public.path_id: item for item in self._catalog()}
+        controlled_lab_lost = bool(
+            session.source_mode == "CONTROLLED_DUAL_PATH"
+            and not self.lab.binding_is_current(session.lab_instance_id, session.lab_topology_version)
+        )
         cycle = runtime.engine.decision_index
         results: dict[str, ProbeResult] = {}
         to_probe: list[V2InternalCandidate] = []
         for candidate in candidates:
             state = runtime.paths[candidate.public.path_id]
-            if (
+            if controlled_lab_lost:
+                results[candidate.public.path_id] = self._controlled_lab_lost_result(candidate.public.path_id)
+            elif (
                 state.lifecycle == "PERSISTENTLY_UNAVAILABLE"
                 and cycle % session.config.unavailable_reprobe_cycles != 0
             ):
@@ -331,6 +463,7 @@ class EWPSV2Service:
             validated = result.observation_validated_at is not None and bool(result.probe_outcomes)
             stale_injection = result.failure_reason == "controlled_evidence_stale"
             deferred = result.failure_reason == "candidate_reprobe_deferred"
+            lab_lost = result.failure_reason == "controlled_lab_lost"
             transient_failure = candidate_unavailable_event = recovery_event = False
             if validated:
                 if result.raw.latency_ms is not None:
@@ -351,6 +484,10 @@ class EWPSV2Service:
                 state.ever_viable = True
             elif stale_injection or deferred:
                 pass
+            elif lab_lost:
+                state.consecutive_failures += 1
+                state.lifecycle = "PERSISTENTLY_UNAVAILABLE"
+                candidate_unavailable_event = old_lifecycle != "PERSISTENTLY_UNAVAILABLE"
             else:
                 state.consecutive_failures += 1
                 transient_failure = state.ever_viable and old_lifecycle in {"VIABLE", "RECOVERING"}
@@ -374,6 +511,9 @@ class EWPSV2Service:
             elif stale_injection:
                 reachable = None
                 telemetry_state = "evidence_stale"
+            elif lab_lost:
+                reachable = False
+                telemetry_state = "controlled_lab_lost"
             elif deferred:
                 reachable = None
                 telemetry_state = "reprobe_deferred"
@@ -390,7 +530,7 @@ class EWPSV2Service:
                 and reachable is not False
                 and state.lifecycle != "PERSISTENTLY_UNAVAILABLE"
             )
-            current = refreshed.get(path_id) or candidate
+            current = candidate
             last_validated = state.last_validated_at
             age = max(0.0, (timestamp - last_validated).total_seconds()) if last_validated else None
             sent = result.raw.interface_packets_sent
@@ -431,6 +571,9 @@ class EWPSV2Service:
             )
             path_inputs.append((path_id, raw, evidence))
         point = runtime.engine.evaluate(timestamp, path_inputs)
+        if controlled_lab_lost and not self._lab_lost_recorded:
+            point = point.model_copy(update={"events": [*point.events, "CONTROLLED_LAB_LOST"]})
+            self._lab_lost_recorded = True
         self.store.append(experiment_id, point)
         get_live_state().hub.publish("ewps_decision", point.model_dump(by_alias=True, mode="json"))
 
@@ -465,6 +608,11 @@ class EWPSV2Service:
             )
             return V2ReplayResult(
                 sourceExperimentId=experiment_id,
+                sourceMode=timeline.session.source_mode,
+                candidateSnapshot=timeline.session.candidate_snapshot,
+                labInstanceId=timeline.session.lab_instance_id,
+                labTopologyVersion=timeline.session.lab_topology_version,
+                controlledImpairmentScenario=timeline.session.controlled_impairment_scenario,
                 config=replay_config,
                 deterministicDigest=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
                 decisions=decisions,
@@ -507,6 +655,7 @@ class EWPSV2Service:
             summary = self.store.summary(experiment_id)
             content = json.dumps(
                 {
+                    "experiment": self.store.get(experiment_id).model_dump(by_alias=True, mode="json"),
                     "summary": summary.model_dump(by_alias=True, mode="json"),
                     "records": [
                         json.loads(line)

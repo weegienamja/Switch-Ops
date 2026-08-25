@@ -22,7 +22,9 @@ from .ewps_models import (
 )
 from .ewps_v2_models import (
     DistributionSummary,
+    EWPS_V2_RELEASE_ID,
     EWPSV2Config,
+    V2CandidateSnapshot,
     V2DecisionPoint,
     V2ExperimentCreateRequest,
     V2ExperimentSession,
@@ -116,8 +118,39 @@ class EWPSResearchStore:
                     BEFORE DELETE ON ewps_decisions BEGIN
                         SELECT RAISE(ABORT, 'EWPS decisions are immutable');
                     END;
-                PRAGMA user_version = 2;
+                PRAGMA user_version = 3;
                 PRAGMA optimize;
+                """
+            )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(ewps_experiments)").fetchall()
+            }
+            migrations = {
+                "source_mode": "ALTER TABLE ewps_experiments ADD COLUMN source_mode TEXT",
+                "candidate_snapshot_json": "ALTER TABLE ewps_experiments ADD COLUMN candidate_snapshot_json TEXT",
+                "lab_instance_id": "ALTER TABLE ewps_experiments ADD COLUMN lab_instance_id TEXT",
+                "lab_topology_version": "ALTER TABLE ewps_experiments ADD COLUMN lab_topology_version TEXT",
+                "initial_verification_status": "ALTER TABLE ewps_experiments ADD COLUMN initial_verification_status TEXT",
+                "controlled_scenario": "ALTER TABLE ewps_experiments ADD COLUMN controlled_scenario TEXT",
+            }
+            for column, statement in migrations.items():
+                if column not in columns:
+                    connection.execute(statement)
+            connection.executescript(
+                """
+                CREATE TRIGGER IF NOT EXISTS ewps_source_binding_immutable
+                BEFORE UPDATE ON ewps_experiments
+                WHEN NEW.source_mode IS NOT OLD.source_mode
+                  OR NEW.candidate_path_ids_json IS NOT OLD.candidate_path_ids_json
+                  OR NEW.candidate_snapshot_json IS NOT OLD.candidate_snapshot_json
+                  OR NEW.lab_instance_id IS NOT OLD.lab_instance_id
+                  OR NEW.lab_topology_version IS NOT OLD.lab_topology_version
+                  OR NEW.initial_verification_status IS NOT OLD.initial_verification_status
+                  OR NEW.controlled_scenario IS NOT OLD.controlled_scenario
+                BEGIN
+                    SELECT RAISE(ABORT, 'EWPS source binding is immutable');
+                END;
                 """
             )
 
@@ -150,6 +183,11 @@ class EWPSResearchStore:
         self,
         request: V2ExperimentCreateRequest,
         *,
+        candidate_snapshot: list[V2CandidateSnapshot],
+        lab_instance_id: str | None,
+        lab_topology_version: str | None,
+        initial_verification_status: str,
+        controlled_scenario: str | None,
         kind: str = "live",
     ) -> V2ExperimentSession:
         experiment_id = f"ewps-{uuid.uuid4()}"
@@ -160,18 +198,27 @@ class EWPSResearchStore:
                 INSERT INTO ewps_experiments (
                     experiment_id, name, workload_label, status, kind, mode,
                     model_version, release_id, config_json,
-                    candidate_path_ids_json, created_at
+                    candidate_path_ids_json, created_at, source_mode,
+                    candidate_snapshot_json, lab_instance_id, lab_topology_version,
+                    initial_verification_status, controlled_scenario
                 ) VALUES (?, ?, ?, 'CREATED', ?, 'SHADOW', '0.2.0',
-                          'ewps-v0.2.0-alpha', ?, ?, ?)
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     experiment_id,
                     request.name,
                     request.workload_label,
                     kind,
+                    EWPS_V2_RELEASE_ID,
                     _json(request.config),
                     _json(request.candidate_path_ids),
                     created.isoformat(),
+                    request.source_mode,
+                    _json([item.model_dump(by_alias=True, mode="json") for item in candidate_snapshot]),
+                    lab_instance_id,
+                    lab_topology_version,
+                    initial_verification_status,
+                    controlled_scenario,
                 ),
             )
         session = self.get(experiment_id)
@@ -289,9 +336,16 @@ class EWPSResearchStore:
                 config=EWPSConfig.model_validate_json(row["config_json"]),
             )
         if row["model_version"] == "0.2.0":
+            snapshot_json = row["candidate_snapshot_json"]
             return V2ExperimentSession(
                 **common,
                 config=EWPSV2Config.model_validate_json(row["config_json"]),
+                sourceMode=row["source_mode"] or "LEGACY_UNBOUND",
+                candidateSnapshot=(json.loads(snapshot_json) if snapshot_json else []),
+                labInstanceId=row["lab_instance_id"],
+                labTopologyVersion=row["lab_topology_version"],
+                initialVerificationStatus=row["initial_verification_status"] or "LEGACY_UNKNOWN",
+                controlledImpairmentScenario=row["controlled_scenario"],
             )
         raise ValueError(f"Unsupported stored EWPS model version: {row['model_version']}")
 
@@ -659,6 +713,7 @@ class EWPSResearchStore:
         if not isinstance(timeline, V2ExperimentTimeline):
             raise ValueError("A v0.2 export requires a v0.2 timeline.")
         config = timeline.session.config
+        snapshots = {item.path_id: item for item in timeline.session.candidate_snapshot}
         lines: list[str] = []
         for point in timeline.decisions:
             preferred = point.hysteresis.preferred_path_id
@@ -669,6 +724,15 @@ class EWPSResearchStore:
                     "experiment_id": experiment_id,
                     "ewps_version": calculation.model_version,
                     "path_id": calculation.path_id,
+                    "source_mode": timeline.session.source_mode,
+                    "candidate_provenance": (
+                        snapshots[calculation.path_id].model_dump(by_alias=False, mode="json")
+                        if calculation.path_id in snapshots else None
+                    ),
+                    "lab_instance_id": timeline.session.lab_instance_id,
+                    "lab_topology_version": timeline.session.lab_topology_version,
+                    "initial_verification_status": timeline.session.initial_verification_status,
+                    "controlled_impairment_scenario": timeline.session.controlled_impairment_scenario,
                     "workload_label": timeline.session.workload_label,
                     "raw": calculation.raw.model_dump(by_alias=False, mode="json"),
                     "evidence": calculation.evidence.model_dump(by_alias=False, mode="json"),
@@ -753,7 +817,9 @@ class EWPSResearchStore:
             raise ValueError("A v0.2 export requires a v0.2 timeline.")
         output = io.StringIO(newline="")
         fields = [
-            "schema_version", "timestamp", "experiment_id", "path_id",
+            "schema_version", "timestamp", "experiment_id", "source_mode", "path_id",
+            "candidate_label", "candidate_source_kind", "lab_instance_id",
+            "lab_topology_version", "initial_verification_status", "controlled_impairment_scenario",
             "instant_latency_ms", "rolling_latency_ms", "instant_jitter_ms",
             "rolling_jitter_ms", "instant_loss_pct", "rolling_loss_pct",
             "loss_sample_count", "probe_outcomes", "candidate_lifecycle",
@@ -766,14 +832,23 @@ class EWPSResearchStore:
         ]
         writer = csv.DictWriter(output, fieldnames=fields)
         writer.writeheader()
+        snapshots = {item.path_id: item for item in timeline.session.candidate_snapshot}
         for point in timeline.decisions:
             ewps = next((item.path_id for item in point.algorithms if item.algorithm == "ewps"), None)
             for item in point.calculations:
+                snapshot = snapshots.get(item.path_id)
                 writer.writerow({
                     "schema_version": 2,
                     "timestamp": point.timestamp.isoformat(),
                     "experiment_id": experiment_id,
+                    "source_mode": timeline.session.source_mode,
                     "path_id": item.path_id,
+                    "candidate_label": snapshot.display_label if snapshot else "",
+                    "candidate_source_kind": snapshot.source_kind if snapshot else "",
+                    "lab_instance_id": timeline.session.lab_instance_id,
+                    "lab_topology_version": timeline.session.lab_topology_version,
+                    "initial_verification_status": timeline.session.initial_verification_status,
+                    "controlled_impairment_scenario": timeline.session.controlled_impairment_scenario,
                     "instant_latency_ms": item.raw.latency_ms,
                     "rolling_latency_ms": item.raw.rolling_latency_ms,
                     "instant_jitter_ms": item.raw.jitter_ms,

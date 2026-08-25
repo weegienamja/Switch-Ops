@@ -1,9 +1,12 @@
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 import pytest
 
 from app import ewps_lab
-from app.ewps_lab import EWPSLabManager, LAB_PATHS, PROFILES, SCENARIO_PHASES
+from app.ewps_lab import EWPSLabManager, LAB_PATHS, LAB_TOPOLOGY_VERSION, PROFILES, SCENARIO_PHASES
+from app.ewps_models import RawMetrics
+from app.ewps_telemetry import ProbeResult
 
 
 def completed(returncode=0, stdout="", stderr=""):
@@ -90,6 +93,7 @@ def test_manager_requires_explicit_create_and_reports_missing_facilities(monkeyp
 
 def test_create_verify_scenario_and_complete_teardown_are_auditable(monkeypatch):
     namespaces_present = False
+    marker: list[str] = []
     calls: list[list[str]] = []
     ping = (
         "64 bytes from 10.254.11.2: icmp_seq=1 ttl=63 time=16.1 ms\n"
@@ -107,10 +111,17 @@ def test_create_verify_scenario_and_complete_teardown_are_auditable(monkeypatch)
                 return completed()
             if "ip netns add ewps02-src" in script:
                 namespaces_present = True
+                marker[:] = [args[4], LAB_TOPOLOGY_VERSION, "fast-stable", "slow-stable", "-", "0"]
                 return completed()
             if "ip netns del" in script:
                 namespaces_present = False
+                marker.clear()
                 return completed()
+            if script == ewps_lab.MARKER_SCRIPT:
+                marker[:] = args[4:10]
+                return completed()
+            if script == ewps_lab.RECONCILE_SCRIPT:
+                return completed(stdout="\n".join(marker) + "\n") if namespaces_present and marker else completed(returncode=1)
         if args == ["ip", "netns", "list"]:
             names = "ewps02-src\newps02-gwa\newps02-gwb\newps02-target\n" if namespaces_present else ""
             return completed(stdout=names)
@@ -126,6 +137,9 @@ def test_create_verify_scenario_and_complete_teardown_are_auditable(monkeypatch)
     monkeypatch.setattr(manager, "_stop_keepalive", lambda: None)
     created = manager.create()
     assert created.ready
+    assert created.state == "LAB_READY"
+    assert created.lab_instance_id
+    assert created.topology_version == LAB_TOPOLOGY_VERSION
     assert all(path.independently_validated for path in created.paths)
     assert all(path.last_latency_ms is not None for path in created.paths)
     assert "logical test paths" in created.diversity_claim.lower()
@@ -141,8 +155,10 @@ def test_create_verify_scenario_and_complete_teardown_are_auditable(monkeypatch)
 
     removed = manager.teardown()
     assert not removed.ready
+    assert removed.state == "LAB_NOT_CREATED"
     assert "no ewps02 namespaces remain" in removed.message
     assert not namespaces_present
+    assert manager.candidates() == []
     assert all(isinstance(args, list) for args in calls)
     tc_calls = [args for args in calls if "tc" in args and "qdisc" in args]
     assert tc_calls
@@ -158,3 +174,92 @@ def test_profile_and_scenario_inputs_are_enums_not_commands():
         manager.apply_profile("host-adapter", "fast-stable")
     with pytest.raises(KeyError):
         manager.prepare_scenario("arbitrary-shell")
+
+
+def test_restart_reconciles_owned_topology_then_reverifies_both_paths(monkeypatch):
+    marker = [
+        "11111111-1111-4111-8111-111111111111",
+        LAB_TOPOLOGY_VERSION,
+        "fast-stable",
+        "slow-stable",
+        "faster-epistemically-weak",
+        "0",
+    ]
+    ping = (
+        "64 bytes from target: icmp_seq=1 ttl=63 time=8.1 ms\n"
+        "64 bytes from target: icmp_seq=2 ttl=63 time=8.2 ms\n"
+        "64 bytes from target: icmp_seq=3 ttl=63 time=8.3 ms\n"
+        "3 packets transmitted, 3 received, 0% packet loss\n"
+    )
+
+    def fake_wsl(args, *, timeout):
+        if args[:2] == ["sh", "-lc"] and args[2] == ewps_lab.PREREQUISITE_SCRIPT:
+            return completed()
+        if args[:2] == ["sh", "-lc"] and args[2] == ewps_lab.RECONCILE_SCRIPT:
+            return completed(stdout="\n".join(marker) + "\n")
+        if "ping" in args:
+            return completed(stdout=ping)
+        if args == ["ip", "netns", "list"]:
+            return completed(stdout="ewps02-src\newps02-gwa\newps02-gwb\newps02-target\n")
+        return completed(returncode=1)
+
+    monkeypatch.setattr(ewps_lab, "_wsl", fake_wsl)
+    manager = EWPSLabManager()
+    monkeypatch.setattr(manager, "_start_keepalive", lambda: None)
+    status = manager.status()
+    assert status.state == "LAB_READY"
+    assert status.ready
+    assert status.lab_instance_id == marker[0]
+    assert all(path.independently_validated for path in status.paths)
+    assert [item.path_id for item in manager.candidates()] == ["lab-path-a", "lab-path-b"]
+
+
+def test_restart_never_trusts_unowned_or_mismatched_namespaces(monkeypatch):
+    def fake_wsl(args, *, timeout):
+        if args[:2] == ["sh", "-lc"] and args[2] == ewps_lab.PREREQUISITE_SCRIPT:
+            return completed()
+        if args[:2] == ["sh", "-lc"] and args[2] == ewps_lab.RECONCILE_SCRIPT:
+            return completed(returncode=1, stderr="ownership mismatch")
+        if args == ["ip", "netns", "list"]:
+            return completed(stdout="ewps02-src\newps02-gwa\newps02-gwb\newps02-target\n")
+        return completed(returncode=1)
+
+    monkeypatch.setattr(ewps_lab, "_wsl", fake_wsl)
+    manager = EWPSLabManager()
+    status = manager.status()
+    assert status.state == "LAB_UNVERIFIED"
+    assert not status.ready
+    assert manager.candidates() == []
+
+
+def test_failed_path_verification_revokes_ready_and_candidates(monkeypatch):
+    manager = EWPSLabManager()
+    manager._reconciled = True
+    manager._created = True
+    manager._ready = True
+    manager._state = "LAB_READY"
+    manager._instance_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(manager, "_read_owned_topology", lambda: (
+        manager._instance_id, "fast-stable", "slow-stable", None, 0
+    ))
+
+    def measure(path_id, count):
+        now = datetime.now(timezone.utc)
+        valid = path_id == "lab-path-a"
+        return ProbeResult(
+            path_id=path_id,
+            observed_at=now,
+            collection_started_at=now,
+            observation_validated_at=now if valid else None,
+            collection_duration_ms=1,
+            raw=RawMetrics(latencyMs=8 if valid else None, sampleCount=count, reachable=valid),
+            probe_outcomes=tuple(valid for _ in range(count)),
+            failure_reason=None if valid else "complete_probe_failure",
+        )
+
+    monkeypatch.setattr(manager, "measure", measure)
+    status = manager.verify()
+    assert status.state == "LAB_UNVERIFIED"
+    assert not status.ready
+    assert [path.independently_validated for path in status.paths] == [True, False]
+    assert manager.candidates() == []

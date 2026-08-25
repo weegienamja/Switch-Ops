@@ -17,6 +17,7 @@ import type {
   EWPSReplayResult,
   EWPSSimulatorResult,
   EWPSSimulatorScenario,
+  EWPSSourceMode,
   EWPSSummary,
   EWPSTimeline,
 } from "@/lib/ewpsTypes";
@@ -102,7 +103,7 @@ function CandidateCard({ candidate, calculation, preferred }: { candidate: EWPSC
   return (
     <article className={`ewps-path-card ${preferred ? "is-preferred" : ""} ${calculation && !calculation.eligible ? "is-ineligible" : ""}`}>
       <header>
-        <div><span className="ewps-path-card__ordinal">{candidate.displayLabel}</span><strong>{candidate.adapterName}</strong><small>{candidate.sourceKind === "controlled_lab" ? "CONTROLLED LOGICAL TEST PATH" : "REAL INTERFACE"}</small></div>
+        <div><span className="ewps-path-card__ordinal">{candidate.displayLabel}</span><strong>{candidate.adapterName}</strong><small>{candidate.sourceKind === "controlled_lab" ? "LOGICAL LAB PATH" : "REAL INTERFACE"}</small></div>
         <span className={`ewps-state ${calculation?.eligible ? "is-good" : "is-muted"}`}>{calculation?.eligibilityState?.replaceAll("_", " ") || candidate.lifecycle}</span>
       </header>
       <div className="ewps-performance-strip">
@@ -129,15 +130,15 @@ function CandidateCard({ candidate, calculation, preferred }: { candidate: EWPSC
 }
 
 
-function LabPanel({ lab, busy, onAction }: { lab: EWPSLabStatus | null; busy: string | null; onAction: (action: "check" | "create" | "verify" | "prepare" | "advance" | "teardown", scenario?: EWPSLabScenario) => Promise<void> }) {
+function LabPanel({ lab, controlledSessionActive, busy, onAction }: { lab: EWPSLabStatus | null; controlledSessionActive: boolean; busy: string | null; onAction: (action: "check" | "create" | "verify" | "prepare" | "advance" | "teardown", scenario?: EWPSLabScenario) => Promise<void> }) {
   const [scenario, setScenario] = useState<EWPSLabScenario>("faster-epistemically-weak");
   return (
     <section className="card ewps-lab" aria-labelledby="ewps-lab-title">
-      <div className="ewps-section-head"><div><span>CONTROLLED DUAL-PATH TESTBED</span><h3 id="ewps-lab-title">Contained WSL2 logical paths</h3></div><span className={`ewps-state ${lab?.ready ? "is-good" : "is-muted"}`}>{lab?.ready ? "READY" : "EXPLICIT START REQUIRED"}</span></div>
+      <div className="ewps-section-head"><div><span>CONTROLLED DUAL-PATH TESTBED</span><h3 id="ewps-lab-title">Contained WSL2 logical paths</h3></div><span className={`ewps-state ${lab?.ready ? "is-good" : "is-muted"}`}>{lab?.state?.replaceAll("_", " ") || "CHECKING LAB"}</span></div>
       <p>{lab?.message || "Checking contained-lab status…"}</p>
       <div className="ewps-lab__architecture"><strong>{lab?.architecture || "Two separate namespace/gateway chains"}</strong><span>{lab?.diversityClaim || "No physical or ISP diversity claim."}</span></div>
       <div className="ewps-lab__paths">
-        {(lab?.paths || []).map((path) => <div key={path.pathId}><span>{path.displayLabel}</span><strong>{path.profile.replaceAll("-", " ")}</strong><small>{path.independentlyValidated ? `INDEPENDENT TELEMETRY VERIFIED · ${number(path.lastLatencyMs)} ms` : "NOT YET VERIFIED"}</small></div>)}
+        {(lab?.paths || []).map((path) => <div key={path.pathId}><span>Controlled {path.displayLabel}</span><strong>{path.profile.replaceAll("-", " ")}</strong><small>{path.independentlyValidated ? `INDEPENDENT TELEMETRY VERIFIED · ${number(path.lastLatencyMs)} ms` : lab?.state === "LAB_LOST" ? "CONTROLLED LAB LOST" : controlledSessionActive ? "RECORDED BINDING INVALID" : "NOT YET VERIFIED"}</small></div>)}
       </div>
       <div className="ewps-lab__controls">
         <button className="btn" disabled={Boolean(busy)} onClick={() => void onAction("check")}>Check prerequisites</button>
@@ -150,20 +151,33 @@ function LabPanel({ lab, busy, onAction }: { lab: EWPSLabStatus | null; busy: st
 }
 
 
-function ExperimentForm({ meta, candidates, busy, onStart }: { meta: EWPSMeta; candidates: EWPSCandidatePath[]; busy: boolean; onStart: (request: { name: string; workloadLabel: string; candidatePathIds: string[]; config: EWPSConfig }) => Promise<void> }) {
+function ExperimentForm({ meta, candidates, lab, busy, onStart }: { meta: EWPSMeta; candidates: EWPSCandidatePath[]; lab: EWPSLabStatus | null; busy: boolean; onStart: (request: { name: string; workloadLabel: string; sourceMode: "REAL_INTERFACES" | "CONTROLLED_DUAL_PATH"; candidatePathIds: string[]; controlledScenario?: EWPSLabScenario | null; config: EWPSConfig }) => Promise<void> }) {
   const [name, setName] = useState("Experiment 002 · Controlled dual path");
   const [workload, setWorkload] = useState(WORKLOADS[0]);
+  const [sourceMode, setSourceMode] = useState<Exclude<EWPSSourceMode, "SIMULATOR" | "LEGACY_UNBOUND">>("CONTROLLED_DUAL_PATH");
   const [selected, setSelected] = useState<string[]>([]);
   const [config, setConfig] = useState<EWPSConfig>(meta.defaultConfig);
   useEffect(() => {
     setSelected((current) => {
-      const available = new Set(candidates.map((item) => item.pathId));
+      const sourceKind = sourceMode === "CONTROLLED_DUAL_PATH" ? "controlled_lab" : "real_interface";
+      const sourceCandidates = candidates.filter((item) => item.sourceKind === sourceKind);
+      const available = new Set(sourceCandidates.map((item) => item.pathId));
       const retained = current.filter((item) => available.has(item));
-      if (retained.length) return retained;
-      const controlled = candidates.filter((item) => item.sourceKind === "controlled_lab").map((item) => item.pathId);
-      return controlled.length >= 2 ? controlled : candidates.filter((item) => item.eligibleForLiveMeasurement).map((item) => item.pathId);
+      if (sourceMode === "CONTROLLED_DUAL_PATH") {
+        const controlled = sourceCandidates.map((item) => item.pathId);
+        return lab?.ready && controlled.length === 2 ? controlled : [];
+      }
+      return retained.length ? retained : sourceCandidates.filter((item) => item.eligibleForLiveMeasurement).map((item) => item.pathId);
     });
-  }, [candidates]);
+  }, [candidates, lab?.ready, sourceMode]);
+  const displayedCandidates = candidates.filter((item) => item.sourceKind === (sourceMode === "CONTROLLED_DUAL_PATH" ? "controlled_lab" : "real_interface"));
+  const controlledReady = sourceMode !== "CONTROLLED_DUAL_PATH" || Boolean(
+    lab?.ready
+    && lab.scenarioId
+    && lab.paths.length === 2
+    && lab.paths.every((path) => path.independentlyValidated)
+    && selected.join(",") === "lab-path-a,lab-path-b"
+  );
   function parameter<K extends keyof EWPSConfig>(key: K, value: EWPSConfig[K]) { setConfig((current) => ({ ...current, [key]: value })); }
   function weight(key: keyof EWPSConfig["weights"], value: number) {
     const bounded = Math.min(1, Math.max(0, value));
@@ -179,12 +193,13 @@ function ExperimentForm({ meta, candidates, busy, onStart }: { meta: EWPSMeta; c
   return (
     <section className="card ewps-form">
       <div className="ewps-section-head"><div><span>NEW SHADOW EXPERIMENT</span><h3>Define the evidence boundary</h3></div><span className="ewps-shadow-chip">RECOMMENDATIONS ONLY</span></div>
-      <div className="ewps-form__grid"><label><span>Experiment name</span><input value={name} onChange={(event) => setName(event.target.value)} maxLength={100} /></label><label><span>Workload label</span><select value={workload} onChange={(event) => setWorkload(event.target.value)}>{WORKLOADS.map((item) => <option key={item}>{item}</option>)}</select></label></div>
-      <fieldset className="ewps-candidate-picker"><legend>Candidate paths / evidence sources</legend>{candidates.length ? candidates.map((candidate) => <label key={candidate.pathId}><input type="checkbox" checked={selected.includes(candidate.pathId)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, candidate.pathId] : current.filter((item) => item !== candidate.pathId))} /><span><strong>{candidate.displayLabel} · {candidate.adapterName}</strong><small>{candidate.sourceKind.replaceAll("_", " ")} · {candidate.lifecycle} · {candidate.topologyEvidence.replaceAll("_", " ")}</small></span></label>) : <p className="ewps-empty">No active real interface is available. Create the contained lab or use the deterministic simulator.</p>}</fieldset>
+      <div className="ewps-form__grid"><label><span>Experiment name</span><input value={name} onChange={(event) => setName(event.target.value)} maxLength={100} /></label><label><span>Workload label</span><select value={workload} onChange={(event) => setWorkload(event.target.value)}>{WORKLOADS.map((item) => <option key={item}>{item}</option>)}</select></label><label><span>Authoritative source mode</span><select aria-label="Authoritative source mode" value={sourceMode} onChange={(event) => setSourceMode(event.target.value as "REAL_INTERFACES" | "CONTROLLED_DUAL_PATH")}><option value="CONTROLLED_DUAL_PATH">Controlled dual path</option><option value="REAL_INTERFACES">Real interfaces</option></select></label></div>
+      <fieldset className="ewps-candidate-picker"><legend>Candidate paths / evidence sources</legend>{displayedCandidates.length ? displayedCandidates.map((candidate) => <label key={candidate.pathId}><input type="checkbox" disabled={sourceMode === "CONTROLLED_DUAL_PATH"} checked={selected.includes(candidate.pathId)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, candidate.pathId] : current.filter((item) => item !== candidate.pathId))} /><span><strong>{candidate.displayLabel} · {candidate.adapterName}</strong><small>{candidate.sourceKind.replaceAll("_", " ")} · {candidate.lifecycle} · {candidate.topologyEvidence.replaceAll("_", " ")}</small></span></label>) : <p className="ewps-empty">{sourceMode === "CONTROLLED_DUAL_PATH" ? "Create, verify, and prepare the contained lab before configuring this experiment." : "No active real interface is available; use the controlled lab or deterministic simulator."}</p>}</fieldset>
+      {sourceMode === "CONTROLLED_DUAL_PATH" ? <p className="ewps-research-warning">{controlledReady ? `Backend-verified binding · ${lab?.labInstanceId} · ${lab?.scenarioId}` : "Start is blocked until both controlled paths and a prepared scenario are backend verified."}</p> : null}
       {selected.length === 1 ? <p className="ewps-research-warning">One path can validate telemetry, but cannot produce a comparative result.</p> : null}
       <div className="ewps-parameter-grid"><label><span>λ freshness decay</span><input aria-label="lambda freshness decay" type="number" step="0.005" min="0" value={config.lambda} onChange={(event) => parameter("lambda", Number(event.target.value))} /></label><label><span>k density rate</span><input aria-label="density rate" type="number" step="0.01" min="0.01" value={config.k} onChange={(event) => parameter("k", Number(event.target.value))} /></label><label><span>α performance risk</span><input aria-label="performance risk aversion" type="number" step="0.1" min="0" value={config.alpha} onChange={(event) => parameter("alpha", Number(event.target.value))} /></label><label><span>β topology bound</span><input aria-label="topology penalty beta" type="number" step="0.05" min="0" value={config.beta} onChange={(event) => parameter("beta", Number(event.target.value))} /></label><label><span>P perf min</span><input aria-label="minimum performance evidence threshold" type="number" step="0.05" min="0" max="1" value={config.pPerfMin} onChange={(event) => parameter("pPerfMin", Number(event.target.value))} /></label><label><span>Sample interval</span><input aria-label="sample interval" type="number" step="1" min="2" value={config.sampleIntervalSeconds} onChange={(event) => parameter("sampleIntervalSeconds", Number(event.target.value))} /></label></div>
       <details className="ewps-advanced"><summary>Advanced normalized weights and hysteresis</summary><div className="ewps-parameter-grid">{(["freshness", "stability", "density"] as const).map((key) => <label key={key}><span>{key} weight</span><input aria-label={`${key} weight`} type="number" step="0.05" min="0" max="1" value={config.weights[key]} onChange={(event) => weight(key, Number(event.target.value))} /></label>)}<label><span>Min improvement</span><input aria-label="minimum improvement" type="number" step="0.01" min="0" max="1" value={config.hysteresis.minimumImprovement} onChange={(event) => setConfig((current) => ({ ...current, hysteresis: { ...current.hysteresis, minimumImprovement: Number(event.target.value) } }))} /></label><label><span>Min dwell seconds</span><input aria-label="minimum dwell seconds" type="number" step="1" min="0" value={config.hysteresis.minimumDwellSeconds} onChange={(event) => setConfig((current) => ({ ...current, hysteresis: { ...current.hysteresis, minimumDwellSeconds: Number(event.target.value) } }))} /></label><label><span>Evidence duration</span><input aria-label="minimum evidence duration" type="number" step="1" min="0" value={config.hysteresis.minimumEvidenceSeconds} onChange={(event) => setConfig((current) => ({ ...current, hysteresis: { ...current.hysteresis, minimumEvidenceSeconds: Number(event.target.value) } }))} /></label><label><span>Recovery hold-down</span><input aria-label="recovery hold down" type="number" step="1" min="0" value={config.hysteresis.recoveryHoldDownSeconds} onChange={(event) => setConfig((current) => ({ ...current, hysteresis: { ...current.hysteresis, recoveryHoldDownSeconds: Number(event.target.value) } }))} /></label></div></details>
-      <div className="ewps-form__footer"><p>P<sub>perf</sub> combines fresh, stable, dense measurement evidence. Topology remains separate and bounded by β.</p><button className="btn btn--primary" disabled={busy || !selected.length || !name.trim()} onClick={() => void onStart({ name: name.trim(), workloadLabel: workload, candidatePathIds: selected, config })}>{busy ? "Preparing…" : "Start experiment"}</button></div>
+      <div className="ewps-form__footer"><p>P<sub>perf</sub> combines fresh, stable, dense measurement evidence. Topology remains separate and bounded by β.</p><button className="btn btn--primary" disabled={busy || !selected.length || !name.trim() || !controlledReady} onClick={() => void onStart({ name: name.trim(), workloadLabel: workload, sourceMode, candidatePathIds: selected, controlledScenario: sourceMode === "CONTROLLED_DUAL_PATH" ? lab?.scenarioId : null, config })}>{busy ? "Preparing…" : "Start experiment"}</button></div>
     </section>
   );
 }
@@ -254,6 +269,20 @@ export function EWPSObservatory() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshLabBinding() {
+      try {
+        const [nextLab, nextCandidates] = await Promise.all([api.ewpsLabStatus(), api.ewpsCandidates()]);
+        if (!cancelled) { setLab(nextLab); setCandidates(nextCandidates); }
+      } catch (cause) {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    }
+    const timer = window.setInterval(() => void refreshLabBinding(), 2500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+
   const activeExperimentId = session?.experimentId;
 
   useEffect(() => {
@@ -279,9 +308,15 @@ export function EWPSObservatory() {
 
   const last = timeline?.decisions.at(-1) || null;
   const elapsed = session?.startedAt ? ((session.endedAt ? new Date(session.endedAt) : new Date()).getTime() - new Date(session.startedAt).getTime()) / 1000 : 0;
-  const visiblePaths = useMemo(() => session ? session.candidatePathIds.map((pathId) => candidates.find((item) => item.pathId === pathId)).filter((item): item is EWPSCandidatePath => Boolean(item)) : candidates, [candidates, session]);
+  const visiblePaths = useMemo(() => {
+    if (!session) return candidates;
+    if (session.candidateSnapshot?.length) {
+      return session.candidateSnapshot.map((item) => ({ ...item, lifecycle: "PROBING" as const, eligibleForLiveMeasurement: true }));
+    }
+    return session.candidatePathIds.map((pathId) => candidates.find((item) => item.pathId === pathId)).filter((item): item is EWPSCandidatePath => Boolean(item));
+  }, [candidates, session]);
 
-  async function startExperiment(request?: { name: string; workloadLabel: string; candidatePathIds: string[]; config: EWPSConfig }) {
+  async function startExperiment(request?: { name: string; workloadLabel: string; sourceMode: "REAL_INTERFACES" | "CONTROLLED_DUAL_PATH"; candidatePathIds: string[]; controlledScenario?: EWPSLabScenario | null; config: EWPSConfig }) {
     setBusy("start"); setError(null);
     try {
       let target = session;
@@ -311,8 +346,8 @@ export function EWPSObservatory() {
       <section className="ewps-mode-banner" role="status"><div><span className="ewps-mode-banner__pulse" /><strong>SHADOW MODE — RECOMMENDATIONS ONLY</strong></div><p>EWPS records comparative decisions. It cannot steer Windows or application traffic.</p><span>{meta.releaseId}</span></section>
       <header className="ewps-hero card"><div><span className="eyebrow">CONTROLLED DUAL-PATH NETWORKING RESEARCH</span><h2>EWPS Observatory</h2><p>Measurement confidence and structural confidence now have separate, explicit authority.</p></div><dl><div><dt>MODEL</dt><dd>{meta.modelVersion}</dd></div><div><dt>MODE</dt><dd>SHADOW</dd></div><div><dt>DECISIONS</dt><dd>{session?.decisionPoints || 0}</dd></div></dl></header>
       {error ? <div className="warning-banner warning-banner--inline ewps-error" role="alert">{error}</div> : null}
-      <LabPanel lab={lab} busy={busy} onAction={labAction} />
-      {showForm ? <ExperimentForm meta={meta} candidates={candidates} busy={busy === "start"} onStart={startExperiment} /> : null}
+      <LabPanel lab={lab} controlledSessionActive={Boolean(session && session.status !== "COMPLETED" && session.sourceMode === "CONTROLLED_DUAL_PATH")} busy={busy} onAction={labAction} />
+      {showForm ? <ExperimentForm meta={meta} candidates={candidates} lab={lab} busy={busy === "start"} onStart={startExperiment} /> : null}
       {session && !creatingNew ? <>
         <section className="ewps-session-bar card"><div><span>CURRENT EXPERIMENT</span><strong>{session.name}</strong><small>{session.workloadLabel}</small></div><div><span>ELAPSED</span><strong>{duration(elapsed)}</strong><small>{session.status}</small></div><div><span>MODEL / MEASUREMENTS</span><strong>{session.ewpsModelVersion}</strong><small>{session.totalMeasurements} path records</small></div><div className="ewps-session-actions">{session.status === "CREATED" || session.status === "PAUSED" ? <button className="btn btn--primary" disabled={Boolean(busy)} onClick={() => void startExperiment()}>{session.status === "PAUSED" ? "Resume" : "Start experiment"}</button> : null}{session.status === "RUNNING" ? <button className="btn" disabled={Boolean(busy)} onClick={() => void pauseExperiment()}>Pause</button> : null}{session.status !== "COMPLETED" ? <button className="btn btn--ghost" disabled={Boolean(busy)} onClick={() => void stopExperiment()}>Stop</button> : null}{session.status === "COMPLETED" ? <button className="btn btn--primary" onClick={() => { creatingRef.current = true; setCreatingNew(true); setReplay(null); }}>New experiment</button> : null}</div></section>
         <section className="ewps-path-grid">{visiblePaths.map((candidate) => <CandidateCard key={candidate.pathId} candidate={candidate} calculation={latestCalculation(timeline, candidate.pathId)} preferred={last?.hysteresis.preferredPathId === candidate.pathId} />)}</section>

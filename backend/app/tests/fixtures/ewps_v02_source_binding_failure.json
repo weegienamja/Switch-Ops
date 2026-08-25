@@ -1,0 +1,17 @@
+{
+  "fixture": "privacy-safe-v0.2-source-binding-failure",
+  "experiment": {
+    "name": "Controlled dual-path regression",
+    "sourceMode": "CONTROLLED_DUAL_PATH",
+    "candidatePathIds": [
+      "path-real-a",
+      "path-real-b",
+      "path-real-c"
+    ],
+    "controlledScenario": "faster-epistemically-weak"
+  },
+  "expected": {
+    "accepted": false,
+    "reason": "controlled source mode cannot contain real-interface identities"
+  }
+}

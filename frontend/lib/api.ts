@@ -196,7 +196,9 @@ export const api = {
   ewpsCreate: (request: {
     name: string;
     workloadLabel: string;
+    sourceMode: "REAL_INTERFACES" | "CONTROLLED_DUAL_PATH";
     candidatePathIds: string[];
+    controlledScenario?: EWPSLabScenario | null;
     config: EWPSConfig;
   }) => fetchJson<EWPSExperimentSession>("/api/ewps/experiments", {
     method: "POST",

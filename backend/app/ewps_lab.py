@@ -13,6 +13,7 @@ import os
 import statistics
 import subprocess
 from threading import RLock
+import uuid
 
 from .ewps_telemetry import ProbeResult, _parse_probe_output, _probe_outcomes
 from .ewps_models import RawMetrics
@@ -41,6 +42,8 @@ LAB_PATHS = {
         "target_ip": "10.254.12.2",
     },
 }
+LAB_TOPOLOGY_VERSION = "switchops-ewps-contained-dual-path-v1"
+LAB_MARKER_PATH = "/run/switchops-ewps-v02/owner"
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,9 @@ ip -n ewps02-src route add 10.254.11.2/32 via 10.254.1.2 dev ewp-as
 ip -n ewps02-src route add 10.254.12.2/32 via 10.254.2.2 dev ewp-bs
 ip -n ewps02-target route add 10.254.1.1/32 via 10.254.11.1 dev ewp-at
 ip -n ewps02-target route add 10.254.2.1/32 via 10.254.12.1 dev ewp-bt
+install -d -m 700 /run/switchops-ewps-v02
+umask 077
+printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$1" 'switchops-ewps-contained-dual-path-v1' 'fast-stable' 'slow-stable' '-' '0' > /run/switchops-ewps-v02/owner
 """.strip()
 
 TEARDOWN_SCRIPT = r"""
@@ -142,6 +148,7 @@ set -eu
 for ns in ewps02-src ewps02-gwa ewps02-gwb ewps02-target; do
   ip netns del "$ns" 2>/dev/null || true
 done
+rm -rf /run/switchops-ewps-v02
 """.strip()
 
 PREREQUISITE_SCRIPT = r"""
@@ -151,6 +158,31 @@ command -v ip >/dev/null
 command -v tc >/dev/null
 command -v ping >/dev/null
 grep -qi microsoft /proc/sys/kernel/osrelease
+""".strip()
+
+RECONCILE_SCRIPT = r"""
+set -eu
+test -f /run/switchops-ewps-v02/owner
+test "$(sed -n '2p' /run/switchops-ewps-v02/owner)" = 'switchops-ewps-contained-dual-path-v1'
+for ns in ewps02-src ewps02-gwa ewps02-gwb ewps02-target; do
+  ip netns list | awk '{print $1}' | grep -Fxq "$ns"
+done
+ip -n ewps02-src link show ewp-as >/dev/null
+ip -n ewps02-src link show ewp-bs >/dev/null
+ip -n ewps02-gwa link show ewp-ag0 >/dev/null
+ip -n ewps02-gwa link show ewp-ag1 >/dev/null
+ip -n ewps02-gwb link show ewp-bg0 >/dev/null
+ip -n ewps02-gwb link show ewp-bg1 >/dev/null
+ip -n ewps02-target link show ewp-at >/dev/null
+ip -n ewps02-target link show ewp-bt >/dev/null
+cat /run/switchops-ewps-v02/owner
+""".strip()
+
+MARKER_SCRIPT = r"""
+set -eu
+test -f /run/switchops-ewps-v02/owner
+umask 077
+printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$1" "$2" "$3" "$4" "$5" "$6" > /run/switchops-ewps-v02/owner
 """.strip()
 
 
@@ -174,7 +206,12 @@ class EWPSLabManager:
     def __init__(self) -> None:
         self._lock = RLock()
         self._keepalive: subprocess.Popen[str] | None = None
+        self._reconciled = False
+        self._created = False
         self._ready = False
+        self._state = "LAB_NOT_CREATED"
+        self._prerequisites_passed = False
+        self._instance_id: str | None = None
         self._scenario: LabScenarioName | None = None
         self._phase = 0
         self._profiles: dict[str, LabProfileName] = {
@@ -183,6 +220,21 @@ class EWPSLabManager:
         }
         self._last_results: dict[str, ProbeResult] = {}
         self._message = "Run the prerequisite check, then explicitly create the contained lab."
+
+    def _check_prerequisites(self) -> tuple[bool, str]:
+        try:
+            completed = _wsl(["sh", "-lc", PREREQUISITE_SCRIPT], timeout=10.0)
+            available = completed.returncode == 0
+            message = (
+                "WSL2, iproute2, tc netem, ping, and non-interactive root execution are available."
+                if available
+                else "WSL2 is present but the lab requires root plus ip, tc, and ping inside the default distribution."
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            available = False
+            message = "WSL2 or a required contained-networking facility is unavailable."
+        self._prerequisites_passed = available
+        return available, message
 
     def _start_keepalive(self) -> None:
         """Keep the WSL VM alive only for the lifetime of an explicit lab.
@@ -220,17 +272,7 @@ class EWPSLabManager:
             keepalive.wait(timeout=2.0)
 
     def prerequisites(self) -> LabStatus:
-        try:
-            completed = _wsl(["sh", "-lc", PREREQUISITE_SCRIPT], timeout=10.0)
-            available = completed.returncode == 0
-            message = (
-                "WSL2, iproute2, tc netem, ping, and non-interactive root execution are available."
-                if available
-                else "WSL2 is present but the lab requires root plus ip, tc, and ping inside the default distribution."
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            available = False
-            message = "WSL2 or a required contained-networking facility is unavailable."
+        available, message = self._check_prerequisites()
         return self._status(available=available, message=message)
 
     def _namespaces_present(self) -> bool:
@@ -241,10 +283,82 @@ class EWPSLabManager:
         names = {line.split()[0] for line in completed.stdout.splitlines() if line.strip()}
         return {"ewps02-src", "ewps02-gwa", "ewps02-gwb", "ewps02-target"}.issubset(names)
 
+    def _read_owned_topology(self) -> tuple[str, LabProfileName, LabProfileName, LabScenarioName | None, int] | None:
+        try:
+            completed = _wsl(["sh", "-lc", RECONCILE_SCRIPT], timeout=8.0)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if completed.returncode != 0:
+            return None
+        lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        if len(lines) != 6 or lines[1] != LAB_TOPOLOGY_VERSION:
+            return None
+        try:
+            uuid.UUID(lines[0])
+            profile_a = lines[2]
+            profile_b = lines[3]
+            scenario = None if lines[4] == "-" else lines[4]
+            phase = int(lines[5])
+        except (ValueError, TypeError):
+            return None
+        if profile_a not in PROFILES or profile_b not in PROFILES:
+            return None
+        if scenario is not None and scenario not in SCENARIO_PHASES:
+            return None
+        if phase < 0 or (scenario is not None and phase >= len(SCENARIO_PHASES[scenario])):
+            return None
+        return lines[0], profile_a, profile_b, scenario, phase
+
+    def _write_marker(self) -> None:
+        if not self._instance_id:
+            raise RuntimeError("The controlled lab has no owned instance identity.")
+        completed = _wsl(
+            [
+                "sh", "-lc", MARKER_SCRIPT, "switchops-ewps-marker",
+                self._instance_id,
+                LAB_TOPOLOGY_VERSION,
+                self._profiles["lab-path-a"],
+                self._profiles["lab-path-b"],
+                self._scenario or "-",
+                str(self._phase),
+            ],
+            timeout=5.0,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("The controlled-lab ownership marker could not be updated.")
+
+    def _reconcile_existing(self) -> None:
+        self._reconciled = True
+        available, _message = self._check_prerequisites()
+        owned = self._read_owned_topology() if available else None
+        if owned is None:
+            self._created = False
+            self._ready = False
+            self._instance_id = None
+            self._last_results.clear()
+            if self._namespaces_present():
+                self._state = "LAB_UNVERIFIED"
+                self._message = "Contained namespaces exist, but EWPS ownership or topology validation failed."
+            else:
+                self._state = "LAB_NOT_CREATED"
+                self._message = "LAB NOT CREATED. Run prerequisites, then explicitly create the contained lab."
+            return
+        instance_id, profile_a, profile_b, scenario, phase = owned
+        self._created = True
+        self._ready = False
+        self._state = "LAB_UNVERIFIED"
+        self._instance_id = instance_id
+        self._profiles = {"lab-path-a": profile_a, "lab-path-b": profile_b}
+        self._scenario = scenario
+        self._phase = phase
+        self._message = "Owned contained lab found after restart; verifying both paths."
+        self._start_keepalive()
+        self.verify()
+
     def _status(self, *, available: bool | None = None, message: str | None = None) -> LabStatus:
         if available is None:
             available = os.name == "nt"
-        ready = self._ready and self._namespaces_present()
+        ready = self._ready and self._created
         paths: list[LabPathStatus] = []
         for path_id, definition in LAB_PATHS.items():
             result = self._last_results.get(path_id)
@@ -261,6 +375,10 @@ class EWPSLabManager:
         return LabStatus(
             available=available,
             ready=ready,
+            state="LAB_READY" if ready else self._state,
+            prerequisitesPassed=self._prerequisites_passed,
+            labInstanceId=self._instance_id,
+            topologyVersion=LAB_TOPOLOGY_VERSION,
             message=message or self._message,
             scenarioId=self._scenario,
             scenarioPhase=self._phase,
@@ -269,9 +387,13 @@ class EWPSLabManager:
 
     def status(self) -> LabStatus:
         with self._lock:
-            if self._ready and not self._namespaces_present():
+            if not self._reconciled:
+                self._reconcile_existing()
+            if self._created and self._read_owned_topology() is None:
+                self._created = False
                 self._ready = False
-                self._message = "The contained namespaces are no longer present; create the lab again."
+                self._state = "LAB_LOST"
+                self._message = "CONTROLLED LAB LOST. The owned topology is no longer present or no longer matches."
             return self._status()
 
     def create(self) -> LabStatus:
@@ -279,21 +401,33 @@ class EWPSLabManager:
         if not prerequisite.available:
             return prerequisite
         with self._lock:
+            instance_id = str(uuid.uuid4())
             try:
                 self._start_keepalive()
-                completed = _wsl(["sh", "-lc", SETUP_SCRIPT], timeout=20.0)
+                completed = _wsl(
+                    ["sh", "-lc", SETUP_SCRIPT, "switchops-ewps-setup", instance_id],
+                    timeout=20.0,
+                )
             except (OSError, subprocess.TimeoutExpired) as exc:
                 self._stop_keepalive()
+                self._created = False
                 self._ready = False
+                self._state = "LAB_NOT_CREATED"
                 self._message = f"Contained lab creation failed: {type(exc).__name__}."
                 return self._status(message=self._message)
             if completed.returncode != 0:
                 self._stop_keepalive()
+                self._created = False
                 self._ready = False
+                self._state = "LAB_NOT_CREATED"
                 detail = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "unknown setup error"
                 self._message = f"Contained lab creation failed: {detail[:180]}"
                 return self._status(message=self._message)
-            self._ready = True
+            self._reconciled = True
+            self._created = True
+            self._ready = False
+            self._state = "LAB_UNVERIFIED"
+            self._instance_id = instance_id
             self._scenario = None
             self._phase = 0
             self._last_results.clear()
@@ -310,7 +444,11 @@ class EWPSLabManager:
             except (OSError, subprocess.TimeoutExpired):
                 success = False
             self._stop_keepalive()
+            self._reconciled = True
+            self._created = False
             self._ready = False
+            self._state = "LAB_NOT_CREATED" if success else "LAB_UNVERIFIED"
+            self._instance_id = None
             self._scenario = None
             self._phase = 0
             self._last_results.clear()
@@ -323,7 +461,7 @@ class EWPSLabManager:
 
     def shutdown(self) -> None:
         """Best-effort cleanup when the desktop/backend process exits."""
-        if self._ready or self._keepalive is not None:
+        if self._created or self._keepalive is not None:
             self.teardown()
 
     def candidates(self) -> list[V2CandidatePath]:
@@ -332,8 +470,8 @@ class EWPSLabManager:
         return [
             V2CandidatePath(
                 pathId=path_id,
-                displayLabel=definition["label"],
-                adapterName=f"Controlled logical {definition['label']}",
+                displayLabel=f"Controlled {definition['label']}",
+                adapterName=self._profiles[path_id].replace("-", " ").title(),
                 sourceKind="controlled_lab",
                 lifecycle="VIABLE",
                 topologyEvidence="reciprocal_independent_direct",
@@ -348,7 +486,7 @@ class EWPSLabManager:
     def apply_profile(self, path_id: str, profile_name: LabProfileName) -> LabStatus:
         if path_id not in LAB_PATHS or profile_name not in PROFILES:
             raise KeyError("Unknown controlled lab path or profile.")
-        if not self._ready:
+        if not self._created:
             raise ValueError("Create the controlled lab before applying an impairment profile.")
         definition = LAB_PATHS[path_id]
         profile = PROFILES[profile_name]
@@ -362,19 +500,21 @@ class EWPSLabManager:
             detail = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "tc netem failed"
             raise RuntimeError(detail[:180])
         self._profiles[path_id] = profile_name
+        self._write_marker()
         self._message = f"{LAB_PATHS[path_id]['label']} now uses the {profile_name} profile."
         return self._status()
 
     def prepare_scenario(self, scenario_id: LabScenarioName) -> LabStatus:
         if scenario_id not in SCENARIO_PHASES:
             raise KeyError(scenario_id)
-        if not self._ready:
+        if not self._created:
             raise ValueError("Create the controlled lab before preparing a scenario.")
         with self._lock:
             self._scenario = scenario_id
             self._phase = 0
             for path_id, profile in SCENARIO_PHASES[scenario_id][0].items():
                 self.apply_profile(path_id, profile)
+            self._write_marker()
             self._message = f"Scenario {scenario_id} prepared at phase 1. No experiment was started."
             return self.verify()
 
@@ -386,6 +526,7 @@ class EWPSLabManager:
             self._phase = min(self._phase + 1, len(phases) - 1)
             for path_id, profile in phases[self._phase].items():
                 self.apply_profile(path_id, profile)
+            self._write_marker()
             self._message = f"Scenario {self._scenario} advanced to phase {self._phase + 1}."
             return self._status()
 
@@ -395,7 +536,7 @@ class EWPSLabManager:
     def measure(self, path_id: str, count: int) -> ProbeResult:
         if path_id not in LAB_PATHS:
             raise KeyError(path_id)
-        if not self._ready:
+        if not self._created:
             raise ValueError("The controlled lab is not ready.")
         definition = LAB_PATHS[path_id]
         profile = self.profile(path_id)
@@ -451,17 +592,57 @@ class EWPSLabManager:
         )
 
     def verify(self) -> LabStatus:
-        if not self._ready:
+        if not self._created:
             return self._status(message="Create the controlled lab before verification.")
+        if self._read_owned_topology() is None:
+            self._created = False
+            self._ready = False
+            self._state = "LAB_LOST"
+            self._message = "CONTROLLED LAB LOST. Ownership or topology validation failed."
+            return self._status(message=self._message)
         results = {path_id: self.measure(path_id, 3) for path_id in LAB_PATHS}
         self._last_results = results
         valid = all(result.observation_validated_at and result.raw.reachable for result in results.values())
+        self._ready = bool(valid)
+        self._state = "LAB_READY" if valid else "LAB_UNVERIFIED"
         self._message = (
             "Both controlled logical paths independently returned validated telemetry."
             if valid
             else "The lab exists, but both paths did not independently validate; inspect the selected profiles."
         )
         return self._status(message=self._message)
+
+    def validate_for_experiment(self, scenario: LabScenarioName | None) -> LabStatus:
+        """Perform the full backend-owned start gate and return its fresh proof."""
+        with self._lock:
+            available, message = self._check_prerequisites()
+            if not available:
+                return self._status(available=False, message=message)
+            if not self._reconciled:
+                self._reconcile_existing()
+            if not self._created:
+                return self._status(message="LAB NOT CREATED. Controlled experiment startup rejected.")
+            if scenario != self._scenario:
+                self._ready = False
+                self._state = "LAB_UNVERIFIED"
+                return self._status(message="The experiment scenario does not match the prepared controlled-lab scenario.")
+            return self.verify()
+
+    def binding_is_current(self, instance_id: str | None, topology_version: str | None) -> bool:
+        with self._lock:
+            owned = self._read_owned_topology()
+            current = bool(
+                owned
+                and instance_id
+                and topology_version == LAB_TOPOLOGY_VERSION
+                and owned[0] == instance_id
+            )
+            if not current:
+                self._created = False
+                self._ready = False
+                self._state = "LAB_LOST"
+                self._message = "CONTROLLED LAB LOST. The experiment's immutable lab binding is absent."
+            return current
 
 
 _lab_manager: EWPSLabManager | None = None
