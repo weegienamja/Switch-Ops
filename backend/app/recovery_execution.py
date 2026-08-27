@@ -489,44 +489,117 @@ def assess_recovery_restart(records: Sequence[RecoveryJournalRecord]) -> Restart
 # is an explicit reservation somebody is accountable for.
 
 ReservationAuthority = Literal[
-    # An operator declared this address reserved for SwitchOps recovery.
+    # An identified operator with authority over the network explicitly attests
+    # that this exact address is reserved for this recovery operation. Not
+    # "it looks free" -- a deliberate, attributable declaration.
     "OPERATOR_DECLARED",
     # The DHCP service is attested to exclude this address from its pool.
     "DHCP_EXCLUSION_ATTESTED",
     # Infrastructure (IPAM, controller) attests the address is reserved.
     "INFRASTRUCTURE_ATTESTED",
+    # A Recovery Lab harness reserved this address inside a disposable
+    # environment it created. Real authority there, none at all anywhere else.
+    "LAB_HARNESS_RESERVED",
 ]
 
+#: Who or what made the claim. Kept separate from the authority type so that one
+#: kind of evidence cannot be filed under another: an operator opinion must not
+#: be recorded as an IPAM record, and an IPAM record must not be recorded as a
+#: DHCP exclusion.
+AttestorType = Literal[
+    "NAMED_OPERATOR",
+    "DHCP_SERVICE_RECORD",
+    "IPAM_RECORD",
+    "LAB_HARNESS",
+]
+
+#: The class of network the attestation covers. A reservation is authority over
+#: one network, not authority in general.
+ReservationScope = Literal["PRODUCTION_NETWORK", "DISPOSABLE_LAB_ENVIRONMENT"]
+
+#: Exactly one attestor kind per authority type. Without this, a free-text
+#: attestor field would let any authority label be applied to any evidence.
+REQUIRED_ATTESTOR: Mapping[str, str] = {
+    "OPERATOR_DECLARED": "NAMED_OPERATOR",
+    "DHCP_EXCLUSION_ATTESTED": "DHCP_SERVICE_RECORD",
+    "INFRASTRUCTURE_ATTESTED": "IPAM_RECORD",
+    "LAB_HARNESS_RESERVED": "LAB_HARNESS",
+}
+
+#: Authority types that may never speak for a production network, however valid
+#: they are inside their own scope.
+DISPOSABLE_ONLY_AUTHORITY = ("LAB_HARNESS_RESERVED",)
+
 #: Rejected outright, however tempting. Each of these can be true of an address
-#: that is nonetheless in use.
+#: that is nonetheless in use. They report an absence of evidence, and authority
+#: requires a positive claim about the specific address.
 REJECTED_COLLISION_EVIDENCE = (
     "ICMP_SILENCE",
     "STALE_ARP_ABSENCE",
     "ABSENT_FROM_LOCAL_NEIGHBOR_CACHE",
     "UNUSED_IN_LAST_OBSERVED_MAC_TABLE",
+    "APPARENTLY_UNUSED_ADDRESS",
+    "FREE_LOOKING_DHCP_RANGE",
+    "DISCOVERY_CONFIDENCE",
+    "MODEL_INFERENCE",
+    "NETWORK_DESCRIPTION",
+    "DAD_FOUND_NO_DUPLICATE",
 )
 
 ReservationBlocker = Literal[
     "NO_RESERVATION",
+    "RESERVATION_MALFORMED",
+    "RESERVATION_ADDRESS_MISMATCH",
     "RESERVATION_OUTSIDE_MANAGEMENT_PREFIX",
+    "RESERVATION_PREFIX_LENGTH_MISMATCH",
     "RESERVATION_IS_TARGET_ADDRESS",
     "RESERVATION_IS_GATEWAY_ADDRESS",
     "RESERVATION_IS_NETWORK_OR_BROADCAST",
     "RESERVATION_CONFLICTS_WITH_LOCAL_ADDRESS",
+    "RESERVATION_CONFLICTS_WITH_OWNED_ADDRESS",
     "RESERVATION_EVIDENCE_STALE",
+    "RESERVATION_EXPIRED",
+    "RESERVATION_NOT_YET_VALID",
+    "RESERVATION_SCOPE_MISMATCH",
+    "RESERVATION_ATTESTOR_INVALID",
+    "RESERVATION_AUTHORITY_UNSUPPORTED",
+    "RESERVATION_BINDING_MISMATCH",
 ]
 
 
 class RecoveryAddressReservation(BaseModel):
-    """An address somebody has taken responsibility for keeping free."""
+    """An address somebody has taken responsibility for keeping free.
+
+    Every field exists to close one specific way of turning a weaker claim into
+    authority: the wrong address, the wrong network, an expired declaration, an
+    anonymous attestor, or a reservation replayed into an operation it was never
+    issued for.
+    """
 
     address: str
     prefix_length: int = Field(alias="prefixLength", ge=1, le=32)
     management_prefix: str = Field(alias="managementPrefix")
     authority: ReservationAuthority
+    #: What kind of thing attested it. Must match the authority type.
+    attestor_type: AttestorType = Field(alias="attestorType")
+    #: Who or what attested it, for the audit trail. Long enough to identify
+    #: somebody: "n/a" is not an attestor.
+    attested_by: str = Field(alias="attestedBy", min_length=3, max_length=200)
+    #: The class of network this attestation covers.
+    scope: ReservationScope
+    #: Which network or environment instance, so that evidence for one cannot
+    #: authorise another of the same class.
+    network_scope_id: str = Field(alias="networkScopeId", min_length=3, max_length=120)
+    #: Where the claim can be checked: a DHCP scope, IPAM record, or ticket.
+    evidence_reference: str = Field(
+        alias="evidenceReference", min_length=3, max_length=200
+    )
     declared_at: datetime = Field(alias="declaredAt")
-    #: Free text naming who or what attested it, for the audit trail.
-    attested_by: str = Field(alias="attestedBy", min_length=1, max_length=200)
+    #: When the reservation stops being authority. Explicit, never inferred.
+    reserved_until: datetime = Field(alias="reservedUntil")
+    #: Optional. Ties the reservation to one plan or operation so that a
+    #: reservation issued for one recovery cannot be replayed into another.
+    plan_binding: str | None = Field(default=None, alias="planBinding")
 
     model_config = {"populate_by_name": True}
 
@@ -542,16 +615,23 @@ class ReservationAssessment(BaseModel):
 def assess_recovery_reservation(
     reservation: "RecoveryAddressReservation | None",
     *,
+    candidate_address: str,
     management_prefix: str,
     target_address: str,
     gateway_address: str | None,
     local_addresses: Sequence[str],
     now: datetime,
+    expected_scope: ReservationScope = "PRODUCTION_NETWORK",
+    expected_network_scope_id: str | None = None,
+    expected_plan_binding: str | None = None,
+    owned_addresses: Sequence[str] = (),
     max_age_days: int = 400,
 ) -> ReservationAssessment:
-    """Decide whether a reservation may be used as a recovery address.
+    """Decide whether a reservation authorises creating `candidate_address`.
 
     Absence of a reservation is a blocker, never a licence to pick something.
+    The scope defaults to production, so a caller that forgets to say where it
+    is running cannot accidentally have a lab reservation accepted.
     """
     import ipaddress
 
@@ -568,16 +648,76 @@ def assess_recovery_reservation(
             ],
         )
 
+    # --- does this attestation even talk about the address we want? ---------
+    if reservation.address != candidate_address:
+        blockers.append("RESERVATION_ADDRESS_MISMATCH")
+        evidence.append(
+            f"The reservation authorises {reservation.address}, but "
+            f"{candidate_address} is the address that would be created."
+        )
+
     try:
         network = ipaddress.ip_network(management_prefix, strict=False)
         candidate = ipaddress.ip_address(reservation.address)
     except ValueError:
         return ReservationAssessment(
             usable=False,
-            blockers=["RESERVATION_OUTSIDE_MANAGEMENT_PREFIX"],
-            evidence=["The reservation or management prefix could not be parsed."],
+            blockers=["RESERVATION_MALFORMED"],
+            evidence=["The reservation address or management prefix is malformed."],
+        )
+    if not isinstance(candidate, ipaddress.IPv4Address):
+        return ReservationAssessment(
+            usable=False,
+            blockers=["RESERVATION_MALFORMED"],
+            evidence=["Only IPv4 recovery addresses are supported."],
         )
 
+    # --- scope: authority over one network, not authority in general --------
+    if reservation.scope != expected_scope:
+        blockers.append("RESERVATION_SCOPE_MISMATCH")
+        evidence.append(
+            f"The reservation is scoped to {reservation.scope} but would be used "
+            f"on a {expected_scope}."
+        )
+    if (
+        expected_network_scope_id is not None
+        and reservation.network_scope_id != expected_network_scope_id
+    ):
+        blockers.append("RESERVATION_SCOPE_MISMATCH")
+        evidence.append(
+            "The reservation names a different network or environment than the "
+            "one this operation would run in."
+        )
+    if (
+        reservation.authority in DISPOSABLE_ONLY_AUTHORITY
+        and expected_scope != "DISPOSABLE_LAB_ENVIRONMENT"
+    ):
+        blockers.append("RESERVATION_AUTHORITY_UNSUPPORTED")
+        evidence.append(
+            f"{reservation.authority} is authority inside a disposable "
+            "environment only. It can never authorise a production address."
+        )
+
+    # --- attestor: the claim must come from the kind of thing it claims to ---
+    if REQUIRED_ATTESTOR.get(reservation.authority) != reservation.attestor_type:
+        blockers.append("RESERVATION_ATTESTOR_INVALID")
+        evidence.append(
+            f"{reservation.authority} requires a "
+            f"{REQUIRED_ATTESTOR.get(reservation.authority)} attestor, but this "
+            f"was attested by a {reservation.attestor_type}."
+        )
+
+    # --- replay: a reservation issued for one operation is not a licence -----
+    if reservation.plan_binding is not None and (
+        reservation.plan_binding != expected_plan_binding
+    ):
+        blockers.append("RESERVATION_BINDING_MISMATCH")
+        evidence.append(
+            "The reservation was issued for a different plan or operation and "
+            "cannot be replayed into this one."
+        )
+
+    # --- structural safety, whatever the authority says ----------------------
     if candidate not in network:
         blockers.append("RESERVATION_OUTSIDE_MANAGEMENT_PREFIX")
         evidence.append(
@@ -589,6 +729,14 @@ def assess_recovery_reservation(
         if candidate in (network.network_address, network.broadcast_address):
             blockers.append("RESERVATION_IS_NETWORK_OR_BROADCAST")
             evidence.append("The reservation is the network or broadcast address.")
+
+    if reservation.prefix_length != network.prefixlen:
+        blockers.append("RESERVATION_PREFIX_LENGTH_MISMATCH")
+        evidence.append(
+            f"The reservation carries /{reservation.prefix_length} but the "
+            f"management prefix is /{network.prefixlen}, so the on-link route "
+            "would not be the one that was attested."
+        )
 
     if reservation.address == target_address:
         blockers.append("RESERVATION_IS_TARGET_ADDRESS")
@@ -602,18 +750,43 @@ def assess_recovery_reservation(
             "This host already holds the reserved address, so a created address "
             "could not afterwards be identified as ours."
         )
-
-    age = now - reservation.declared_at
-    if age.days > max_age_days:
-        blockers.append("RESERVATION_EVIDENCE_STALE")
+    if reservation.address in set(owned_addresses):
+        blockers.append("RESERVATION_CONFLICTS_WITH_OWNED_ADDRESS")
         evidence.append(
-            f"The reservation was attested {age.days} days ago and needs "
-            "re-attestation before it can authorise an address."
+            "Another recovery operation already owns this address, so two "
+            "operations could not both roll it back safely."
+        )
+
+    # --- freshness: two independent limits ----------------------------------
+    if reservation.reserved_until <= reservation.declared_at:
+        blockers.append("RESERVATION_MALFORMED")
+        evidence.append("The reservation expires no later than it was declared.")
+    if reservation.declared_at > now:
+        blockers.append("RESERVATION_NOT_YET_VALID")
+        evidence.append(
+            "The reservation is dated in the future, so it cannot be a record of "
+            "something that has already been attested."
+        )
+    elif reservation.reserved_until <= now:
+        blockers.append("RESERVATION_EXPIRED")
+        evidence.append(
+            "The reservation window has closed. An expired reservation is not "
+            "weaker authority; it is no authority."
         )
     else:
-        evidence.append(
-            f"Reserved by {reservation.authority} and attested {age.days} day(s) ago."
-        )
+        age = now - reservation.declared_at
+        if age.days > max_age_days:
+            blockers.append("RESERVATION_EVIDENCE_STALE")
+            evidence.append(
+                f"The reservation was attested {age.days} days ago and needs "
+                "re-attestation before it can authorise an address."
+            )
+        else:
+            evidence.append(
+                f"Reserved by {reservation.authority} ({reservation.attestor_type}), "
+                f"attested {age.days} day(s) ago, valid until "
+                f"{reservation.reserved_until.isoformat()}."
+            )
 
     return ReservationAssessment(
         usable=not blockers, blockers=blockers, evidence=evidence

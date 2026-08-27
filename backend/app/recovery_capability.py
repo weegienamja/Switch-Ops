@@ -31,8 +31,12 @@ RecoveryCapability = Literal[
     "EXACT_ADDRESS_DELETE",
     "ROLLBACK_RESTORES_BASELINE",
     "CRASH_OWNERSHIP_RECONCILIATION",
-    #: The one that matters for production and is not yet proven.
     "DHCP_SAME_INTERFACE_COEXISTENCE",
+    #: Gate 3. Whether the reservation-authority chain that must precede any
+    #: address creation has actually been exercised end to end, rather than
+    #: merely unit tested. Having code that can evaluate an attestation is not
+    #: the same as having measured that the chain refuses and permits correctly.
+    "COLLISION_SAFE_ADDRESS_AUTHORITY",
     "PRODUCTION_ADAPTER_CLASS",
 ]
 
@@ -55,6 +59,14 @@ PlatformClass = Literal["WINDOWS_10_OR_LATER_X64", "UNKNOWN"]
 
 #: Capabilities that must all be VALIDATED before a recovery could be offered on
 #: a real, DHCP-controlled production interface.
+#:
+#: ``PRODUCTION_ADAPTER_CLASS`` is a member on purpose, and its absence was a
+#: real hole: every measurement so far was taken on a disposable virtual
+#: adapter, so without it, validating the one remaining capability would have
+#: flipped ``production_recovery_validated`` to True while no production adapter
+#: had ever been touched. A field named for production must not claim more
+#: production evidence than exists. That it can only be satisfied by evidence
+#: this project has deliberately never gathered is the point, not a dead end.
 PRODUCTION_REQUIRED_CAPABILITIES: tuple[RecoveryCapability, ...] = (
     "EPHEMERAL_ADDRESS_CREATE",
     "DUPLICATE_ADDRESS_DETECTION",
@@ -63,6 +75,8 @@ PRODUCTION_REQUIRED_CAPABILITIES: tuple[RecoveryCapability, ...] = (
     "ROLLBACK_RESTORES_BASELINE",
     "CRASH_OWNERSHIP_RECONCILIATION",
     "DHCP_SAME_INTERFACE_COEXISTENCE",
+    "COLLISION_SAFE_ADDRESS_AUTHORITY",
+    "PRODUCTION_ADAPTER_CLASS",
 )
 
 
@@ -181,6 +195,13 @@ def current_capability_state() -> RecoveryPrimitiveCapability:
     """
     observed = datetime.fromisoformat("2026-08-27T00:00:00+00:00")
     coexistence_observed = datetime.fromisoformat("2026-08-27T02:00:00+00:00")
+    # Read from the Recovery Lab reservation record the successful Gate 3 run
+    # left behind, not chosen by hand. It is the instant the run captured when
+    # it started, which the runner also stamped on the reservation it released,
+    # so it identifies the run to the second rather than marking its completion.
+    # The two earlier gates predate that record and carry hand-entered dates;
+    # see `test_capability_timestamp_provenance`.
+    authority_observed = datetime.fromisoformat("2026-08-27T10:48:01.805216+00:00")
     isolated = "ISOLATED_STATIC_ADAPTER"
     return build_capability_state(
         [
@@ -241,6 +262,24 @@ def current_capability_state() -> RecoveryPrimitiveCapability:
                     "with a finite lease still counting down; the requested /24 "
                     "on-link route appeared; default routes and DNS were "
                     "unchanged; and exact-row deletion restored the baseline."
+                ),
+            ),
+            CapabilityEvidence(
+                capability="COLLISION_SAFE_ADDRESS_AUTHORITY",
+                status="VALIDATED",
+                environment="DISPOSABLE_DHCP_ADAPTER",
+                observedAt=authority_observed,
+                detail=(
+                    "Measured twice on a disposable DHCP adapter, elevated. With "
+                    "no reservation the run refused with AUTHORITY_ABSENT and "
+                    "created nothing. With a fresh harness-owned reservation "
+                    "bound to the exact candidate, prefix, environment and run, "
+                    "authority passed before any mutation, exactly one temporary "
+                    "RFC 5737 address was created, real duplicate address "
+                    "detection reached Preferred, the DHCP primary and its "
+                    "finite lease were preserved, exact-row deletion restored "
+                    "the baseline, and the reservation was released. This is "
+                    "the mechanism working; it is not a production reservation."
                 ),
             ),
             CapabilityEvidence(

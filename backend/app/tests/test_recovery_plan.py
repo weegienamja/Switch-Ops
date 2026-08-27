@@ -15,6 +15,7 @@ from app.management_path import (
 )
 from app.meraki_management import MerakiManagementEvidence
 from app import recovery_plan as recovery_module
+from app.recovery_execution import RecoveryAddressReservation
 from app.recovery_plan import (
     CandidateAddressEvidence,
     build_recovery_plan,
@@ -129,6 +130,30 @@ def candidate(
     )
 
 
+def reservation(address: str = "198.18.10.200", **overrides) -> RecoveryAddressReservation:
+    """A complete authoritative declaration for the synthetic candidate.
+
+    The planner no longer accepts the candidate's own `assurance` label as
+    authority, so a plan that is meant to reach READY has to carry the
+    attestation the label claims exists.
+    """
+    payload = {
+        "address": address,
+        "prefixLength": 24,
+        "managementPrefix": "198.18.10.0/24",
+        "authority": "OPERATOR_DECLARED",
+        "attestorType": "NAMED_OPERATOR",
+        "attestedBy": "synthetic network owner",
+        "scope": "PRODUCTION_NETWORK",
+        "networkScopeId": "synthetic-management-vlan",
+        "evidenceReference": "synthetic-change-record-0001",
+        "declaredAt": NOW - timedelta(days=1),
+        "reservedUntil": NOW + timedelta(days=7),
+    }
+    payload.update(overrides)
+    return RecoveryAddressReservation.model_validate(payload)
+
+
 def plan(**overrides):
     arguments = {
         "target": TARGET,
@@ -137,6 +162,7 @@ def plan(**overrides):
         "diagnosis": diagnosis(),
         "meraki": meraki(),
         "candidate": candidate(),
+        "reservation": reservation(),
         "now": NOW,
     }
     arguments.update(overrides)
@@ -418,3 +444,131 @@ def test_planner_module_has_no_local_network_mutation_or_shell_runtime() -> None
         "Remove-NetRoute",
     ):
         assert forbidden not in source
+
+
+# --- Gate 3: the candidate's own label is not authority --------------------
+
+def test_a_candidate_without_a_reservation_is_not_collision_authorised() -> None:
+    """The `assurance` field is the caller's word for it, not an attestation.
+
+    Before Gate 3 the planner accepted the label on its own, which meant any
+    caller could promote a guess to an authoritative reservation by spelling it
+    correctly.
+    """
+    result = plan(reservation=None)
+
+    assert result.status == "BLOCKED"
+    assert "COLLISION_SAFE_ADDRESS_UNAVAILABLE" in blocker_codes(result)
+    assert result.operation.candidate_address is None
+
+
+def test_a_reservation_for_a_different_address_does_not_authorise_the_candidate() -> None:
+    result = plan(reservation=reservation(address="198.18.10.201"))
+
+    assert result.status == "BLOCKED"
+    assert "COLLISION_SAFE_ADDRESS_UNAVAILABLE" in blocker_codes(result)
+
+
+def test_an_expired_reservation_does_not_authorise_the_candidate() -> None:
+    result = plan(reservation=reservation(reservedUntil=NOW - timedelta(minutes=1)))
+
+    assert result.status == "BLOCKED"
+    assert "COLLISION_SAFE_ADDRESS_UNAVAILABLE" in blocker_codes(result)
+
+
+def test_a_lab_reservation_does_not_authorise_a_production_candidate() -> None:
+    # Real authority inside a disposable environment, none at all here.
+    result = plan(
+        reservation=reservation(
+            authority="LAB_HARNESS_RESERVED",
+            attestorType="LAB_HARNESS",
+            scope="DISPOSABLE_LAB_ENVIRONMENT",
+        )
+    )
+
+    assert result.status == "BLOCKED"
+    assert "COLLISION_SAFE_ADDRESS_UNAVAILABLE" in blocker_codes(result)
+
+
+def test_an_attestor_that_does_not_match_its_authority_is_refused() -> None:
+    result = plan(reservation=reservation(attestorType="IPAM_RECORD"))
+
+    assert result.status == "BLOCKED"
+    assert "COLLISION_SAFE_ADDRESS_UNAVAILABLE" in blocker_codes(result)
+
+
+def test_a_complete_authoritative_reservation_authorises_the_candidate() -> None:
+    result = plan()
+
+    assert result.status == "READY"
+    assert result.operation.candidate_address == "198.18.10.200"
+    # READY still means "may ask", never "may act".
+    assert result.execution_enabled is False
+
+
+def test_the_refusal_explains_why_the_reservation_did_not_authorise() -> None:
+    result = plan(reservation=reservation(address="198.18.10.201"))
+
+    joined = " ".join(result.missing_evidence)
+    assert "198.18.10.201" in joined
+    assert "198.18.10.200" in joined
+
+
+def test_gate_three_does_not_make_the_planner_an_executor() -> None:
+    result = plan()
+
+    assert result.execution_enabled is False
+    assert result.execution_architecture.executor_implemented is False
+    assert result.execution_architecture.approval_available is False
+
+
+# --- a validated Gate 3 mechanism is not a production reservation ----------
+
+def test_a_validated_gate_three_still_blocks_a_plan_with_no_reservation() -> None:
+    """The capability is green and the plan is still blocked, on purpose.
+
+    Gate 3 measured that SwitchOps can require, validate, bind and consume
+    reservation evidence. Refusing when there is nothing to consume is the
+    behaviour that was measured, so a green capability has to make this blocker
+    more trustworthy, never absent.
+    """
+    from app.recovery_capability import current_capability_state
+
+    entry = next(
+        item
+        for item in current_capability_state().capabilities
+        if item.capability == "COLLISION_SAFE_ADDRESS_AUTHORITY"
+    )
+    assert entry.status == "VALIDATED"
+
+    result = plan(candidate=None, reservation=None)
+
+    assert result.status == "BLOCKED"
+    assert "COLLISION_SAFE_ADDRESS_UNAVAILABLE" in blocker_codes(result)
+    assert result.operation.candidate_address is None
+    assert result.execution_enabled is False
+
+
+def test_the_disposable_authority_that_passed_gate_three_is_refused_here() -> None:
+    # Exactly the reservation shape the successful isolated run consumed.
+    result = plan(
+        reservation=reservation(
+            authority="LAB_HARNESS_RESERVED",
+            attestorType="LAB_HARNESS",
+            scope="DISPOSABLE_LAB_ENVIRONMENT",
+            networkScopeId="synthetic-environment-0001",
+        )
+    )
+
+    assert result.status == "BLOCKED"
+    assert "COLLISION_SAFE_ADDRESS_UNAVAILABLE" in blocker_codes(result)
+
+
+def test_a_production_scoped_reservation_passes_the_collision_authority_stage() -> None:
+    # The other side of the same boundary: valid production-scoped authority is
+    # accepted, subject to every other readiness requirement.
+    result = plan()
+
+    assert "COLLISION_SAFE_ADDRESS_UNAVAILABLE" not in blocker_codes(result)
+    assert result.operation.candidate_address == "198.18.10.200"
+    assert result.execution_enabled is False

@@ -24,14 +24,30 @@ TARGET = "192.0.2.10"
 GATEWAY = "192.0.2.1"
 
 
+#: Each authority type names exactly one kind of attestor, so a fixture that
+#: changes one without the other is testing a masquerade rather than a variant.
+ATTESTOR_FOR = {
+    "OPERATOR_DECLARED": "NAMED_OPERATOR",
+    "DHCP_EXCLUSION_ATTESTED": "DHCP_SERVICE_RECORD",
+    "INFRASTRUCTURE_ATTESTED": "IPAM_RECORD",
+    "LAB_HARNESS_RESERVED": "LAB_HARNESS",
+}
+
+
 def _reservation(address: str = "192.0.2.250", **overrides) -> RecoveryAddressReservation:
+    authority = overrides.get("authority", "OPERATOR_DECLARED")
     payload = {
         "address": address,
         "prefixLength": 24,
         "managementPrefix": PREFIX,
-        "authority": "OPERATOR_DECLARED",
+        "authority": authority,
+        "attestorType": ATTESTOR_FOR[authority],
         "declaredAt": NOW - timedelta(days=1),
+        "reservedUntil": NOW + timedelta(days=1),
         "attestedBy": "lab operator",
+        "scope": "PRODUCTION_NETWORK",
+        "networkScopeId": "management-vlan-test",
+        "evidenceReference": "change-ticket-test-0001",
     }
     payload.update(overrides)
     return RecoveryAddressReservation.model_validate(payload)
@@ -39,6 +55,9 @@ def _reservation(address: str = "192.0.2.250", **overrides) -> RecoveryAddressRe
 
 def _assess(reservation, **overrides):
     kwargs = {
+        "candidate_address": (
+            reservation.address if reservation is not None else "192.0.2.250"
+        ),
         "management_prefix": PREFIX,
         "target_address": TARGET,
         "gateway_address": GATEWAY,
@@ -312,3 +331,67 @@ def test_the_execution_gate_still_refuses_after_gate_two():
     )
     assert decision.allowed is False
     assert decision.disposition in ("BLOCKED", "NOT_IMPLEMENTED")
+
+
+# --- Gate 3: implemented is not measured -----------------------------------
+
+def test_gate_three_is_recorded_as_measured():
+    from app.recovery_capability import current_capability_state
+
+    entry = next(
+        item
+        for item in current_capability_state().capabilities
+        if item.capability == "COLLISION_SAFE_ADDRESS_AUTHORITY"
+    )
+    assert entry.status == "VALIDATED"
+    assert entry.environment == "DISPOSABLE_DHCP_ADAPTER"
+
+
+def test_gate_three_is_still_required_for_production_recovery():
+    from app.recovery_capability import (
+        PRODUCTION_REQUIRED_CAPABILITIES,
+        current_capability_state,
+    )
+
+    # Still a prerequisite, now a satisfied one. Production recovery stays
+    # unvalidated on a different capability, not on this one.
+    assert "COLLISION_SAFE_ADDRESS_AUTHORITY" in PRODUCTION_REQUIRED_CAPABILITIES
+    state = current_capability_state()
+    assert state.production_recovery_validated is False
+    assert "COLLISION_SAFE_ADDRESS_AUTHORITY" not in state.unvalidated_for_production
+    assert "CRASH_OWNERSHIP_RECONCILIATION" in state.unvalidated_for_production
+
+
+def test_a_valid_reservation_does_not_make_the_product_an_executor():
+    from app.recovery_execution import build_planning_architecture
+
+    assert _assess(_reservation()).usable is True
+    architecture = build_planning_architecture(plan_status="BLOCKED", blocker_codes=())
+    assert architecture.executor_implemented is False
+    assert architecture.approval_available is False
+    assert architecture.mode == "PLANNING_ONLY"
+
+
+def test_a_valid_reservation_alone_does_not_reach_ready():
+    # Reservation authority closes one prerequisite. Readiness is the
+    # conjunction of all of them, and a capability gap is not closed by evidence.
+    decision = evaluate_execution_readiness(
+        ExecutionReadinessInput(
+            primitiveValidated=True,
+            dhcpCoexistenceValidated=True,
+            reservationUsable=True,
+        )
+    )
+    assert decision.readiness != "READY"
+    assert decision.may_request_operator_approval is False
+
+
+def test_reservation_authority_does_not_grant_row_delete_ownership():
+    # Which row is ours to delete is answered by the journal and the exact
+    # LUID/index/address/prefix, never by who reserved the address.
+    import inspect
+
+    from app.recovery_execution import select_owned_rollback
+
+    signature = inspect.signature(select_owned_rollback)
+    assert "reservation" not in signature.parameters

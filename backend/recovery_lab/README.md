@@ -67,8 +67,11 @@ Gate 2 has since been measured as well, on a disposable VirtualBox DHCP adapter
 * anything at all on a production adapter, by design.
 
 `production_recovery_validated` therefore remains **false**: it is the
-conjunction of every required capability, and crash-ownership reconciliation is
-still `NOT_ATTEMPTED`.
+conjunction of every required capability, and two are still `NOT_ATTEMPTED` --
+`CRASH_OWNERSHIP_RECONCILIATION` and `PRODUCTION_ADAPTER_CLASS`. The second is a
+required capability on purpose. Every measurement so far was taken on a
+disposable virtual adapter, so a field named for production must not go true
+while no production adapter has ever been touched.
 
 ## Running it
 
@@ -132,7 +135,8 @@ permission to act.
 | --- | --- | --- |
 | 1 | Does the IP Helper create/DAD/delete primitive work on this platform? | **PROVEN** |
 | 2 | Does it coexist with a DHCP-controlled primary on the same interface? | **PROVEN** |
-| 3 | Is there an authoritative collision-safe address on the real management prefix? | NOT AVAILABLE |
+| 3 | Can SwitchOps require, validate, bind and consume reservation authority before mutation? | **PROVEN** |
+| 3a | Is there an authoritative collision-safe address on the *real* management prefix? | NOT AVAILABLE |
 | 4 | Is there an operator-approved elevated production executor? | NOT IMPLEMENTED |
 | 5 | Does physical acceptance have live Catalyst topology? | BLOCKED |
 
@@ -170,8 +174,238 @@ planning no longer treats it as a blocker.
 **This does not validate production recovery.** It was measured on one
 disposable adapter, on one platform class, with no production adapter involved.
 Crash-ownership reconciliation remains unexercised, no authoritative
-collision-safe address exists, and no executor is implemented -- so the product
-remains planning-only and the real recovery plan remains blocked.
+collision-safe address exists for the real management prefix, and no executor is
+implemented -- so the product remains planning-only and the real recovery plan
+remains blocked.
+
+## Gate 3: reservation authority (measured)
+
+Gates 1 and 2 asked what the Windows primitive does. Gate 3 asks something the
+primitive cannot answer: *before* an address is created, what evidence proves
+that this specific candidate is authorised for temporary use?
+
+It is not an address-discovery problem. It is an authority problem, and the
+failure it exists to prevent is a single bad inference:
+
+> we did not see a conflict  →  we are authorised to use this address
+
+### Two independent controls
+
+| | Question it answers | When | Who answers |
+| --- | --- | --- | --- |
+| **Authority** | May we use this exact address? | Before any mutation | A person or system that took responsibility for keeping it free |
+| **DAD** | Did Windows detect a duplicate at creation time? | At creation | The operating system, on the wire |
+
+Neither substitutes for the other. Authority without DAD would trust a record
+over reality. DAD without authority would turn "nothing objected in three
+seconds" into "we are allowed" — which is exactly the inference above, and no
+amount of runtime probing repairs it. A powered-off host, a firewall that drops
+ICMP, and a genuinely free address are indistinguishable to any probe.
+
+So none of the following are ever authority, and each is enumerated in
+`REJECTED_COLLISION_EVIDENCE` rather than merely left off the accepted list:
+ICMP silence, ARP silence, a stale ARP entry, an apparently unused address, a
+free-looking DHCP range, discovery confidence, a model inference, a network
+description, or DAD having found no duplicate.
+
+### Accepted authority classes
+
+Each is a *positive claim about the specific address*, and each names exactly
+one kind of attestor so that one class cannot be filed as another.
+
+| Authority | Attestor | Means | Limitation |
+| --- | --- | --- | --- |
+| `OPERATOR_DECLARED` | `NAMED_OPERATOR` | An identified operator with authority over this network explicitly attests that this exact address is reserved for this recovery operation | It is a declaration, not an observation. It is only as good as the person's actual authority over the network, and it expires. |
+| `DHCP_EXCLUSION_ATTESTED` | `DHCP_SERVICE_RECORD` | The DHCP service is attested to exclude this address from its pool | Covers only what DHCP would hand out. A statically configured host inside the excluded range is invisible to it. |
+| `INFRASTRUCTURE_ATTESTED` | `IPAM_RECORD` | IPAM or a controller attests the address is reserved | Only as current as the record. An IPAM that nobody updates is a stale claim, not a live one. |
+| `LAB_HARNESS_RESERVED` | `LAB_HARNESS` | The Recovery Lab reserved this address inside a disposable environment it created | Real authority there and **none at all** anywhere else. Rejected outright whenever the scope is production. |
+
+`OPERATOR_DECLARED` explicitly does **not** mean "the operator thinks this
+address looks free". Operator guesswork fails closed like every other absence of
+evidence. The declaration has to be deliberate, scoped, attributable and fresh,
+which is what the required fields enforce.
+
+### What an attestation must carry
+
+Each field closes one specific way of turning a weaker claim into authority:
+
+| Field | Closes |
+| --- | --- |
+| `address` | Evidence for one address authorising another |
+| `prefixLength`, `managementPrefix` | An on-link route other than the one attested |
+| `authority`, `attestorType` | One class of evidence masquerading as another |
+| `attestedBy` | An anonymous claim nobody is accountable for |
+| `scope`, `networkScopeId` | A lab or another network's reservation authorising this one |
+| `evidenceReference` | A claim that cannot be checked afterwards |
+| `declaredAt`, `reservedUntil` | Stale or not-yet-valid authority |
+| `planBinding` (optional) | Replay of one operation's reservation into another |
+
+Freshness is two independent limits, because they fail differently. The
+attestation carries its own `reservedUntil`, and once that passes it is not
+weaker authority — it is none. Separately, `declaredAt` must be in the past and
+recent enough that somebody has looked at the claim within the re-attestation
+window.
+
+### Structural checks that no authority can override
+
+A candidate is refused regardless of who attests it when it is malformed, not
+IPv4, outside the target prefix, the network or broadcast address, the gateway,
+the target device's own address, already held by this host, or already owned by
+another in-flight recovery operation.
+
+### Three identities, deliberately not merged
+
+| Question | Answered by |
+| --- | --- |
+| Is this Windows interface the disposable environment we think it is? | The VirtualBox GUID → Windows `InterfaceGuid` chain (Gate 2) |
+| Are we authorised to use this exact candidate address in this exact prefix? | The reservation (Gate 3) |
+| Is this exact `MIB_UNICASTIPADDRESS_ROW` ours to delete? | The journal plus `InterfaceLuid`/index/address/prefix |
+
+A reservation does not make an interface ours, environment ownership does not
+reserve an address, and neither decides which row may be deleted.
+
+### The isolated experiment
+
+`gate3` adds the authority prerequisite *in front of* the already-proven Gate 2
+runner rather than reimplementing it — a second copy of create/DAD/verify/
+rollback would be a second thing to get wrong and would prove nothing new.
+
+```
+python -m backend.recovery_lab reserve --interface "<disposable alias>" \
+    --address 192.0.2.250 --prefix-length 24 \
+    --attested-by "recovery lab harness" \
+    --evidence-reference "gate3-isolated-experiment"
+
+python -m backend.recovery_lab gate3 --interface "<disposable alias>" \
+    --address 192.0.2.250 --prefix-length 24 --run-id gate3-run-0001
+```
+
+The reservation source is the harness's own registry, stored beside the journal
+under the ignored `state/` directory. It may only reserve RFC 5737
+documentation addresses — reserving anything else would be a claim about
+somebody's real network, which this harness has no standing to make — and it
+issues `LAB_HARNESS_RESERVED` at `DISPOSABLE_LAB_ENVIRONMENT` scope, which the
+product assessor rejects outright for production. The record is validated by the
+*product* assessor, not by the lab, so the harness cannot bless its own
+attestation.
+
+Sequence: prove the environment by GUID chain; load the live reservation for the
+exact candidate; verify its type, attestor, freshness, address, prefix,
+environment and operation binding; reject structural conflicts; bind it to this
+run; then hand over to the Gate 2 runner for journal, create, real DAD, on-link
+verification, DHCP preservation, exact-row deletion and baseline restoration;
+then release the reservation.
+
+Every refusal happens before the first create, so each of these leaves
+`creates: 0`:
+
+`ENVIRONMENT_NOT_AUTHORISED`, `AUTHORITY_ABSENT`, `AUTHORITY_STALE`,
+`AUTHORITY_INVALID`, `AUTHORITY_SCOPE_MISMATCH`, `CANDIDATE_NOT_RESERVED`,
+`CANDIDATE_STRUCTURALLY_UNSAFE`.
+
+If a reserved address nonetheless comes back `DUPLICATE`, the run reports
+`AUTHORITY_CONTRADICTED_BY_DAD`: the record and the network disagree, and the
+record does not win. It cleans up exactly its own row, and it does **not** try a
+different address. There is no candidate cycling anywhere in this design.
+
+A reservation is bound to one run before anything is created, so a run that
+crashes leaves a record belonging to a finished operation. The next run, with a
+new id, gets `RESERVATION_BINDING_MISMATCH`. A stale outstanding reservation
+never broadens into permission for a new operation.
+
+### What was measured
+
+Both halves of the gate were exercised elevated, on the harness-owned disposable
+DHCP environment. A gate that had only ever been observed succeeding would not
+have been shown to be a gate, so the refusal was measured first.
+
+**Negative observation — elevated, disposable environment, no reservation:**
+
+```
+test authority : DISPOSABLE_DHCP_ENVIRONMENT
+evaluator      : GATE3_RESERVATION_AUTHORITY
+outcome        : AUTHORITY_ABSENT
+creates        : 0
+restored       : True
+
+PASS environment-authority
+FAIL reservation-authority   NO_RESERVATION
+```
+
+The run held privilege sufficient to mutate the adapter and declined to use it.
+Its evidence stated that SwitchOps would not select an address by probing, and
+that silence is not proof an address is free. **No authoritative reservation →
+zero creates**, enforced at the privilege level where it matters.
+
+**Positive observation — elevated, disposable environment, valid harness
+reservation:** the reservation was bound to the exact address, a `/24` prefix
+and the disposable environment, issued as `LAB_HARNESS_RESERVED` by a
+`LAB_HARNESS` attestor, fresh and time-limited. The run used a new run id.
+
+```
+evaluator      : GATE3_RESERVATION_AUTHORITY
+outcome        : SUCCESS
+creates        : 1
+restored       : True
+dad            : PREFERRED
+coexistence    : SUCCESS
+
+PASS environment-authority     PASS on-link-prefix
+PASS reservation-authority     PASS coexistence
+PASS reservation-binding       PASS delete
+PASS authority                 PASS rollback-verify
+PASS dhcp-baseline             PASS baseline-restored
+PASS journal-intent            PASS reservation-release
+PASS create                    PASS dad
+```
+
+Measured: reservation authority proven *before* mutation; the reservation bound
+to that exact run; exactly one temporary RFC 5737 address created; Windows DAD
+reaching Preferred in about 3.5 seconds; the disposable DHCP primary staying
+`DHCP/DHCP` and Preferred with its finite lease still counting down; the
+temporary address present independently as `MANUAL/MANUAL`; the expected `/24`
+connected route appearing; default routes and DNS unchanged; exact-row deletion
+succeeding and the address confirmed absent; the DHCP baseline restored; the
+disposable reservation released.
+
+### Authority and DAD, again
+
+The successful run reached Preferred, and that changes nothing about what
+authority is for:
+
+> **Authority answers whether SwitchOps may use this exact address.**
+> **DAD answers whether Windows detected a duplicate when that authorised
+> address was created.**
+
+Neither replaces the other. The negative run shows why: it never got as far as
+DAD, because there was nothing authorising it to create anything to test.
+`DAD_FOUND_NO_DUPLICATE` remains enumerated in `REJECTED_COLLISION_EVIDENCE`.
+
+### Status
+
+Gate 3 is **VALIDATED**, environment `DISPOSABLE_DHCP_ADAPTER`.
+
+**This does not provide a production recovery address and does not validate
+production recovery.** Two different questions are involved, and only the first
+has been answered:
+
+| Question | Answer |
+| --- | --- |
+| Can SwitchOps correctly require, validate, bind and consume authoritative reservation evidence before mutation? | Measured. Yes. |
+| Does this particular production recovery plan currently possess valid reservation authority for a specific address? | No. Nothing supplies one. |
+
+So the live production plan remains `BLOCKED` on
+`COLLISION_SAFE_ADDRESS_UNAVAILABLE`, and a validated mechanism makes that
+blocker more trustworthy rather than removable — refusing when there is nothing
+to consume is precisely the behaviour that was measured. The reservation the
+successful run consumed was `LAB_HARNESS_RESERVED` at disposable scope, which
+the product assessor rejects outright for production.
+
+No production-scoped reservation can be inferred from historical topology, from
+the subnet a Catalyst management interface once used, or from anything else that
+is not a positive claim somebody is accountable for. `production_recovery_validated`
+remains false on two counts: a deliberate crash has never been exercised, and no
+production adapter has ever been touched. No executor exists.
 
 ## Disposable DHCP environment
 

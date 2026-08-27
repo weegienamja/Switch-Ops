@@ -5,10 +5,15 @@
     python -m backend.recovery_lab experiment --interface "Ethernet 2" \
         --address 192.0.2.250 --prefix-length 24 --allow "Ethernet 2"
 
-``inspect`` and ``restart-check`` are read-only and need no elevation.
-``experiment`` mutates an isolated adapter and requires both elevation and an
-explicit ``--allow``; without them it reports why it refused and changes
-nothing.
+    python -m backend.recovery_lab reserve --interface "Ethernet 3"         --address 192.0.2.250 --attested-by "recovery lab harness"         --evidence-reference "gate3-isolated-experiment"
+    python -m backend.recovery_lab gate3 --interface "Ethernet 3"         --address 192.0.2.250 --run-id gate3-run-0001
+
+``inspect``, ``restart-check`` and ``reservations`` are read-only and need no
+elevation. ``experiment`` and ``gate3`` mutate an isolated adapter and require
+elevation; without it they report why they refused and change nothing.
+``gate3`` additionally refuses unless a live, in-scope, unexpired reservation
+names the exact candidate address, and every one of its refusals happens before
+the first create.
 """
 
 from __future__ import annotations
@@ -462,6 +467,177 @@ def find_adapter(adapters: list[WindowsAdapter], alias: str) -> WindowsAdapter |
     return next((item for item in adapters if item.alias == alias), None)
 
 
+DEFAULT_RESERVATIONS = Path(__file__).resolve().parent / "state" / "gate3-reservations.json"
+
+
+def _resolve_environment(args, *, interface_alias: str):
+    """Re-discover which disposable environment an interface belongs to.
+
+    Identity is read live rather than taken from a flag: an argument saying
+    "this is the lab adapter" is exactly the assertion Gate 3 refuses to accept
+    about an address, and it is no better about an interface.
+    """
+    from .environment import assess_test_authority
+
+    registry = EnvironmentRegistry(Path(args.registry))
+    adapters = gather_windows_adapters()
+    now = datetime.now(timezone.utc)
+    hostonly = gather_hostonly_guids()
+
+    for environment in registry.all():
+        if not environment.has_stable_identity:
+            resolved = reconcile_environment(
+                environment, hostonly_guids=hostonly, adapters=adapters, now=now
+            )
+            if resolved.outcome in ("RECONCILED", "ALREADY_RESOLVED") and resolved.environment:
+                registry.update(resolved.environment)
+
+    authority = assess_test_authority(
+        experiment_type="DHCP_COEXISTENCE",
+        adapter=find_adapter(adapters, interface_alias),
+        registry=registry,
+        now=now,
+        hostonly_guids=hostonly,
+    )
+    return authority, now
+
+
+def command_reserve(args: argparse.Namespace) -> int:
+    """Issue a disposable, time-bounded reservation for one lab address."""
+    from .reservation import LabReservationRegistry
+
+    authority, now = _resolve_environment(args, interface_alias=args.interface)
+    print(f"test authority: {authority.provenance}")
+    for line in authority.evidence:
+        print(f"  {line}")
+    for code in authority.blockers:
+        print(f"  BLOCKER {code}")
+    if not authority.granted or not authority.environment_id:
+        print("outcome  : ENVIRONMENT_NOT_AUTHORISED")
+        print("issued   : False")
+        return 1
+
+    network = ipaddress.ip_network(
+        f"{args.address}/{args.prefix_length}", strict=False
+    )
+    reservations = LabReservationRegistry(Path(args.reservations))
+    outcome, reservation, evidence = reservations.issue(
+        address=args.address,
+        target_prefix=str(network),
+        environment_id=authority.environment_id,
+        attested_by=args.attested_by,
+        evidence_reference=args.evidence_reference,
+        now=now,
+    )
+    print(f"outcome  : {outcome}")
+    print(f"issued   : {reservation is not None}")
+    for line in evidence:
+        print(f"  {line}")
+    if reservation is not None:
+        print(f"reservation: {reservation.reservation_id}")
+        print(f"valid until: {reservation.reserved_until}")
+        return 0
+    return 1
+
+
+def command_reservations(args: argparse.Namespace) -> int:
+    """Read-only listing of what the lab currently claims authority over."""
+    from .reservation import LabReservationRegistry
+
+    now = datetime.now(timezone.utc)
+    records = LabReservationRegistry(Path(args.reservations)).all()
+    if not records:
+        print("no Gate 3 reservations recorded")
+        return 0
+    for item in records:
+        expired = datetime.fromisoformat(item.reserved_until) <= now
+        state = "released" if item.is_released else ("expired" if expired else "live")
+        print(f"{item.reservation_id}  {item.address}/{item.prefix_length}  {state}")
+        print(f"  environment : {item.environment_id}")
+        print(f"  authority   : {item.authority} ({item.attestor_type})")
+        print(f"  until       : {item.reserved_until}")
+        if item.operation_binding:
+            print(f"  bound to    : {item.operation_binding}")
+    return 0
+
+
+def command_gate3(args: argparse.Namespace) -> int:
+    """Run the isolated Gate 3 experiment: authority first, then the mutation."""
+    from .gate3 import run_gate3_experiment
+    from .reservation import LabReservationRegistry
+
+    journal = RecoveryJournal(Path(args.journal))
+    facts = gather_interfaces() if win.is_supported() else {}
+    interface = facts.get(args.interface)
+
+    authority, now = _resolve_environment(args, interface_alias=args.interface)
+    print(f"test authority: {authority.provenance}")
+    for line in authority.evidence:
+        print(f"  {line}")
+    for code in authority.blockers:
+        print(f"  BLOCKER {code}")
+
+    if interface is None or not win.is_supported() or not win.is_elevated():
+        # Refusing here keeps the create count at zero for the same reason every
+        # other refusal does: nothing may be attempted that cannot be undone.
+        print("evaluator: GATE3_RESERVATION_AUTHORITY")
+        print("outcome  : ENVIRONMENT_NOT_AUTHORISED")
+        print("creates  : 0")
+        print("restored : True")
+        if interface is None:
+            print("  the named interface was not found on this machine")
+        if not win.is_elevated():
+            print("  Gate 3 requires elevation to create and delete an address")
+        return 1
+
+    network = ipaddress.ip_network(
+        f"{args.address}/{args.prefix_length}", strict=False
+    )
+    result = run_gate3_experiment(
+        interface_index=interface.interface_index,
+        interface_luid=interface.interface_luid,
+        interface_alias=interface.alias,
+        candidate_address=args.address,
+        target_prefix=str(network),
+        prefix_length=args.prefix_length,
+        environment_id=authority.environment_id,
+        environment_authority_granted=authority.granted,
+        run_id=args.run_id,
+        registry=LabReservationRegistry(Path(args.reservations)),
+        journal=journal,
+        read_table=win.read_unicast_table,
+        read_snapshot=lambda: gather_network_snapshot(interface.interface_index),
+        create=win.create_temporary_address,
+        delete=win.delete_temporary_address,
+        now=now,
+    )
+
+    print("evaluator: GATE3_RESERVATION_AUTHORITY")
+    print(f"outcome  : {result.outcome}")
+    print(f"creates  : {result.creates_attempted}")
+    print(f"restored : {result.restored}")
+    if result.reservation_id:
+        print(f"reservation: {result.reservation_id}")
+    if result.operation_id:
+        print(f"operation: {result.operation_id}")
+    if result.dad_state != "ABSENT":
+        print(f"dad      : {result.dad_state}")
+    if result.coexistence_outcome:
+        print(f"coexistence: {result.coexistence_outcome}")
+    print("steps:")
+    for status, name, detail in result.steps:
+        print(f"  {status:<8} {name:<22} {detail}")
+    if result.authority_blockers:
+        print("authority blockers:")
+        for code in result.authority_blockers:
+            print(f"  - {code}")
+    if result.evidence:
+        print("evidence:")
+        for line in result.evidence:
+            print(f"  {line}")
+    return 0 if result.outcome == "SUCCESS" else 1
+
+
 def command_reconcile(args: argparse.Namespace) -> int:
     """Establish which Windows adapter each owned environment became."""
     registry = EnvironmentRegistry(Path(args.registry))
@@ -623,6 +799,35 @@ def main(argv: list[str] | None = None) -> int:
     )
     reconcile.add_argument("--registry", default=str(DEFAULT_REGISTRY))
 
+    reserve = sub.add_parser(
+        "reserve",
+        help="Issue a disposable Gate 3 reservation for one documentation address.",
+    )
+    reserve.add_argument("--interface", required=True)
+    reserve.add_argument("--address", required=True)
+    reserve.add_argument("--prefix-length", type=int, default=24)
+    reserve.add_argument("--attested-by", required=True)
+    reserve.add_argument("--evidence-reference", required=True)
+    reserve.add_argument("--registry", default=str(DEFAULT_REGISTRY))
+    reserve.add_argument("--reservations", default=str(DEFAULT_RESERVATIONS))
+
+    reservations_cmd = sub.add_parser(
+        "reservations", help="Read-only listing of Gate 3 reservations."
+    )
+    reservations_cmd.add_argument("--reservations", default=str(DEFAULT_RESERVATIONS))
+
+    gate3 = sub.add_parser(
+        "gate3",
+        help="Isolated Gate 3 experiment: reservation authority, then the mutation.",
+    )
+    gate3.add_argument("--interface", required=True)
+    gate3.add_argument("--address", required=True)
+    gate3.add_argument("--prefix-length", type=int, default=24)
+    gate3.add_argument("--run-id", required=True)
+    gate3.add_argument("--journal", default=str(DEFAULT_JOURNAL))
+    gate3.add_argument("--registry", default=str(DEFAULT_REGISTRY))
+    gate3.add_argument("--reservations", default=str(DEFAULT_RESERVATIONS))
+
     args = parser.parse_args(argv)
     if args.command == "inspect":
         return command_inspect()
@@ -636,6 +841,12 @@ def main(argv: list[str] | None = None) -> int:
         return command_environments(args)
     if args.command == "reconcile":
         return command_reconcile(args)
+    if args.command == "reserve":
+        return command_reserve(args)
+    if args.command == "reservations":
+        return command_reservations(args)
+    if args.command == "gate3":
+        return command_gate3(args)
     return command_experiment(args)
 
 

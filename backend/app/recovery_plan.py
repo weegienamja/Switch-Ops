@@ -12,7 +12,9 @@ from pydantic import BaseModel, Field
 from .meraki_management import MerakiManagementEvidence
 from .recovery_capability import dhcp_coexistence_validated
 from .recovery_execution import (
+    RecoveryAddressReservation,
     RecoveryExecutionArchitecture,
+    assess_recovery_reservation,
     build_planning_architecture,
 )
 
@@ -226,6 +228,17 @@ def _plan_id(
     ).hexdigest()[:20]
 
 
+def _local_addresses(current: Any) -> list[str]:
+    """Addresses this host already holds, so a reservation cannot name one."""
+    addresses = getattr(current, "adapter_addresses", None) or []
+    out: list[str] = []
+    for item in addresses:
+        value = getattr(item, "address", item)
+        if isinstance(value, str):
+            out.append(value)
+    return out
+
+
 def build_recovery_plan(
     *,
     target: str,
@@ -234,6 +247,7 @@ def build_recovery_plan(
     diagnosis: Any,
     meraki: MerakiManagementEvidence,
     candidate: CandidateAddressEvidence | None = None,
+    reservation: RecoveryAddressReservation | None = None,
     now: datetime | None = None,
 ) -> RecoveryPlan:
     """Create a state-bound explanation; this function has no I/O or mutation."""
@@ -457,6 +471,19 @@ def build_recovery_plan(
                 )
             )
 
+    # Two different questions, and only the second one is asked here.
+    #
+    #   Gate 3 capability: can SwitchOps correctly require, validate, bind and
+    #   consume authoritative reservation evidence before mutation? Measured on
+    #   a disposable DHCP adapter and recorded as VALIDATED.
+    #
+    #   This planner: does *this* production recovery plan currently possess
+    #   valid reservation authority for a specific address?
+    #
+    # A validated mechanism is not a reservation. The blocker below must stay
+    # whenever no production-scoped attestation is supplied, however green the
+    # capability record is, because the whole point of the mechanism is that it
+    # refuses when there is nothing to consume.
     candidate_address: str | None = None
     candidate_prefix: int | None = historical_prefix.prefixlen if historical_prefix else None
     if candidate is None:
@@ -470,9 +497,23 @@ def build_recovery_plan(
             "A failed ping, absent neighbor entry, or historical ownership does not prove an address is unused."
         )
     else:
+        # The candidate's own `assurance` field is a label the caller wrote. It
+        # says what the caller believes, which is not the same as somebody being
+        # accountable for keeping the address free, so the label is checked
+        # against an actual attestation rather than trusted on its own.
+        authority = assess_recovery_reservation(
+            reservation,
+            candidate_address=candidate.address,
+            management_prefix=str(historical_prefix) if historical_prefix else "",
+            target_address=target,
+            gateway_address=getattr(current, "default_gateway", None),
+            local_addresses=_local_addresses(current),
+            now=generated_at,
+            expected_scope="PRODUCTION_NETWORK",
+        )
         try:
             address = ipaddress.ip_address(candidate.address)
-            valid = bool(
+            structurally_valid = bool(
                 historical_prefix
                 and isinstance(address, ipaddress.IPv4Address)
                 and address in historical_prefix
@@ -481,17 +522,26 @@ def build_recovery_plan(
                 and candidate.assurance == "authoritative-reservation"
             )
         except ValueError:
-            valid = False
-        if valid:
+            structurally_valid = False
+
+        if structurally_valid and authority.usable:
             candidate_address = str(address)
             candidate_prefix = candidate.prefix_length
-        else:
+        elif not structurally_valid:
             blockers.append(
                 RecoveryBlocker(
                     code="CANDIDATE_ADDRESS_INVALID",
                     summary="The candidate is not an authoritative, in-prefix reservation distinct from the target.",
                 )
             )
+        else:
+            blockers.append(
+                RecoveryBlocker(
+                    code="COLLISION_SAFE_ADDRESS_UNAVAILABLE",
+                    summary="No authoritative reservation covers this candidate address.",
+                )
+            )
+            missing.extend(authority.evidence)
 
     if meraki.state in {"not-configured", "unavailable"}:
         missing.append("Current Meraki LAN and port configuration is unavailable.")
