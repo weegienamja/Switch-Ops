@@ -11,7 +11,13 @@ from backend.app.discovery_evidence import (
 )
 from backend.app.discovery_store import DiscoveryHistoryStore
 from backend.app.intent_store import TopologyIntentStore
-from backend.app.models import CdpNeighbor, EvidenceClaimSupport, InterfaceStatus, MacTableEntry
+from backend.app.models import (
+    CdpNeighbor,
+    EvidenceClaimSupport,
+    InterfaceStatus,
+    LocalEndpointStatus,
+    MacTableEntry,
+)
 from backend.app.reconciliation import (
     CiscoIosEvidenceProvider,
     HistoryProvider,
@@ -245,6 +251,34 @@ def test_discovery_history_survives_failure_then_revokes_on_success(tmp_path):
     assert prior.revoked is True
     assert prior.freshness == "historical"
     assert store.observation_count(first.root_device_id) > 0
+
+
+def test_discovery_history_returns_minimal_last_local_host_evidence(tmp_path):
+    store = DiscoveryHistoryStore(tmp_path / "discovery.sqlite")
+    observed = build_topology(
+        hostname="SYNTH-DISCOVERY-SW1",
+        model="WS-C3560CG-8PC-S",
+        management_ip="192.0.2.10",
+        interfaces=[interface("Gi0/2")],
+        mac_entries=[mac("Gi0/2", "001b.7700.0001")],
+        poe_ports=[],
+        local_endpoint=LocalEndpointStatus(
+            state="confirmed",
+            interface="Gi0/2",
+            ip="192.0.2.95",
+            detail="Synthetic unique local-host correlation.",
+        ),
+        observed_at=NOW,
+    )
+    store.apply_observation(observed, complete=True, observed_at=NOW)
+
+    result = store.latest_local_host(observed.root_device_id)
+    assert result == {
+        "last_seen": NOW,
+        "interface": "Gi0/2",
+        "ip": "192.0.2.95",
+        "mac": "001b.7700.0001",
+    }
 
 
 def test_v041_intent_database_migrates_without_losing_rows(tmp_path):

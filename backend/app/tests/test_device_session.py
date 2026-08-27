@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import Future
+from datetime import datetime, timezone
 
 import pytest
 
@@ -22,6 +23,7 @@ from backend.app.device_session import (
 )
 from backend.app.errors import (
     CredentialsMissingError,
+    DeviceSessionLostError,
     HostKeyChangedError,
     SwitchConnectionError,
 )
@@ -259,6 +261,65 @@ def test_a_transport_failure_marks_the_session_stale(manager, tracker):
     with pytest.raises(Exception):
         manager.submit("boom", explode).result(timeout=10)
     assert manager.state == STALE
+
+
+def test_command_transport_failure_poisons_client_even_when_is_alive_is_true(manager, tracker):
+    original = manager.submit("warm", lambda c: c).result(timeout=10)
+    assert original.is_alive() is True
+
+    with pytest.raises(DeviceSessionLostError):
+        manager.submit(
+            "route-transition",
+            lambda _client: (_ for _ in ()).throw(ConnectionResetError("socket reset")),
+        ).result(timeout=10)
+
+    assert original.closed is True
+    assert manager.state == STALE
+    assert manager.status()["errorCode"] == "switch_session_lost"
+
+
+def test_next_job_cleanly_reconnects_after_session_fails_between_commands(manager, tracker):
+    manager.submit("first", lambda c: c.run("before-transition")).result(timeout=10)
+    first = manager.clients[-1]  # type: ignore[attr-defined]
+
+    with pytest.raises(DeviceSessionLostError):
+        manager.submit(
+            "second",
+            lambda _client: (_ for _ in ()).throw(OSError(10051, "network unreachable")),
+        ).result(timeout=10)
+
+    result = manager.submit("third", lambda c: c.run("after-transition")).result(timeout=10)
+    assert result == "output:after-transition"
+    assert first.closed is True
+    assert tracker.connects == 2
+    assert manager.state == LIVE
+
+
+def test_reconnect_backoff_is_bounded(monkeypatch, tracker):
+    def failing():
+        tracker.connects += 1
+        raise SwitchConnectionError("connection failed")
+
+    monkeypatch.setattr(ds, "get_switch_client", failing)
+    instance = DeviceSessionManager()
+    for _ in range(12):
+        instance._next_attempt_at = 0.0
+        assert instance._ensure_client() is None
+        assert instance._backoff <= instance._BACKOFF_MAX
+
+    assert instance._backoff == instance._BACKOFF_MAX
+    assert tracker.connects == 12
+
+
+def test_durable_last_success_is_restored_without_claiming_a_live_session():
+    instance = DeviceSessionManager()
+    observed_at = datetime(2026, 8, 25, 10, 39, tzinfo=timezone.utc)
+
+    instance.restore_last_success(observed_at)
+
+    status = instance.status()
+    assert status["lastSuccessAt"] == observed_at.isoformat()
+    assert status["state"] == "offline"
 
 
 def test_a_parser_error_does_not_tear_down_a_healthy_session(manager, tracker):

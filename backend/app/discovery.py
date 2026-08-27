@@ -11,7 +11,7 @@ import re
 import socket
 from typing import Iterable, Sequence
 
-from .discovery_evidence import normalize_mac
+from .discovery_evidence import normalize_mac, stable_entity_id
 from .models import (
     ArpEntry,
     InterfaceStatus,
@@ -162,6 +162,9 @@ def correlate_local_endpoint(
         state="confirmed",
         interface=port,
         ip=adapter.ip,
+        identity_token=stable_entity_id(
+            "local-host", "hardware-mac", normalize_mac(adapter.mac)
+        ),
         detail=(
             "One active local adapter matched the only learned address on this connected access port. "
             "The hardware address is intentionally not exposed."

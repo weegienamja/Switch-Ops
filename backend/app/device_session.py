@@ -36,8 +36,12 @@ from typing import Any, Callable, Optional
 from .config import get_settings
 from .errors import (
     CredentialsMissingError,
+    DeviceSessionLostError,
     HostKeyChangedError,
+    SwitchConnectionError,
     SwitchOpsError,
+    is_device_transport_exception,
+    session_lost_error,
 )
 from .switch_client import SwitchClient, get_switch_client
 
@@ -158,6 +162,7 @@ class DeviceSessionManager:
         self._state_lock = threading.Lock()
         self._last_error: Optional[str] = None
         self._last_error_code: Optional[str] = None
+        self._last_exception: Optional[SwitchOpsError] = None
         self._backoff = self._BACKOFF_START
         self._next_attempt_at: float = 0.0
         self._last_success: Optional[datetime] = None
@@ -201,14 +206,23 @@ class DeviceSessionManager:
 
     def _set_state(self, state: ConnectionState, *, error: Optional[SwitchOpsError] = None) -> None:
         with self._state_lock:
-            changed = self._state != state
+            previous_state = self._state
+            previous_error = self._last_error
+            previous_code = self._last_error_code
             self._state = state
             if error is not None:
                 self._last_error = error.message
                 self._last_error_code = error.code
+                self._last_exception = error.public_copy()
             elif state == LIVE:
                 self._last_error = None
                 self._last_error_code = None
+                self._last_exception = None
+            changed = (
+                previous_state != state
+                or previous_error != self._last_error
+                or previous_code != self._last_error_code
+            )
         if changed:
             logger.info("Device session state: %s", state)
             self._notify()
@@ -234,14 +248,25 @@ class DeviceSessionManager:
             state = self._state
             error = self._last_error
             code = self._last_error_code
+            last_success = self._last_success
         return {
             "state": state,
             "error": error,
             "errorCode": code,
             "queueDepth": self._queue.qsize(),
-            "lastSuccessAt": self._last_success.isoformat() if self._last_success else None,
+            "lastSuccessAt": last_success.isoformat() if last_success else None,
             "metrics": self.metrics.snapshot(),
         }
+
+    def restore_last_success(self, observed_at: datetime | None) -> None:
+        """Hydrate durable continuity without changing current session state."""
+        if observed_at is None:
+            return
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        with self._state_lock:
+            if self._last_success is None or observed_at > self._last_success:
+                self._last_success = observed_at
 
     # --- submission -------------------------------------------------------
 
@@ -335,7 +360,12 @@ class DeviceSessionManager:
         except Exception as exc:  # pragma: no cover - defensive
             self._backoff = min(self._BACKOFF_MAX, self._backoff * 2)
             self._next_attempt_at = now + self._backoff
-            self._set_state(OFFLINE, error=SwitchOpsError(type(exc).__name__))
+            error = SwitchConnectionError(
+                "The Catalyst connection could not be established.",
+                safe_detail="The failure did not prove a more specific device-side cause.",
+            )
+            self._set_state(OFFLINE, error=error)
+            logger.error("Unexpected device connection failure (%s).", type(exc).__name__)
             return None
 
         self._client = client
@@ -369,13 +399,15 @@ class DeviceSessionManager:
             queue_wait_ms = (time.monotonic() - job.submitted_at) * 1000
             client = self._ensure_client()
             if client is None:
-                message = self._last_error or "The switch session is not available."
-                if self._last_error_code == "credentials_missing":
-                    unavailable: SwitchOpsError = CredentialsMissingError(message)
-                elif self._last_error_code == "host_key_changed":
-                    unavailable = HostKeyChangedError(message)
-                else:
-                    unavailable = SwitchOpsError(message)
+                with self._state_lock:
+                    unavailable = (
+                        self._last_exception.public_copy()
+                        if self._last_exception is not None
+                        else SwitchConnectionError(
+                            "The Catalyst session is not available.",
+                            safe_detail="No device-side cause was proven.",
+                        )
+                    )
                 job.future.set_exception(unavailable)
                 self._queue.task_done()
                 continue
@@ -385,18 +417,28 @@ class DeviceSessionManager:
             try:
                 result = job.run(client)
                 job.future.set_result(result)
-                self._last_success = datetime.now(timezone.utc)
+                with self._state_lock:
+                    self._last_success = datetime.now(timezone.utc)
             except HostKeyChangedError as exc:
                 failed = True
                 job.future.set_exception(exc)
                 self._drop_client(exc)
             except Exception as exc:
                 failed = True
-                job.future.set_exception(exc)
                 # A transport-level failure invalidates the session; a parser or
                 # logic error does not.
-                if self._client is not None and not self._client.is_alive():
-                    self._drop_client(None)
+                if is_device_transport_exception(exc):
+                    lost = (
+                        exc.public_copy()
+                        if isinstance(exc, DeviceSessionLostError)
+                        else session_lost_error(exc)
+                    )
+                    job.future.set_exception(lost)
+                    self._drop_client(lost)
+                else:
+                    job.future.set_exception(exc)
+                    if self._client is not None and not self._client.is_alive():
+                        self._drop_client(None)
             finally:
                 duration_ms = (time.monotonic() - started) * 1000
                 self.metrics.record(
@@ -423,7 +465,11 @@ class DeviceSessionManager:
             self._queue.task_done()
 
     def _drop_client(self, error: Optional[SwitchOpsError]) -> None:
+        had_client = self._client is not None
         self._close_client()
+        if had_client:
+            self.metrics.reconnects += 1
+            self.metrics.connected_since = None
         self._set_state(STALE, error=error)
 
     def _close_client(self) -> None:

@@ -31,6 +31,7 @@ from .models import (
     DiscoveryEvidence,
     DeviceCapability,
     DeviceType,
+    EvidenceConflict,
     EvidenceClaimSupport,
     EvidenceLevel,
     ExpectedRelationship,
@@ -46,6 +47,7 @@ from .models import (
     PoePort,
     TopologyExpectation,
     TopologyModel,
+    TopologyTransition,
 )
 from .discovery_evidence import (
     evidence_record,
@@ -342,10 +344,10 @@ def _endpoint_from_local_host(
     poe: PoePort | None,
     role: InterfaceRole,
     observed_at: datetime,
-    switch_id: str,
+    entity_id: str,
 ) -> NetworkDevice:
     return NetworkDevice(
-        id=f"local-host-{switch_id}-{_slug(interface.port)}",
+        id=entity_id,
         type="desktop",
         name=local_endpoint.label,
         ip=local_endpoint.ip,
@@ -354,6 +356,8 @@ def _endpoint_from_local_host(
         classificationStage="category",
         online=True,
         connectedInterface=interface.port,
+        attachmentState="current",
+        attachmentConfidence="high",
         visualCategory="desktop",
         capabilities=[DeviceCapability(name="poe-powered", available=_poe_active(poe), source="show power inline")] if poe else [],
         lastSeen=observed_at,
@@ -375,6 +379,7 @@ def _endpoint_from_learned_macs(
     role: InterfaceRole,
     observed_at: datetime,
     switch_id: str,
+    identity_ambiguous: bool = False,
 ) -> NetworkDevice:
     """Build the single endpoint node representing "something is on this port".
 
@@ -414,7 +419,9 @@ def _endpoint_from_learned_macs(
 
     # A single learned address can be attributed to the endpoint. Several
     # cannot: attributing one of many would be a guess.
-    attributable_mac = learned[0].mac if learned_count == 1 else None
+    attributable_mac = (
+        learned[0].mac if learned_count == 1 and not identity_ambiguous else None
+    )
     device_id = (
         _device_id_from_mac(attributable_mac)
         if attributable_mac
@@ -425,6 +432,17 @@ def _endpoint_from_learned_macs(
     # device, so identity confidence is low however good the link is.
     confidence = "low"
 
+    conflicts = []
+    if identity_ambiguous:
+        conflicts.append(
+            EvidenceConflict(
+                field="attachment",
+                summary=(
+                    "The same learned address is visible through multiple ports; "
+                    "SwitchOps cannot identify one current attachment."
+                ),
+            )
+        )
     return NetworkDevice(
         id=device_id,
         type=category,
@@ -437,6 +455,8 @@ def _endpoint_from_learned_macs(
         classificationStage=stage,
         online=True,
         connectedInterface=interface.port,
+        attachmentState="ambiguous" if identity_ambiguous else "current",
+        attachmentConfidence="low" if identity_ambiguous else "medium",
         visualCategory=category,
         capabilities=[
             DeviceCapability(
@@ -453,6 +473,7 @@ def _endpoint_from_learned_macs(
         expectedType=expected_category if described else None,
         learnedMacCount=learned_count,
         role=role,
+        conflicts=conflicts,
     )
 
 
@@ -509,10 +530,33 @@ def build_topology(
 
     poe_by_port = {port.interface: port for port in poe_ports}
     macs_by_port: dict[str, list[MacTableEntry]] = {}
+    ports_by_mac: dict[str, set[str]] = {}
     for entry in mac_entries:
         if entry.port.upper() == "CPU" or entry.vlan.lower() == "all":
             continue
         macs_by_port.setdefault(entry.port, []).append(entry)
+        normalized = normalize_mac(entry.mac)
+        if len(normalized) == 12:
+            ports_by_mac.setdefault(normalized, set()).add(entry.port)
+    duplicate_mac_ports = {
+        mac: ports for mac, ports in ports_by_mac.items() if len(ports) > 1
+    }
+    transitions = [
+        TopologyTransition(
+            kind="ATTACHMENT_CONFLICT",
+            entityId=stable_entity_id(source_namespace, "mac", mac),
+            locations=sorted(ports),
+            identityRetained=None,
+            identityConfidence="medium",
+            attachmentConfidence="low",
+            observedAt=observed_at,
+            detail=(
+                "One learned address is visible through multiple ports; no endpoint "
+                "move or unique attachment is asserted."
+            ),
+        )
+        for mac, ports in sorted(duplicate_mac_ports.items())
+    ]
 
     arp_by_mac: dict[str, list[ArpEntry]] = {}
     for entry in arp_entries:
@@ -543,6 +587,9 @@ def build_topology(
         role = classify_interface_role(interface.name, interface.vlan)
         learned = macs_by_port.get(interface.port, [])
         learned_count = len(learned)
+        learned_identity_ambiguous = any(
+            normalize_mac(item.mac) in duplicate_mac_ports for item in learned
+        )
         neighbors = cdp_by_port.get(interface.port, [])
         lldp_neighbors_on_port = lldp_by_port.get(interface.port, [])
         local_match = bool(
@@ -662,8 +709,16 @@ def build_topology(
             neighbor_key = f"{lldp_neighbors_on_port[0].remote_name}|{lldp_neighbors_on_port[0].ip or ''}"
             entity_id = stable_entity_id(source_namespace, "neighbor", neighbor_key)
         elif local_match:
-            entity_id = stable_entity_id(source_namespace, "local-host", switch_id)
-        elif learned_count == 1:
+            entity_id = (
+                stable_entity_id(
+                    source_namespace,
+                    "local-host",
+                    local_endpoint.identity_token,
+                )
+                if local_endpoint and local_endpoint.identity_token
+                else stable_entity_id(source_namespace, "local-host", switch_id)
+            )
+        elif learned_count == 1 and not learned_identity_ambiguous:
             entity_id = stable_entity_id(source_namespace, "mac", normalize_mac(learned[0].mac))
         else:
             entity_id = stable_entity_id(source_namespace, "port-presence", f"{switch_id}|{interface.port}")
@@ -672,7 +727,7 @@ def build_topology(
         # direct physical endpoint by themselves.
         for mac_entry in learned:
             normalized_mac = normalize_mac(mac_entry.mac)
-            attributable = learned_count == 1
+            attributable = learned_count == 1 and not learned_identity_ambiguous
             mac_fact = evidence_record(
                 evidence_type="MAC_LEARNED",
                 evidence_class="observed",
@@ -826,7 +881,7 @@ def build_topology(
                 poe=poe,
                 role=role,
                 observed_at=observed_at,
-                switch_id=switch_id,
+                entity_id=entity_id,
             )
             link_status = "up"
             link_confidence = "high"
@@ -859,6 +914,7 @@ def build_topology(
                 role=role,
                 observed_at=observed_at,
                 switch_id=switch_id,
+                identity_ambiguous=learned_identity_ambiguous,
             )
             link_status = "up"
             link_confidence = "high"  # the link itself is certain
@@ -945,7 +1001,7 @@ def build_topology(
         endpoint.expected_name = expectation.name if expectation else None
         endpoint.expected_type = expectation.device_type if expectation else None
         endpoint.expected_category = expectation.device_type if expectation else None
-        if learned_count == 1:
+        if learned_count == 1 and not learned_identity_ambiguous:
             endpoint.mac_addresses = [learned[0].mac.lower()]
             endpoint.mac = learned[0].mac.lower()
             correlated_ips = [item.ip for item in arp_by_mac.get(normalize_mac(learned[0].mac), [])]
@@ -1009,5 +1065,6 @@ def build_topology(
         links=links,
         evidence=evidence,
         expectations=expectations,
+        transitions=transitions,
         evidenceModelVersion=1,
     )

@@ -10,3 +10,13 @@ switchops = "app.cli:main"
 [tool.pytest.ini_options]
 testpaths = ["app/tests"]
 addopts = "-q"
+# Test modules import `backend.app.*` and `backend.resilience_lab.*`, but
+# `backend/` has no __init__.py, so those names only resolve when the
+# repository root is importable. Previously that depended entirely on the
+# working directory: running pytest from inside backend/ failed collection on
+# ~20 modules with "ModuleNotFoundError: No module named 'backend'", which
+# reads as a broken suite rather than a wrong directory.
+#
+# pytest resolves `pythonpath` against rootdir, and rootdir is this file's
+# directory, so ".." is the repository root regardless of where pytest is run.
+pythonpath = [".."]

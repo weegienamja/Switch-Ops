@@ -1,9 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { motion } from "motion/react";
-import { api } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  asApiError,
+  type ManagementPathAssurance,
+} from "@/lib/api";
 import { mergeLiveInterfaces } from "@/lib/live";
 import { useLiveOperations } from "@/lib/useLiveOperations";
 import type {
@@ -16,6 +21,7 @@ import type {
   GuideOperation,
   InterfaceErrorsResponse,
   LogsResponse,
+  LiveConnection,
   MacTableResponse,
   MemoryStatus,
   NetworkEventsResponse,
@@ -29,6 +35,11 @@ import type {
 import type { InterfaceStatusResponse } from "@/lib/api";
 import type { UnifiedLabState } from "@/lib/unifiedTypes";
 import { fadeUp } from "@/lib/animation";
+import {
+  getBackendVerification,
+  onBackendUnverified,
+  type BackendUnverified,
+} from "@/lib/backendIntegrity";
 import AdvancedOperationsPanel from "./AdvancedOperationsPanel";
 import AuditTimeline from "./AuditTimeline";
 import ConfigBackupPanel from "./ConfigBackupPanel";
@@ -39,6 +50,7 @@ import DiscoveryStatusPanel from "./DiscoveryStatusPanel";
 import CpuMemoryPanel from "./CpuMemoryPanel";
 import EnvironmentPanel from "./EnvironmentPanel";
 import ErrorPanel from "./ErrorPanel";
+import BackendUnverifiedNotice from "./BackendUnverifiedNotice";
 import ErrorState from "./ErrorState";
 import HealthPanel from "./HealthPanel";
 import LabGuide from "./LabGuide";
@@ -46,6 +58,7 @@ import LoadingState from "./LoadingState";
 import LogsPanel from "./LogsPanel";
 import LiveStatusBadge from "./LiveStatusBadge";
 import MacTable from "./MacTable";
+import ManagementPathReview from "./ManagementPathReview";
 import MerakiTopologyOverlay from "./MerakiTopologyOverlay";
 import NetworkEventTimeline from "./NetworkEventTimeline";
 import NetworkTwin from "./NetworkTwin";
@@ -110,7 +123,9 @@ function healthBadgeClass(state: SwitchSummary["health"]["state"]): string {
 
 export default function DashboardShell() {
   const [data, setData] = useState<DashboardData | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [failureConnection, setFailureConnection] = useState<LiveConnection | null>(null);
+  const [managementPath, setManagementPath] = useState<ManagementPathAssurance | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -120,6 +135,13 @@ export default function DashboardShell() {
   const [selectedPort, setSelectedPort] = useState("");
   const [unifiedBusy, setUnifiedBusy] = useState<string | null>(null);
   const [unifiedError, setUnifiedError] = useState<string | null>(null);
+  // A backend this session cannot vouch for is a local runtime-integrity
+  // fault, not a device diagnosis, and blocks every request.
+  const [backendUnverified, setBackendUnverified] =
+    useState<BackendUnverified | null>(null);
+  // loadAll is captured by a mount-time effect, so the guard reads a ref
+  // rather than a state value the closure would have frozen as null.
+  const backendUnverifiedRef = useRef<BackendUnverified | null>(null);
   const live = useLiveOperations(Boolean(data?.setup && (data.setup.configured || data.setup.mockMode)));
   const liveMerged = useMemo(() => {
     if (!data?.topology || !data.interfaces || !data.poe) return null;
@@ -127,9 +149,18 @@ export default function DashboardShell() {
   }, [data, live.interfaces, live.topology]);
 
   async function loadAll(silent = false) {
+    // Never query a backend this session could not verify. Retrying would
+    // only re-read the process the shell already rejected.
+    if (backendUnverifiedRef.current) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     if (!silent) setLoading(true);
     setRefreshing(true);
     setError(null);
+    setFailureConnection(null);
+    setManagementPath(null);
     try {
       const setup = await api.setupStatus();
       if (!setup.configured && !setup.mockMode) {
@@ -181,8 +212,24 @@ export default function DashboardShell() {
           : dashboard.topology.interfaces[0]?.port || "",
       );
       setLastRefresh(new Date(dashboard.telemetry.observedAt));
+      if (!setup.mockMode) {
+        void api.managementPath().then(setManagementPath).catch(() => undefined);
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const apiError = asApiError(cause);
+      setError(apiError);
+      if (apiError.backendResponded && apiError.category.startsWith("DEVICE_")) {
+        const [snapshotResult, pathResult] = await Promise.allSettled([
+          api.liveState(),
+          api.managementPath(),
+        ]);
+        if (snapshotResult.status === "fulfilled") {
+          setFailureConnection(snapshotResult.value.connection);
+        }
+        if (pathResult.status === "fulfilled") {
+          setManagementPath(pathResult.value);
+        }
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -190,7 +237,45 @@ export default function DashboardShell() {
   }
 
   useEffect(() => {
-    void loadAll();
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+    void onBackendUnverified((event) => {
+      if (cancelled) return;
+      // Drop anything already fetched: it came from a process the shell has
+      // now rejected.
+      backendUnverifiedRef.current = event;
+      setBackendUnverified(event);
+      setData(null);
+      setError(null);
+      setManagementPath(null);
+      setLoading(false);
+    }).then((off) => {
+      if (cancelled) off();
+      else unsubscribe = off;
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const verdict = await getBackendVerification();
+      if (cancelled) return;
+      if (verdict) {
+        // Never query a backend the shell already rejected.
+        backendUnverifiedRef.current = verdict;
+        setBackendUnverified(verdict);
+        setLoading(false);
+        return;
+      }
+      void loadAll();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function refreshMeraki() {
@@ -223,9 +308,39 @@ export default function DashboardShell() {
     }
   }
 
+  // Checked before loading and before every error state: a backend the shell
+  // rejected must never surface as a Catalyst or management-path diagnosis.
+  if (backendUnverified) {
+    return <BackendUnverifiedNotice state={backendUnverified} />;
+  }
   if (loading) return <LoadingState />;
-  if (error) return <ErrorState message={error} onRetry={() => void loadAll()} />;
-  if (!data) return <ErrorState message="No data." onRetry={() => void loadAll()} />;
+  if (error && !data) {
+    return (
+      <ErrorState
+        error={error}
+        onRetry={() => void loadAll()}
+        lastSuccessfulObservation={
+          managementPath?.lastKnownGood?.lastDeviceSuccessAt
+          || failureConnection?.lastSuccessAt
+        }
+        sessionState={failureConnection?.state}
+        managementPath={managementPath}
+      />
+    );
+  }
+  if (!data) {
+    return (
+      <ErrorState
+        error={new ApiError({
+          status: null,
+          code: "no_dashboard_data",
+          message: "No dashboard observation is available.",
+          category: "BACKEND_INTERNAL_ERROR",
+        })}
+        onRetry={() => void loadAll()}
+      />
+    );
+  }
 
   if (!data.setup.configured && !data.setup.mockMode) {
     if (showSetup) return <SetupWizard onComplete={() => { setShowSetup(false); void loadAll(); }} />;
@@ -248,6 +363,16 @@ export default function DashboardShell() {
   const currentInterfaces = liveMerged?.interfaces || data.interfaces;
   const currentPoe = liveMerged?.poe || data.poe;
   const selectedInterface = currentTopology.interfaces.find((item) => item.port === selectedPort);
+  // A host-side management-path diagnosis must never be reported as the device
+  // being offline. Mirrors the same set ErrorState treats as path-specific.
+  const hostPathDiagnosis =
+    managementPath &&
+    ["HOST_NETWORK_CHANGED", "HOST_ROUTE_MISSING", "HOST_PATH_DEGRADED"].includes(
+      managementPath.diagnosis.conclusion,
+    )
+      ? managementPath.diagnosis
+      : null;
+
   return (
     <div className="app-shell">
       <div className="local-banner">
@@ -299,6 +424,57 @@ export default function DashboardShell() {
             </button>
           ))}
         </nav>
+
+        {error ? (
+          <div
+            className="warning-banner warning-banner--inline warning-banner--red stale-telemetry"
+            role="alert"
+          >
+            <strong>
+              {hostPathDiagnosis
+                ? hostPathDiagnosis.headline.toUpperCase()
+                : error.category === "DEVICE_HOST_KEY_CHANGED"
+                ? "DEVICE CONNECTION BLOCKED"
+                : error.category.startsWith("DEVICE_")
+                  ? "DEVICE OFFLINE / RECONNECTING"
+                  : "REFRESH FAILED"}
+            </strong>
+            {managementPath ? <span>{managementPath.diagnosis.summary}</span> : null}
+            {managementPath ? (
+              <span className="mono management-path-conclusion">
+                Diagnosis: {managementPath.diagnosis.conclusion}
+              </span>
+            ) : null}
+            <span>Data shown below is stale. Valid topology, interface state, and history have been retained.</span>
+            {managementPath ? (
+              <span>
+                Confidence: {managementPath.diagnosis.confidence} · Current source: {managementPath.current.sourceIp || "unknown"}
+                {managementPath.current.prefixLength == null ? "" : `/${managementPath.current.prefixLength}`}
+                {managementPath.current.route.nextHop ? ` via ${managementPath.current.route.nextHop}` : ""}
+              </span>
+            ) : null}
+            <span>Configured device: Configured Catalyst</span>
+            <span>
+              Last observation: {
+                managementPath?.lastKnownGood?.lastDeviceSuccessAt
+                  ? new Date(managementPath.lastKnownGood.lastDeviceSuccessAt).toLocaleString()
+                  : new Date(data.telemetry.observedAt).toLocaleString()
+              }
+            </span>
+            <span>
+              Session state: {failureConnection?.state || live.connection.state || "offline"}
+            </span>
+            {managementPath ? <ManagementPathReview assurance={managementPath} /> : null}
+            <span>{error.message}</span>
+            {error.detail ? <span>{error.detail}</span> : null}
+            <button type="button" className="btn" onClick={() => void loadAll(true)} disabled={refreshing}>
+              {refreshing ? "Reconnecting…" : "Retry connection"}
+            </button>
+            {error.category === "BACKEND_UNREACHABLE" && !error.backendResponded ? (
+              <span>Ensure the backend sidecar is running on 127.0.0.1:8765.</span>
+            ) : null}
+          </div>
+        ) : null}
 
         {Object.keys(data.sectionErrors).length ? (
           <div className="warning-banner warning-banner--inline partial-telemetry">

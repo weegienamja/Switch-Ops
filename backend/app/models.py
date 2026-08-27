@@ -97,11 +97,39 @@ class RuntimeInfo(BaseModel):
     telemetry_collection: Literal["live-tiered"] = Field(
         default="live-tiered", alias="telemetryCollection"
     )
-    data_dir: str = Field(alias="dataDir")
-    backup_dir: str = Field(alias="backupDir")
-    log_dir: str = Field(alias="logDir")
+    # Storage is reported as semantic state rather than as absolute paths.
+    # A path under %LOCALAPPDATA% necessarily contains the Windows user name,
+    # and nothing in the product needs the literal location: the desktop shell
+    # opens known folders through its own bounded command instead.
+    storage_mode: Literal["packaged", "development"] = Field(alias="storageMode")
+    data_store_available: bool = Field(alias="dataStoreAvailable")
+    logging_available: bool = Field(alias="loggingAvailable")
+    backup_available: bool = Field(alias="backupAvailable")
     cors_origins: List[str] = Field(default_factory=list, alias="corsOrigins")
     device_driver: Optional[str] = Field(default=None, alias="deviceDriver")
+
+    model_config = {"populate_by_name": True}
+
+
+class RuntimeProvenance(BaseModel):
+    """Which build of the backend is actually answering.
+
+    SwitchOps can be served either by a development Python process or by the
+    frozen sidecar the desktop shell spawns. Both bind the same loopback port,
+    so this endpoint exists to make a stale backend provable instead of
+    invisible. It intentionally carries no absolute path and no user name.
+    """
+
+    build_id: str = Field(alias="buildId")
+    api_schema_version: int = Field(alias="apiSchemaVersion")
+    runtime_mode: Literal["frozen-sidecar", "development"] = Field(alias="runtimeMode")
+    started_at: str = Field(alias="startedAt")
+    # Echo of the nonce the desktop shell supplied, so the shell can confirm
+    # this process is the sidecar it spawned rather than a stray listener.
+    # This is a launch discriminator, not authentication: any local process
+    # able to read our environment could already do more than forge it.
+    sidecar_token: Optional[str] = Field(default=None, alias="sidecarToken")
+    management_path_available: bool = Field(alias="managementPathAvailable")
 
     model_config = {"populate_by_name": True}
 
@@ -634,6 +662,9 @@ class LocalEndpointStatus(BaseModel):
     interface: Optional[str] = None
     label: str = "This SwitchOps PC"
     ip: Optional[str] = None
+    # Internal stable correlation token. It is deliberately excluded from API
+    # serialization while allowing topology identity to survive a port move.
+    identity_token: Optional[str] = Field(default=None, exclude=True)
     detail: str
 
 
@@ -680,6 +711,15 @@ class NetworkDevice(BaseModel):
     )
     online: bool
     connected_interface: Optional[str] = Field(default=None, alias="connectedInterface")
+    previous_connected_interface: Optional[str] = Field(
+        default=None, alias="previousConnectedInterface"
+    )
+    attachment_state: Literal[
+        "current", "moved", "ambiguous", "historical", "unknown"
+    ] = Field(default="unknown", alias="attachmentState")
+    attachment_confidence: Confidence = Field(
+        default="unknown", alias="attachmentConfidence"
+    )
     visual_category: DeviceType = Field(alias="visualCategory")
     capabilities: List[DeviceCapability] = Field(default_factory=list)
     last_seen: Optional[datetime] = Field(default=None, alias="lastSeen")
@@ -759,6 +799,24 @@ class NetworkLink(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class TopologyTransition(BaseModel):
+    kind: Literal["ENDPOINT_MOVED", "DEVICE_REPLACED", "ATTACHMENT_CONFLICT"]
+    entity_id: Optional[str] = Field(default=None, alias="entityId")
+    previous_entity_id: Optional[str] = Field(default=None, alias="previousEntityId")
+    previous_interface: Optional[str] = Field(default=None, alias="previousInterface")
+    current_interface: Optional[str] = Field(default=None, alias="currentInterface")
+    locations: List[str] = Field(default_factory=list)
+    identity_retained: Optional[bool] = Field(default=None, alias="identityRetained")
+    identity_confidence: Confidence = Field(default="unknown", alias="identityConfidence")
+    attachment_confidence: Confidence = Field(
+        default="unknown", alias="attachmentConfidence"
+    )
+    observed_at: datetime = Field(alias="observedAt")
+    detail: str
+
+    model_config = {"populate_by_name": True}
+
+
 class TopologyExpectation(BaseModel):
     """Port-level intent. It is never an observed device node."""
 
@@ -783,6 +841,7 @@ class TopologyModel(BaseModel):
     evidence: List[DiscoveryEvidence] = Field(default_factory=list)
     expectations: List[TopologyExpectation] = Field(default_factory=list)
     historical_devices: List[NetworkDevice] = Field(default_factory=list, alias="historicalDevices")
+    transitions: List[TopologyTransition] = Field(default_factory=list)
     evidence_model_version: int = Field(default=1, alias="evidenceModelVersion")
 
     model_config = {"populate_by_name": True}

@@ -12,7 +12,7 @@ import logging
 import re
 from pathlib import Path
 from threading import Lock
-from typing import Literal, Optional, Protocol
+from typing import Callable, Literal, Optional, Protocol, TypeVar
 
 from .command_registry import (
     READ_ONLY_COMMANDS,
@@ -28,6 +28,9 @@ from .errors import (
     HostKeyChangedError,
     LegacySshNegotiationError,
     SwitchConnectionError,
+    classify_connection_exception,
+    is_device_transport_exception,
+    session_lost_error,
 )
 from .host_key_store import HOST_KEY_FILE, is_host_pinned, verify_and_pin_host_key
 from .logging_config import register_secret
@@ -42,6 +45,7 @@ from .legacy_ssh_client import (
 )
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 _SAMPLE_FILES = {
@@ -308,12 +312,17 @@ class NetmikoSwitchClient:
             self.close()
             raise
         except Exception as exc:
-            cls = type(exc).__name__
-            if "Kex" in cls or "Negotiation" in cls or "SSH" in cls:
-                raise LegacySshNegotiationError(
-                    "Netmiko SSH negotiation failed", detail=str(exc)
-                ) from exc
-            raise SwitchConnectionError("Netmiko connection failed", detail=str(exc)) from exc
+            self.close()
+            raise classify_connection_exception(exc) from exc
+
+    def _transport_call(self, call: Callable[[], T]) -> T:
+        try:
+            return call()
+        except Exception as exc:
+            if is_device_transport_exception(exc):
+                self.close()
+                raise session_lost_error(exc) from exc
+            raise
 
     def refresh_prompt(self) -> None:
         """Capture the device prompt so reads can be anchored to it.
@@ -325,8 +334,10 @@ class NetmikoSwitchClient:
         if self._conn is None:
             return
         try:
-            prompt = self._conn.find_prompt()
-        except Exception:  # pragma: no cover - transport dependent
+            prompt = self._transport_call(lambda: self._conn.find_prompt())
+        except Exception as exc:  # pragma: no cover - prompt shape is transport dependent
+            if is_device_transport_exception(exc):
+                raise
             self._prompt_pattern = None
             return
         prompt = (prompt or "").strip()
@@ -340,19 +351,25 @@ class NetmikoSwitchClient:
         assert self._conn is not None
         command = resolve_read_command(symbol)
         if symbol == "terminal_length_0":
-            self._conn.send_command_timing(command)
+            self._transport_call(lambda: self._conn.send_command_timing(command))
             return ""
         if self._prompt_pattern:
             try:
-                return self._conn.send_command(
-                    command, expect_string=self._prompt_pattern, read_timeout=30
+                return self._transport_call(
+                    lambda: self._conn.send_command(
+                        command, expect_string=self._prompt_pattern, read_timeout=30
+                    )
                 )
-            except Exception:
+            except Exception as exc:
+                if is_device_transport_exception(exc):
+                    raise
                 # The prompt may have moved underneath us. Drop the anchor and
                 # let the next call re-establish it rather than failing a read.
                 logger.warning("Prompt-anchored read failed for %s; using pattern search.", symbol)
                 self._prompt_pattern = None
-        return self._conn.send_command(command, read_timeout=30)
+        return self._transport_call(
+            lambda: self._conn.send_command(command, read_timeout=30)
+        )
 
     def run_raw_action(self, commands: list[str]) -> str:
         """Run a pre-validated write-action sequence.
@@ -372,16 +389,24 @@ class NetmikoSwitchClient:
                 continue
             if cmd == "end":
                 if in_config and config_buffer:
-                    outputs.append(self._conn.send_config_set(config_buffer))
+                    outputs.append(
+                        self._transport_call(
+                            lambda: self._conn.send_config_set(config_buffer)
+                        )
+                    )
                 in_config = False
                 config_buffer = []
                 continue
             if in_config:
                 config_buffer.append(cmd)
                 continue
-            outputs.append(self._conn.send_command_timing(cmd))
+            outputs.append(
+                self._transport_call(lambda: self._conn.send_command_timing(cmd))
+            )
         if in_config and config_buffer:
-            outputs.append(self._conn.send_config_set(config_buffer))
+            outputs.append(
+                self._transport_call(lambda: self._conn.send_config_set(config_buffer))
+            )
         # Configuration mode changes the prompt; re-anchor before the next read.
         self.refresh_prompt()
         return "\n".join(o for o in outputs if o)
@@ -411,7 +436,7 @@ class LegacyParamikoSwitchClient:
         self._client: Optional[LegacyParamikoClient] = None
 
     def is_alive(self) -> bool:
-        return self._client is not None
+        return self._client is not None and self._client.is_alive()
 
     def refresh_prompt(self) -> None:
         return None

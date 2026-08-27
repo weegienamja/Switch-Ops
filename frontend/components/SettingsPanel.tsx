@@ -32,11 +32,16 @@ const PLATFORM_LABEL: Record<string, string> = {
   cisco_ios: "Cisco IOS",
 };
 
-function friendlyPath(path: string | undefined): string {
-  if (!path) return "—";
-  // %LOCALAPPDATA% is long and noisy; keep the meaningful tail.
-  const match = /^[A-Za-z]:\\Users\\[^\\]+\\(.*)$/.exec(path);
-  return match ? `…\\${match[1]}` : path;
+function storageLocation(mode: RuntimeInfo["storageMode"] | undefined): string {
+  if (!mode) return "—";
+  return mode === "packaged"
+    ? "Private application data folder"
+    : "Development workspace";
+}
+
+function availability(available: boolean | undefined): string {
+  if (available === undefined) return "—";
+  return available ? "Available" : "Unavailable";
 }
 
 export default function SettingsPanel({
@@ -380,8 +385,13 @@ export default function SettingsPanel({
                 },
                 { label: "Telemetry retention", value: `${info?.telemetryRetentionDays ?? 30} days` },
                 { label: "Configuration history", value: "Local only", hint: "Raw configurations stay in private local files; the UI shows redacted diffs." },
-                { label: "Backups", value: friendlyPath(info?.backupDir) },
-                { label: "Database and logs", value: friendlyPath(info?.dataDir) },
+                {
+                  label: "Storage location",
+                  value: storageLocation(info?.storageMode),
+                  hint: "SwitchOps never sends the folder path to the interface.",
+                },
+                { label: "Backups", value: availability(info?.backupAvailable) },
+                { label: "Database", value: availability(info?.dataStoreAvailable) },
               ]}
             />
           </Section>
@@ -393,7 +403,7 @@ export default function SettingsPanel({
                 { label: "Device driver", value: info?.deviceDriver || setup.switchDeviceType || "—" },
                 { label: "Backend API", value: info ? `${info.apiHost}:${info.apiPort}` : "—" },
                 { label: "Allowed origins", value: (info?.corsOrigins || []).join(", ") || "—" },
-                { label: "Log directory", value: info?.logDir || "—" },
+                { label: "Logging", value: availability(info?.loggingAvailable) },
                 { label: "Application version", value: info?.version || "—" },
               ]}
             />

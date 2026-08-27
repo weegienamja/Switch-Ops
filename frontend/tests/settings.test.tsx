@@ -15,9 +15,10 @@ const runtimeInfo: RuntimeInfo = {
   hostKeyPinned: true,
   telemetryRetentionDays: 30,
   telemetryCollection: "live-tiered",
-  dataDir: "C:\\Synthetic\\SwitchOps\\data",
-  backupDir: "C:\\Synthetic\\SwitchOps\\backups",
-  logDir: "C:\\Synthetic\\SwitchOps\\logs",
+  storageMode: "packaged" as const,
+  dataStoreAvailable: true,
+  loggingAvailable: true,
+  backupAvailable: true,
   corsOrigins: ["tauri://localhost"],
   deviceDriver: "cisco_ios",
 };

@@ -316,7 +316,11 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 
 # Validate
-.\.venv\Scripts\python.exe -m pytest backend\app\tests -q
+# Canonical backend suite. `backend\pyproject.toml` puts the repository root on
+# pythonpath, so this behaves identically from the repository root or from
+# inside backend\.
+pnpm test:backend
+pnpm test:lab          # Resilience Lab scenarios (development only)
 pnpm --dir frontend test
 pnpm --dir frontend typecheck
 pnpm --dir frontend lint

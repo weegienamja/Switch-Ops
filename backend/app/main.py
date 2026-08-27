@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable, Literal, TypeVar
 
 import asyncio
@@ -40,7 +42,12 @@ from .live_state import (
     get_live_state,
     set_collector,
 )
-from .errors import CommandNotAllowedError, SwitchOpsError
+from .errors import (
+    CommandNotAllowedError,
+    CredentialsMissingError,
+    SwitchOpsError,
+    is_device_transport_exception,
+)
 from .ewps_api import router as ewps_router
 from .ewps_v2_service import get_ewps_v2_service
 from .health_logic import build_summary
@@ -83,6 +90,7 @@ from .models import (
     OperationResult,
     ReconciliationSummary,
     RuntimeInfo,
+    RuntimeProvenance,
     SetupStatus,
     SwitchSummary,
     TelemetryHistoryResponse,
@@ -104,6 +112,15 @@ from .meraki_models import (
     MerakiRefreshResult,
     MerakiSelection,
     MerakiSetupStatus,
+)
+from .management_path import ManagementPathResponse, get_management_path_service
+from .provenance import (
+    API_SCHEMA_VERSION,
+    BUILD_ID,
+    FROZEN,
+    RUNTIME_MODE,
+    STARTED_AT,
+    expected_sidecar_token,
 )
 from .interface_policy import device_key, get_interface_policy_store
 from .lab_collector import (
@@ -233,7 +250,9 @@ async def _enforce_mutation_origin(request: Request, call_next):
 
 @app.exception_handler(SwitchOpsError)
 async def _switchops_error_handler(request: Request, exc: SwitchOpsError):  # noqa: ARG001
-    safe_detail = redact(exc.detail) if exc.detail and exc.http_status < 500 else None
+    safe_detail = exc.safe_detail
+    if safe_detail is None and exc.detail and exc.http_status < 500:
+        safe_detail = redact(exc.detail)
     return JSONResponse(
         status_code=exc.http_status,
         content=ApiError(code=exc.code, message=exc.message, detail=safe_detail).model_dump(),
@@ -251,6 +270,18 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
             code="invalid_request",
             message="Request validation failed.",
             detail=detail,
+        ).model_dump(),
+    )
+
+
+@app.exception_handler(Exception)
+async def _internal_error_handler(request: Request, exc: Exception):  # noqa: ARG001
+    logger.error("Unhandled backend request error (%s).", type(exc).__name__)
+    return JSONResponse(
+        status_code=500,
+        content=ApiError(
+            code="backend_internal_error",
+            message="The SwitchOps backend could not complete the request.",
         ).model_dump(),
     )
 
@@ -353,6 +384,8 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
                 output = ""
             outputs[section] = output
         except Exception as exc:
+            if is_device_transport_exception(exc):
+                raise
             section_errors[section] = "command_failed"
             outputs[section] = ""
             logger.warning("Telemetry command failed for %s (%s)", section, type(exc).__name__)
@@ -365,6 +398,8 @@ def _collect_dashboard(client: SwitchClient) -> DashboardResponse:
     interfaces = _parse_section(
         "interfaces", parse_interface_status, outputs["interfaces"], [], section_errors
     )
+
+
     configured_host = _current_device_host()
     for svi in config.get("svi_addresses", []):
         if isinstance(svi, dict) and configured_host and svi.get("ip") == configured_host:
@@ -894,6 +929,25 @@ def _record_slow_failure(at: datetime) -> None:
 
 def _start_live_operations() -> None:
     session = get_device_session()
+    host = _current_device_host()
+    if host:
+        try:
+            context = get_configuration_history_store().management_context_for_target(host)
+            if context is not None:
+                device_id = str(context["device_id"])
+                telemetry_at = get_telemetry_store(
+                    retention_days=settings.telemetry_retention_days
+                ).latest_successful_observation_at(device_id)
+                local_host = get_discovery_store().latest_local_host(device_id)
+                discovery_at = local_host.get("last_seen") if local_host else None
+                session.restore_last_success(
+                    max(
+                        (stamp for stamp in (telemetry_at, discovery_at) if stamp),
+                        default=None,
+                    )
+                )
+        except Exception as exc:
+            logger.warning("Durable session continuity could not be restored (%s)", type(exc).__name__)
     session.start()
     live = get_live_state()
     session.add_listener(lambda status: live.hub.publish("connection_state", status))
@@ -996,6 +1050,47 @@ def health():
     }
 
 
+def _directory_usable(path: Path) -> bool:
+    """Report whether a storage location works, without disclosing where it is.
+
+    The Settings screen only ever needed to tell the operator that local
+    storage is healthy. Returning the absolute path to answer that question
+    disclosed the Windows user name to every caller of /api/system/info.
+    """
+    try:
+        return path.is_dir() and os.access(path, os.W_OK)
+    except OSError:
+        return False
+
+
+@app.get(
+    "/api/system/provenance",
+    response_model=RuntimeProvenance,
+    response_model_by_alias=True,
+)
+def system_provenance():
+    """Identify the build answering on this port.
+
+    The desktop shell calls this to confirm the backend it reached is the
+    sidecar it spawned, rather than a development process left listening on
+    127.0.0.1:8765 from an earlier session.
+    """
+    served = [
+        (method, route.path)
+        for route in app.routes
+        for method in getattr(route, "methods", set()) or set()
+        if method not in {"HEAD", "OPTIONS"}
+    ]
+    return RuntimeProvenance(
+        buildId=BUILD_ID,
+        apiSchemaVersion=API_SCHEMA_VERSION,
+        runtimeMode=RUNTIME_MODE,
+        startedAt=STARTED_AT.isoformat().replace("+00:00", "Z"),
+        sidecarToken=expected_sidecar_token(),
+        managementPathAvailable=any(path == "/api/management-path" for _, path in served),
+    )
+
+
 @app.get("/api/system/info", response_model=RuntimeInfo, response_model_by_alias=True)
 def system_info():
     """Non-secret runtime facts for the Settings screen."""
@@ -1011,9 +1106,10 @@ def system_info():
         apiDocsEnabled=settings.enable_api_docs,
         hostKeyPinned=bool(host) and is_host_pinned(str(host)),
         telemetryRetentionDays=settings.telemetry_retention_days,
-        dataDir=str(settings.data_dir),
-        backupDir=str(settings.backup_dir),
-        logDir=str(settings.log_dir),
+        storageMode="packaged" if FROZEN else "development",
+        dataStoreAvailable=_directory_usable(settings.data_dir),
+        loggingAvailable=_directory_usable(settings.log_dir),
+        backupAvailable=_directory_usable(settings.backup_dir),
         corsOrigins=settings.cors_origin_list,
         deviceDriver=credential_status.get("switch_device_type") or settings.switch_device_type,
     )
@@ -1160,6 +1256,19 @@ def get_meraki_networks(
     return _meraki_read(
         lambda: get_unified_lab_service().networks(organizationId)
     )
+
+
+@app.get(
+    "/api/management-path",
+    response_model=ManagementPathResponse,
+    response_model_by_alias=True,
+)
+def management_path_assurance():
+    """Observe and diagnose only the path to the stored Catalyst target."""
+    host = _current_device_host()
+    if not host:
+        raise CredentialsMissingError("No Catalyst is configured.")
+    return get_management_path_service().assess(host, get_device_session().status())
 
 
 @app.put(

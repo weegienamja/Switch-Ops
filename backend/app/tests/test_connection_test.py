@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import connection_test as ct
+from backend.app import main as main_module
 from backend.app.errors import (
     CredentialsMissingError,
     HostKeyChangedError,
@@ -233,7 +234,9 @@ def test_a_failed_read_does_not_close_the_shared_session(real_mode):
     assert client.closed is False
 
 
-def test_endpoint_is_reachable_and_serialized_in_mock_mode():
+def test_endpoint_is_reachable_and_serialized_in_mock_mode(monkeypatch):
+    monkeypatch.setenv("SWITCH_MOCK_MODE", "true")
+    monkeypatch.setattr(main_module.settings, "mock_mode", True)
     with TestClient(app) as client:
         response = client.post("/api/setup/test-connection")
     assert response.status_code == 200

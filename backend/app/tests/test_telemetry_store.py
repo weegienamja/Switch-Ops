@@ -139,3 +139,15 @@ def test_history_is_ordered_and_filtered_by_device(tmp_path):
     assert history.observations[0].timestamp < history.observations[1].timestamp
     assert history.observations[0].memory_used_pct == 40
 
+
+def test_latest_successful_observation_is_device_bound(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry.sqlite")
+    first = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    _record(store, at=first, errors=0)
+    _record(store, at=first + timedelta(minutes=5), errors=0)
+
+    assert store.latest_successful_observation_at("switch-synthetic") == (
+        first + timedelta(minutes=5)
+    )
+    assert store.latest_successful_observation_at("another-switch") is None
+

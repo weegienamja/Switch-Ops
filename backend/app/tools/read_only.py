@@ -6,6 +6,7 @@ from typing import Callable, TypeVar
 
 from ..audit_store import get_audit_store
 from ..command_registry import resolve_read_command
+from ..errors import public_error_message
 from ..switch_client import SwitchClient
 
 T = TypeVar("T")
@@ -29,7 +30,7 @@ def run_and_audit(
     except Exception as exc:
         success = False
         err_type = type(exc).__name__
-        err_msg = str(exc)
+        err_msg = public_error_message(exc)
         raise
     finally:
         duration_ms = int((time.monotonic() - start) * 1000)

@@ -7,11 +7,15 @@ similar to Netmiko's ``send_command``.
 from __future__ import annotations
 
 import logging
-import socket
 import time
 from typing import List, Optional
 
-from .errors import HostKeyChangedError, LegacySshNegotiationError, SwitchConnectionError
+from .errors import (
+    SwitchConnectionError,
+    classify_connection_exception,
+    is_device_transport_exception,
+    session_lost_error,
+)
 from .credential_store import SwitchCredentials
 from .host_key_store import configure_paramiko_policy, verify_and_pin_host_key
 
@@ -89,26 +93,18 @@ class LegacyParamikoClient:
                 self.creds.switch_host,
                 transport.get_remote_server_key(),
             )
-        except paramiko.BadHostKeyException as exc:
-            raise HostKeyChangedError(
-                "The switch SSH host key changed; connection refused."
-            ) from exc
-        except HostKeyChangedError:
-            raise
-        except paramiko.ssh_exception.SSHException as exc:
-            raise LegacySshNegotiationError(
-                "SSH negotiation failed", detail=str(exc)
-            ) from exc
-        except (socket.timeout, OSError) as exc:
-            raise SwitchConnectionError(
-                f"Could not reach {self.creds.switch_host}", detail=str(exc)
-            ) from exc
-
-        self._client = client
-        self._shell = client.invoke_shell(width=200, height=2000)
-        self._shell.settimeout(self.timeout)
-        self._read_until_prompt()
-        self.send_line("terminal length 0")
+            self._client = client
+            self._shell = client.invoke_shell(width=200, height=2000)
+            self._shell.settimeout(self.timeout)
+            self._read_until_prompt()
+            self.send_line("terminal length 0")
+        except Exception as exc:
+            try:
+                client.close()
+            finally:
+                self._client = None
+                self._shell = None
+            raise classify_connection_exception(exc) from exc
 
     def close(self) -> None:
         try:
@@ -119,6 +115,19 @@ class LegacyParamikoClient:
             if self._client is not None:
                 self._client.close()
             self._client = None
+
+    def is_alive(self) -> bool:
+        if self._client is None or self._shell is None:
+            return False
+        try:
+            transport = self._client.get_transport()
+            return bool(
+                transport is not None
+                and transport.is_active()
+                and not self._shell.closed
+            )
+        except Exception:
+            return False
 
     def _read_until_prompt(self, extra_terminators: Optional[List[str]] = None) -> str:
         if self._shell is None:
@@ -142,8 +151,14 @@ class LegacyParamikoClient:
     def send_line(self, line: str) -> str:
         if self._shell is None:
             raise SwitchConnectionError("Shell not initialised.")
-        self._shell.send(line + "\n")
-        return self._read_until_prompt()
+        try:
+            self._shell.send(line + "\n")
+            return self._read_until_prompt()
+        except Exception as exc:
+            if is_device_transport_exception(exc):
+                self.close()
+                raise session_lost_error(exc) from exc
+            raise
 
     def run(self, command: str) -> str:
         out = self.send_line(command)
@@ -166,12 +181,18 @@ class LegacyParamikoClient:
         """Enter enable mode if currently in user EXEC."""
         if self._shell is None:
             raise SwitchConnectionError("Shell not initialised.")
-        # Probe current prompt
-        self._shell.send("\n")
-        out = self._read_until_prompt()
-        last = out.rstrip().split("\n")[-1] if out else ""
-        if last.endswith(">"):
-            self._shell.send("enable\n")
-            self._read_until_prompt(extra_terminators=["Password:"])
-            self._shell.send(enable_secret + "\n")
-            self._read_until_prompt()
+        try:
+            # Probe current prompt
+            self._shell.send("\n")
+            out = self._read_until_prompt()
+            last = out.rstrip().split("\n")[-1] if out else ""
+            if last.endswith(">"):
+                self._shell.send("enable\n")
+                self._read_until_prompt(extra_terminators=["Password:"])
+                self._shell.send(enable_secret + "\n")
+                self._read_until_prompt()
+        except Exception as exc:
+            if is_device_transport_exception(exc):
+                self.close()
+                raise session_lost_error(exc) from exc
+            raise

@@ -73,9 +73,317 @@ export interface InterfaceStatusResponse {
   interfaces: import("./types").InterfaceStatus[];
 }
 
+export type ManagementPathConclusion =
+  | "MANAGEMENT_PATH_HEALTHY"
+  | "HOST_NETWORK_CHANGED"
+  | "HOST_ROUTE_MISSING"
+  | "HOST_PATH_DEGRADED"
+  | "SSH_SERVICE_UNAVAILABLE"
+  | "DEVICE_OR_PATH_UNREACHABLE"
+  | "AUTHENTICATION_FAILED"
+  | "HOST_KEY_CHANGED"
+  | "SSH_NEGOTIATION_FAILED"
+  | "INDETERMINATE";
+
+export type EvidenceFreshness = "current" | "aging" | "stale" | "historical";
+
+export interface HostAddressObservation {
+  address: string;
+  prefixLength: number;
+  prefixOrigin?: string | null;
+  addressState?: string | null;
+  skipAsSource?: boolean | null;
+}
+
+export interface ManagementPathObservation {
+  observedAt: string;
+  supported: boolean;
+  collectionError?: string | null;
+  adapterId?: string | null;
+  adapterName?: string | null;
+  interfaceIndex?: number | null;
+  interfaceMetric?: number | null;
+  adapterState?: string | null;
+  sourceIp?: string | null;
+  prefixLength?: number | null;
+  connectedPrefix?: string | null;
+  targetOnConnectedPrefix?: boolean | null;
+  dhcpEnabled?: boolean | null;
+  dhcpStaticCoexistence?: boolean | null;
+  adapterAddresses: HostAddressObservation[];
+  dhcpServer?: string | null;
+  dhcpLeaseObtained?: string | null;
+  dhcpLeaseExpires?: string | null;
+  defaultGateway?: string | null;
+  route: {
+    destinationPrefix?: string | null;
+    nextHop?: string | null;
+    kind: "connected" | "scoped" | "default" | "none" | "unknown";
+    routeMetric?: number | null;
+    protocol?: string | null;
+  };
+  targetNeighborState?: string | null;
+  gatewayNeighborState?: string | null;
+  windowsConnectivity?: string | null;
+  tcp22: "reachable" | "refused" | "timed_out" | "unreachable" | "unavailable";
+  icmpReachable?: boolean | null;
+}
+
+export interface MerakiLanEvidence {
+  vlanId?: string | null;
+  subnet: string;
+  applianceIp?: string | null;
+  dhcpMode: "server" | "relay" | "disabled" | "unknown";
+  dhcpRelayServerCount: number;
+  dhcpLeaseTime?: string | null;
+  reservedRangeCount: number;
+  fixedAssignmentCount: number;
+}
+
+export interface MerakiPortEvidence {
+  portId: string;
+  enabled?: boolean | null;
+  mode: "access" | "trunk" | "unknown";
+  accessVlan?: string | null;
+  nativeVlan?: string | null;
+  allowedVlans: string[];
+  catalystFacing?: boolean | null;
+}
+
+export interface MerakiManagementEvidence {
+  source: "meraki-dashboard-current-configuration";
+  state: "not-configured" | "healthy" | "partial" | "unavailable";
+  checkedAt: string;
+  observedAt?: string | null;
+  freshness: EvidenceFreshness;
+  complete: boolean;
+  detail: string;
+  failedOperations: string[];
+  vlansEnabled?: boolean | null;
+  lans: MerakiLanEvidence[];
+  ports: MerakiPortEvidence[];
+  catalystPortIdentified: boolean;
+}
+
+export interface RecoveryExecutionArchitecture {
+  mode: "PLANNING_ONLY";
+  executorImplemented: false;
+  approvalAvailable: false;
+  authority: {
+    currentPolicy: "MANUAL_ONLY" | "OPERATOR_APPROVED" | "POLICY_AUTOMATIC";
+    futurePolicyCeiling: "MANUAL_ONLY" | "OPERATOR_APPROVED" | "POLICY_AUTOMATIC";
+    requiredLevel:
+      | "LEVEL_0_READ_ONLY"
+      | "LEVEL_1_SESSION_RECOVERY"
+      | "LEVEL_2_EPHEMERAL_HOST_NETWORK"
+      | "LEVEL_3_PERSISTENT_HOST_NETWORK"
+      | "LEVEL_4_DEVICE_CHANGE_ASSURANCE";
+    administratorRequired: boolean;
+    explicitOperatorApprovalRequired: boolean;
+    automaticExecutionEnabled: boolean;
+    levels: Array<{
+      level: string;
+      supported: boolean;
+      summary: string;
+    }>;
+  };
+  primitive: {
+    selectedPrimitive: "NONE";
+    futureCandidate: "IP_HELPER_EPHEMERAL_UNICAST";
+    candidateStatus: "ISOLATED_VALIDATION_REQUIRED";
+    rationale: string[];
+  };
+  collisionSafety: {
+    requiredAssurance: "AUTHORITATIVE_DEDICATED_RESERVATION";
+    acceptedEvidence: string[];
+    rejectedEvidence: string[];
+    freshnessRequired: boolean;
+  };
+  ownership: {
+    identityFields: string[];
+    preexistingObjectMustBeAbsent: boolean;
+    exactPostApplyFingerprintRequired: boolean;
+    broadCleanupAllowed: boolean;
+    ambiguityBehavior: "REQUIRE_OPERATOR_RECONCILIATION";
+  };
+  transaction: {
+    journalRequiredBeforeApply: boolean;
+    sequence: string[];
+    capturedState: string[];
+    preservationInvariants: string[];
+    rollbackTriggers: string[];
+    restartBehavior: string;
+  };
+  gate: {
+    allowed: false;
+    disposition: "BLOCKED" | "NOT_IMPLEMENTED";
+    reasons: string[];
+  };
+}
+
+export interface RecoveryPlan {
+  planId: string;
+  generatedAt: string;
+  status: "NOT_NEEDED" | "BLOCKED" | "READY" | "NOT_SUPPORTED";
+  kind: "NONE" | "TEMPORARY_SECONDARY_IPV4";
+  headline: string;
+  summary: string;
+  blockers: Array<{ code: string; summary: string }>;
+  missingEvidence: string[];
+  warnings: string[];
+  operation: {
+    kind: "NONE" | "TEMPORARY_SECONDARY_IPV4";
+    adapterId?: string | null;
+    candidateAddress?: string | null;
+    prefixLength?: number | null;
+    gateway: null;
+    expectedRoute?: string | null;
+    persistence: "temporary-active-store";
+  };
+  candidateEvidence?: {
+    address: string;
+    prefixLength: number;
+    assurance: "authoritative-reservation" | "unverified";
+    source: string;
+    observedAt: string;
+  } | null;
+  expectedEffect: string[];
+  unchangedState: string[];
+  verificationSteps: string[];
+  rollbackSteps: string[];
+  binding: {
+    schemaVersion: number;
+    targetId: string;
+    adapterId?: string | null;
+    primaryAddress?: string | null;
+    prefixLength?: number | null;
+    defaultGateway?: string | null;
+    dhcpLeaseObtained?: string | null;
+    dhcpStaticCoexistence?: boolean | null;
+    routeFingerprint: string;
+    diagnosis: string;
+    evidenceObservedAt: string;
+    stateFingerprint: string;
+  };
+  executionArchitecture: RecoveryExecutionArchitecture;
+  executionEnabled: false;
+}
+
+export interface ManagementPathAssurance {
+  targetLabel: string;
+  current: ManagementPathObservation;
+  lastKnownGood?: {
+    observedAt: string;
+    lastDeviceSuccessAt?: string | null;
+    adapterId?: string | null;
+    adapterName?: string | null;
+    sourceIp?: string | null;
+    prefixLength?: number | null;
+    connectedPrefix?: string | null;
+    managementPrefix?: string | null;
+    defaultGateway?: string | null;
+    catalystGateway?: string | null;
+    dhcpServer?: string | null;
+    catalystInterface?: string | null;
+    sameAdapterAsCurrent?: boolean | null;
+    provenance: string[];
+    freshness: EvidenceFreshness;
+  } | null;
+  diagnosis: {
+    conclusion: ManagementPathConclusion;
+    confidence: "HIGH" | "MEDIUM" | "LOW" | "INDETERMINATE";
+    headline: string;
+    summary: string;
+    evidence: string[];
+    missingEvidence: string[];
+  };
+  merakiEvidence: MerakiManagementEvidence;
+  recoveryPlan: RecoveryPlan;
+  remediationAvailable: boolean;
+}
+
 const BACKEND_BASE =
   (typeof process !== "undefined" && process.env.NEXT_PUBLIC_BACKEND_URL) ||
   "http://127.0.0.1:8765";
+
+export type ApiErrorCategory =
+  | "BACKEND_UNREACHABLE"
+  | "DEVICE_UNREACHABLE"
+  | "DEVICE_AUTH_FAILED"
+  | "DEVICE_HOST_KEY_CHANGED"
+  | "DEVICE_SSH_NEGOTIATION_FAILED"
+  | "DEVICE_SESSION_LOST"
+  | "BACKEND_INTERNAL_ERROR";
+
+const DEVICE_ERROR_CODES: Record<string, ApiErrorCategory> = {
+  switch_unreachable: "DEVICE_UNREACHABLE",
+  switch_connection_failed: "DEVICE_UNREACHABLE",
+  switch_connection_error: "DEVICE_UNREACHABLE",
+  switch_auth_failed: "DEVICE_AUTH_FAILED",
+  authentication_failed: "DEVICE_AUTH_FAILED",
+  host_key_changed: "DEVICE_HOST_KEY_CHANGED",
+  ssh_negotiation_failed: "DEVICE_SSH_NEGOTIATION_FAILED",
+  legacy_ssh_negotiation_failed: "DEVICE_SSH_NEGOTIATION_FAILED",
+  switch_session_lost: "DEVICE_SESSION_LOST",
+};
+
+export class ApiError extends Error {
+  readonly status: number | null;
+  readonly code: string;
+  readonly detail?: string;
+  readonly category: ApiErrorCategory;
+
+  constructor(options: {
+    status: number | null;
+    code: string;
+    message: string;
+    detail?: string;
+    category: ApiErrorCategory;
+  }) {
+    super(options.message);
+    this.name = "ApiError";
+    this.status = options.status;
+    this.code = options.code;
+    this.detail = options.detail;
+    this.category = options.category;
+  }
+
+  get backendResponded(): boolean {
+    return this.status !== null;
+  }
+}
+
+function errorCategory(code: string): ApiErrorCategory {
+  return DEVICE_ERROR_CODES[code] || "BACKEND_INTERNAL_ERROR";
+}
+
+export function asApiError(cause: unknown): ApiError {
+  if (cause instanceof ApiError) return cause;
+  return new ApiError({
+    status: null,
+    code: "client_response_error",
+    message: "SwitchOps could not process the backend response.",
+    category: "BACKEND_INTERNAL_ERROR",
+  });
+}
+
+function backendUnavailableError(): ApiError {
+  return new ApiError({
+    status: null,
+    code: "backend_unreachable",
+    message: "SwitchOps could not reach the local backend sidecar.",
+    detail: "No HTTP response was received from 127.0.0.1:8765.",
+    category: "BACKEND_UNREACHABLE",
+  });
+}
+
+function isErrorPayload(value: unknown): value is {
+  code?: unknown;
+  message?: unknown;
+  detail?: unknown;
+} {
+  return typeof value === "object" && value !== null;
+}
 
 function url(path: string): string {
   return `${BACKEND_BASE}${path}`;
@@ -89,23 +397,59 @@ async function fetchJson<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const res = await fetch(url(path), {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers || {}),
-    },
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      detail = body?.message || body?.detail || detail;
-    } catch {}
-    throw new Error(`${res.status} ${detail}`);
+  let res: Response;
+  try {
+    res = await fetch(url(path), {
+      ...init,
+      headers: {
+        "content-type": "application/json",
+        ...(init?.headers || {}),
+      },
+      cache: "no-store",
+    });
+  } catch {
+    throw backendUnavailableError();
   }
-  return res.json() as Promise<T>;
+  if (!res.ok) {
+    let payload: unknown = null;
+    try {
+      payload = await res.json();
+    } catch {}
+    const body = isErrorPayload(payload) ? payload : null;
+    const backendCode =
+      body && typeof body.code === "string"
+        ? body.code
+        : res.status >= 500
+          ? "backend_internal_error"
+          : "http_error";
+    const message =
+      body && typeof body.message === "string"
+        ? body.message
+        : res.status >= 500
+          ? "The SwitchOps backend could not complete the request."
+          : "The SwitchOps backend rejected the request.";
+    const detail =
+      body && typeof body.code === "string" && typeof body.detail === "string"
+        ? body.detail
+        : undefined;
+    throw new ApiError({
+      status: res.status,
+      code: backendCode,
+      message,
+      detail,
+      category: errorCategory(backendCode),
+    });
+  }
+  try {
+    return await res.json() as T;
+  } catch {
+    throw new ApiError({
+      status: res.status,
+      code: "backend_invalid_response",
+      message: "The SwitchOps backend returned an invalid response.",
+      category: "BACKEND_INTERNAL_ERROR",
+    });
+  }
 }
 
 // Replace "/" in port name with "-" because the URL can't carry the slash.
@@ -122,6 +466,8 @@ export const api = {
       enableWriteActions: boolean;
     }>("/health"),
   setupStatus: () => fetchJson<SetupStatus>("/api/setup/status"),
+  managementPath: () =>
+    fetchJson<ManagementPathAssurance>("/api/management-path"),
   systemInfo: () => fetchJson<RuntimeInfo>("/api/system/info"),
   testConnection: () =>
     fetchJson<ConnectionTestResult>("/api/setup/test-connection", { method: "POST" }),

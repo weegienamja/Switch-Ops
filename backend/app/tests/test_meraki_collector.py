@@ -48,13 +48,26 @@ def _collector(*, failures: set[str] | None = None) -> tuple[MerakiEvidenceColle
             {"serial": mx["device"]["serial"], "uplinks": mx["uplinks"]}
         ],
         "appliance_ports": mx["ports"],
+        "appliance_vlan_settings": {"vlansEnabled": True},
+        "appliance_vlans": [
+            {
+                "id": "20",
+                "subnet": "198.18.20.0/24",
+                "applianceIp": "198.18.20.1",
+                "dhcpHandling": "Run a DHCP server",
+                "dhcpLeaseTime": "1 day",
+                "reservedIpRanges": [{"start": "198.18.20.2", "end": "198.18.20.9"}],
+                "fixedIpAssignments": {"opaque-client": {"ip": "198.18.20.10"}},
+            }
+        ],
         "device_lldp_cdp": {
             "ports": {
-                "eth0": {
+                "3": {
                     "lldp": {
                         "systemName": "synthetic-catalyst-01",
                         "portId": "Gi0/4",
-                        "chassisId": "00:00:5e:00:53:10"
+                        "chassisId": "00:00:5e:00:53:10",
+                        "managementAddress": "198.18.10.10"
                     }
                 }
             }
@@ -70,7 +83,11 @@ def _collector(*, failures: set[str] | None = None) -> tuple[MerakiEvidenceColle
     )
     return (
         MerakiEvidenceCollector(
-            client, selection, protector=PROTECTOR, now=lambda: NOW
+            client,
+            selection,
+            protector=PROTECTOR,
+            management_target="198.18.10.10",
+            now=lambda: NOW,
         ),
         client,
     )
@@ -86,6 +103,8 @@ def test_collector_normalizes_inventory_availability_uplinks_ports_lldp_and_clie
     assert {"security-appliance", "access-point", "client"}.issubset(categories)
     assert {"existence", "availability", "uplink", "port", "relationship", "attachment"}.issubset(fields)
     assert result.source_health.state == "healthy"
+    assert result.management_evidence.catalyst_port_identified is True
+    assert result.management_evidence.lans[0].subnet == "198.18.20.0/24"
     assert "switch_port_statuses" not in client.calls
     assert client.calls.count("device_lldp_cdp") == 2
 
@@ -97,6 +116,7 @@ def test_normalized_envelope_retains_no_raw_serial_mac_ip_client_or_unknown_fiel
         {
             "entities": [item.model_dump(by_alias=True, mode="json") for item in result.entities],
             "claims": [item.model_dump(by_alias=True, mode="json") for item in result.claims],
+            "management": result.management_evidence.model_dump(by_alias=True, mode="json"),
         },
         sort_keys=True,
     )
@@ -111,6 +131,7 @@ def test_normalized_envelope_retains_no_raw_serial_mac_ip_client_or_unknown_fiel
         "198.51.100.20",
         "must-not-survive",
         "hugeRawField",
+        "opaque-client",
     ):
         assert forbidden not in serialized
 
@@ -135,3 +156,32 @@ def test_inventory_failure_is_unavailable_and_returns_no_provider_state() -> Non
     assert result.claims == []
     assert result.source_health.state == "unavailable"
     assert result.source_health.failed_operations == ["organization_devices"]
+
+
+def test_dashboard_lan_api_failure_is_partial_and_keeps_other_evidence() -> None:
+    collector, _ = _collector(failures={"appliance_vlans"})
+
+    result = collector.collect()
+
+    assert result.management_evidence.state == "partial"
+    assert result.management_evidence.lans == []
+    assert result.management_evidence.ports
+    assert result.management_evidence.failed_operations == ["appliance_vlans"]
+    assert result.source_health.state == "partial"
+
+
+def test_single_lan_mode_uses_the_read_only_single_lan_endpoint() -> None:
+    collector, client = _collector()
+    client.responses["appliance_vlan_settings"] = {"vlansEnabled": False}
+    client.responses["appliance_single_lan"] = {
+        "subnet": "198.18.20.0/24",
+        "applianceIp": "198.18.20.1",
+        "dhcpHandling": "Run a DHCP server",
+    }
+
+    result = collector.collect()
+
+    assert "appliance_single_lan" in client.calls
+    assert "appliance_vlans" not in client.calls
+    assert result.management_evidence.vlans_enabled is False
+    assert result.management_evidence.lans[0].vlan_id is None

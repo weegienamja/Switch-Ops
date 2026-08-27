@@ -89,3 +89,28 @@ def test_known_good_marker_is_unique_per_device(tmp_path):
     entries = store.recent(device_id="switch-synthetic")
     assert marked.known_good is True
     assert [entry.id for entry in entries if entry.known_good] == [second.id]
+
+
+def test_management_context_matches_target_without_returning_configuration(tmp_path):
+    store = ConfigurationHistoryStore(tmp_path / "history.sqlite", tmp_path / "versions")
+    store.observe(
+        device_id="switch-synthetic",
+        hostname="SYNTH-SW1",
+        config_text=(
+            BASE_CONFIG
+            + "interface Vlan1\n"
+            + " ip address 192.0.2.10 255.255.255.0\n"
+            + "ip default-gateway 192.0.2.1\n"
+        ),
+        observed_at=datetime(2026, 8, 25, tzinfo=timezone.utc),
+    )
+
+    context = store.management_context_for_target("192.0.2.10")
+    assert context == {
+        "device_id": "switch-synthetic",
+        "observed_at": datetime(2026, 8, 25, tzinfo=timezone.utc),
+        "management_ip": "192.0.2.10",
+        "management_mask": "255.255.255.0",
+        "gateway": "192.0.2.1",
+    }
+    assert store.management_context_for_target("203.0.113.10") is None

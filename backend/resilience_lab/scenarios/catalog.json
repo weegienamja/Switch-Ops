@@ -1,0 +1,1659 @@
+{
+  "schemaVersion": 1,
+  "scenarios": [
+    {
+      "id": "DHCP_SUBNET_CHANGE",
+      "description": "The management host receives a lease on a different subnet while the Catalyst remains at its documented address.",
+      "purpose": "Prove that a host-side network transition is classified without blaming the switch or VLAN.",
+      "phases": [
+        {
+          "id": "healthy",
+          "at": "2026-08-26T10:00:00Z",
+          "transition": "The original directly connected management path is healthy.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "confidence": "HIGH",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "new-lease",
+          "at": "2026-08-26T10:04:00Z",
+          "transition": "DHCP moves the same adapter off the historical management prefix.",
+          "evidence": {
+            "management": {
+              "sourceIp": "198.51.100.5",
+              "connectedPrefix": "198.51.100.0/24",
+              "targetOnConnectedPrefix": false,
+              "dhcpServer": "198.51.100.1",
+              "dhcpLeaseObtained": "2026-08-26T10:03:00Z",
+              "defaultGateway": "198.51.100.1",
+              "route": {
+                "destinationPrefix": "0.0.0.0/0",
+                "nextHop": "198.51.100.1",
+                "kind": "default"
+              },
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_NETWORK_CHANGED",
+            "confidence": "HIGH",
+            "recoveryPlanStatus": "BLOCKED",
+            "lastKnownGoodObservedAt": "2026-08-26T10:00:00Z",
+            "mustClaim": [
+              "HOST_NETWORK_CHANGED"
+            ],
+            "mustNotClaim": [
+              "DEVICE_OFFLINE",
+              "VLAN_MISCONFIGURED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "DHCP_RENEW_SAME_NETWORK",
+      "description": "DHCP renews the selected adapter without changing its address or management prefix.",
+      "purpose": "Ensure an ordinary renewal is not misclassified as a management-path failure.",
+      "phases": [
+        {
+          "id": "before-renewal",
+          "at": "2026-08-26T10:10:00Z",
+          "transition": "The direct path is healthy before renewal.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "confidence": "HIGH",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "after-renewal",
+          "at": "2026-08-26T10:15:00Z",
+          "transition": "The lease timestamp changes but the selected path stays healthy.",
+          "evidence": {
+            "management": {
+              "dhcpLeaseObtained": "2026-08-26T10:14:00Z"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "confidence": "HIGH",
+            "recoveryPlanStatus": "NOT_NEEDED",
+            "mustNotClaim": [
+              "HOST_NETWORK_CHANGED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ROUTE_REMOVED",
+      "description": "Windows can no longer select an IPv4 source address or route for the Catalyst target.",
+      "purpose": "Classify missing host-route evidence distinctly from a device outage.",
+      "phases": [
+        {
+          "id": "route-present",
+          "at": "2026-08-26T10:20:00Z",
+          "transition": "The management route is present.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "route-removed",
+          "at": "2026-08-26T10:21:00Z",
+          "transition": "The selected IPv4 route disappears.",
+          "evidence": {
+            "management": {
+              "sourceIp": null,
+              "prefixLength": null,
+              "connectedPrefix": null,
+              "targetOnConnectedPrefix": null,
+              "defaultGateway": null,
+              "route": {
+                "destinationPrefix": null,
+                "nextHop": null,
+                "kind": "none",
+                "routeMetric": null
+              },
+              "tcp22": "unavailable",
+              "icmpReachable": null,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_ROUTE_MISSING",
+            "confidence": "HIGH",
+            "recoveryPlanStatus": "BLOCKED",
+            "mustNotClaim": [
+              "DEVICE_OFFLINE"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "VPN_ROUTE_TAKEOVER",
+      "description": "A scoped route through a documentation gateway takes precedence for the Catalyst target.",
+      "purpose": "Preserve uncertainty when a valid explicit route exists but the destination is unreachable.",
+      "phases": [
+        {
+          "id": "direct",
+          "at": "2026-08-26T10:30:00Z",
+          "transition": "The management target is directly connected.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "vpn-preferred",
+          "at": "2026-08-26T10:31:00Z",
+          "transition": "A scoped route becomes preferred and the SSH probe times out.",
+          "evidence": {
+            "management": {
+              "targetOnConnectedPrefix": false,
+              "route": {
+                "destinationPrefix": "192.0.2.10/32",
+                "nextHop": "203.0.113.1",
+                "kind": "scoped",
+                "routeMetric": 1
+              },
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "DEVICE_OR_PATH_UNREACHABLE",
+            "confidence": "INDETERMINATE",
+            "recoveryPlanStatus": "NOT_SUPPORTED",
+            "mustClaim": [
+              "INDETERMINATE"
+            ],
+            "mustNotClaim": [
+              "DEVICE_OFFLINE",
+              "VLAN_MISCONFIGURED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "WIFI_BECOMES_PREFERRED",
+      "description": "Windows changes from the proven Ethernet adapter to Wi-Fi and sends the target through a default gateway.",
+      "purpose": "Detect a host adapter transition while preserving the lower confidence caused by identity discontinuity.",
+      "phases": [
+        {
+          "id": "ethernet",
+          "at": "2026-08-26T10:40:00Z",
+          "transition": "Ethernet owns the healthy management path.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "wifi",
+          "at": "2026-08-26T10:42:00Z",
+          "transition": "Wi-Fi becomes the selected adapter after the management session fails.",
+          "evidence": {
+            "management": {
+              "adapterId": "adapter-wifi",
+              "adapterName": "Wi-Fi",
+              "interfaceIndex": 24,
+              "sourceIp": "198.51.100.8",
+              "connectedPrefix": "198.51.100.0/24",
+              "targetOnConnectedPrefix": false,
+              "dhcpServer": "198.51.100.1",
+              "defaultGateway": "198.51.100.1",
+              "route": {
+                "destinationPrefix": "0.0.0.0/0",
+                "nextHop": "198.51.100.1",
+                "kind": "default"
+              },
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_NETWORK_CHANGED",
+            "confidence": "MEDIUM",
+            "recoveryPlanStatus": "BLOCKED",
+            "mustClaim": [
+              "MANAGEMENT_ADAPTER_UNVERIFIED"
+            ],
+            "mustNotClaim": [
+              "DEVICE_OFFLINE"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "SSH_HALF_OPEN_SESSION",
+      "description": "TCP port 22 remains reachable while the serialized SSH session is stale.",
+      "purpose": "Avoid treating a half-open session symptom as proof of a device or VLAN failure.",
+      "phases": [
+        {
+          "id": "live",
+          "at": "2026-08-26T10:50:00Z",
+          "transition": "TCP and the serialized session are healthy.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "half-open",
+          "at": "2026-08-26T10:51:00Z",
+          "transition": "The session becomes stale although TCP still accepts connections.",
+          "evidence": {
+            "management": {
+              "sessionState": "stale",
+              "sessionErrorCode": "switch_session_lost"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "DEVICE_OR_PATH_UNREACHABLE",
+            "confidence": "INDETERMINATE",
+            "recoveryPlanStatus": "NOT_SUPPORTED",
+            "mustClaim": [
+              "INDETERMINATE"
+            ],
+            "mustNotClaim": [
+              "DEVICE_OFFLINE"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "SSH_AUTH_FAILURE",
+      "description": "The network path reaches SSH but Catalyst credentials are rejected.",
+      "purpose": "Keep typed authentication failure separate from reachability and recovery planning.",
+      "phases": [
+        {
+          "id": "authenticated",
+          "at": "2026-08-26T11:00:00Z",
+          "transition": "Authentication initially succeeds.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "rejected",
+          "at": "2026-08-26T11:01:00Z",
+          "transition": "The session reports its typed authentication error.",
+          "evidence": {
+            "management": {
+              "sessionState": "offline",
+              "sessionErrorCode": "switch_auth_failed"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "AUTHENTICATION_FAILED",
+            "confidence": "HIGH",
+            "recoveryPlanStatus": "NOT_SUPPORTED",
+            "mustNotClaim": [
+              "DEVICE_OFFLINE",
+              "HOST_NETWORK_CHANGED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "SSH_HOST_KEY_CHANGE",
+      "description": "The Catalyst presents a different SSH host key after a healthy session.",
+      "purpose": "Prove that trust failure blocks automated recovery and remains explicitly classified.",
+      "phases": [
+        {
+          "id": "trusted",
+          "at": "2026-08-26T11:10:00Z",
+          "transition": "The pinned host key is trusted.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "changed-key",
+          "at": "2026-08-26T11:11:00Z",
+          "transition": "The session refuses the changed key.",
+          "evidence": {
+            "management": {
+              "sessionState": "offline",
+              "sessionErrorCode": "host_key_changed"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_KEY_CHANGED",
+            "confidence": "HIGH",
+            "recoveryPlanStatus": "NOT_SUPPORTED",
+            "mustNotClaim": [
+              "DEVICE_OFFLINE",
+              "HOST_NETWORK_CHANGED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ENDPOINT_PORT_MOVE",
+      "description": "The same confirmed local endpoint moves from one access port to another.",
+      "purpose": "Retain stable endpoint identity, update the current attachment, and preserve the prior attachment as history.",
+      "phases": [
+        {
+          "id": "port-two",
+          "at": "2026-08-26T11:20:00Z",
+          "transition": "The confirmed endpoint is attached to Gi0/2.",
+          "evidence": {
+            "management": {},
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2",
+                  "status": "connected"
+                },
+                {
+                  "port": "Gi0/5",
+                  "status": "notconnect"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530a",
+                  "port": "Gi0/2"
+                }
+              ],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530a"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED",
+            "duplicateEntityIds": 0,
+            "mustNotClaim": [
+              "ENDPOINT_MOVED",
+              "DEVICE_REPLACED"
+            ]
+          }
+        },
+        {
+          "id": "port-five",
+          "at": "2026-08-26T11:21:00Z",
+          "transition": "The same hardware identity is re-observed on Gi0/5.",
+          "evidence": {
+            "management": {},
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2",
+                  "status": "notconnect"
+                },
+                {
+                  "port": "Gi0/5",
+                  "status": "connected"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530a",
+                  "port": "Gi0/5"
+                }
+              ],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530a"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED",
+            "topologyTransition": "ENDPOINT_MOVED",
+            "identityRetained": true,
+            "duplicateEntityIds": 0,
+            "currentAttachment": "Gi0/5",
+            "previousAttachment": "Gi0/2",
+            "mustClaim": [
+              "IDENTITY_RETAINED"
+            ],
+            "mustNotClaim": [
+              "DEVICE_REPLACED",
+              "NEW_DEVICE"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "NEW_DEVICE_REPLACES_OLD_DEVICE",
+      "description": "A different confirmed hardware identity appears on the previously occupied access port.",
+      "purpose": "Distinguish replacement from movement and retain the former identity only as historical evidence.",
+      "phases": [
+        {
+          "id": "old-device",
+          "at": "2026-08-26T11:30:00Z",
+          "transition": "The original endpoint occupies Gi0/2.",
+          "evidence": {
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530a",
+                  "port": "Gi0/2"
+                }
+              ],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530a"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "duplicateEntityIds": 0
+          }
+        },
+        {
+          "id": "replacement",
+          "at": "2026-08-26T11:31:00Z",
+          "transition": "A different confirmed identity occupies Gi0/2.",
+          "evidence": {
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530b",
+                  "port": "Gi0/2"
+                }
+              ],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530b"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "topologyTransition": "DEVICE_REPLACED",
+            "identityRetained": false,
+            "duplicateEntityIds": 0,
+            "currentAttachment": "Gi0/2",
+            "previousAttachment": "Gi0/2",
+            "historicalEntityCountAtLeast": 1,
+            "mustClaim": [
+              "IDENTITY_REPLACED"
+            ],
+            "mustNotClaim": [
+              "ENDPOINT_MOVED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "SAME_MAC_VISIBLE_MULTIPLE_PORTS",
+      "description": "The same learned address is simultaneously visible through two access ports.",
+      "purpose": "Represent ambiguous attachment evidence without duplicating a stable endpoint or fabricating movement.",
+      "phases": [
+        {
+          "id": "unique",
+          "at": "2026-08-26T11:40:00Z",
+          "transition": "One learned address is initially unique to Gi0/2.",
+          "evidence": {
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2"
+                },
+                {
+                  "port": "Gi0/5"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530c",
+                  "port": "Gi0/2"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "duplicateEntityIds": 0
+          }
+        },
+        {
+          "id": "ambiguous",
+          "at": "2026-08-26T11:41:00Z",
+          "transition": "The learned address appears through both ports in one observation.",
+          "evidence": {
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2"
+                },
+                {
+                  "port": "Gi0/5"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530c",
+                  "port": "Gi0/2"
+                },
+                {
+                  "mac": "0000.5e00.530c",
+                  "port": "Gi0/5"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "topologyTransition": "ATTACHMENT_CONFLICT",
+            "duplicateEntityIds": 0,
+            "mustClaim": [
+              "INDETERMINATE"
+            ],
+            "mustNotClaim": [
+              "ENDPOINT_MOVED",
+              "DEVICE_REPLACED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MX_API_UNAVAILABLE",
+      "description": "Current Meraki Dashboard evidence becomes unavailable while the direct Catalyst path remains healthy.",
+      "purpose": "Treat provider loss as missing corroboration rather than proof of device failure.",
+      "phases": [
+        {
+          "id": "meraki-current",
+          "at": "2026-08-26T11:50:00Z",
+          "transition": "Current Meraki LAN evidence accompanies a healthy path.",
+          "evidence": {
+            "management": {},
+            "meraki": {
+              "state": "healthy",
+              "freshness": "current",
+              "complete": true,
+              "detail": "Synthetic current LAN evidence.",
+              "lans": [
+                {
+                  "subnet": "192.0.2.0/24",
+                  "vlanId": "1",
+                  "applianceIp": "192.0.2.1",
+                  "dhcpMode": "server"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED",
+            "merakiState": "healthy",
+            "merakiFreshness": "current"
+          }
+        },
+        {
+          "id": "api-unavailable",
+          "at": "2026-08-26T11:51:00Z",
+          "transition": "Dashboard requests fail but direct host and SSH evidence remains healthy.",
+          "evidence": {
+            "management": {},
+            "meraki": {
+              "state": "unavailable",
+              "freshness": "historical",
+              "detail": "Synthetic Dashboard API outage.",
+              "failedOperations": [
+                "read-current-network"
+              ]
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED",
+            "merakiState": "unavailable",
+            "merakiFreshness": "historical",
+            "mustClaim": [
+              "MERAKI_API_UNAVAILABLE"
+            ],
+            "mustNotClaim": [
+              "DEVICE_OFFLINE"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MERAKI_CURRENT_STATE_CONFLICTS_WITH_HISTORY",
+      "description": "Current Meraki LAN configuration makes a historical direct-path interpretation unsafe.",
+      "purpose": "Require indeterminate classification when current configured routing context conflicts with a host-only recovery inference.",
+      "phases": [
+        {
+          "id": "historical-direct",
+          "at": "2026-08-26T12:00:00Z",
+          "transition": "The host and Catalyst share the original management LAN.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "current-routed",
+          "at": "2026-08-26T12:02:00Z",
+          "transition": "Current Meraki evidence reports both host and target LANs while SSH remains unreachable.",
+          "evidence": {
+            "management": {
+              "sourceIp": "198.51.100.5",
+              "connectedPrefix": "198.51.100.0/24",
+              "targetOnConnectedPrefix": false,
+              "dhcpServer": "198.51.100.1",
+              "defaultGateway": "198.51.100.1",
+              "route": {
+                "destinationPrefix": "0.0.0.0/0",
+                "nextHop": "198.51.100.1",
+                "kind": "default"
+              },
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "sessionState": "offline"
+            },
+            "meraki": {
+              "state": "healthy",
+              "freshness": "current",
+              "complete": true,
+              "detail": "Synthetic routed LAN configuration.",
+              "lans": [
+                {
+                  "subnet": "198.51.100.0/24",
+                  "vlanId": "10",
+                  "applianceIp": "198.51.100.1",
+                  "dhcpMode": "server"
+                },
+                {
+                  "subnet": "192.0.2.0/24",
+                  "vlanId": "20",
+                  "applianceIp": "192.0.2.1",
+                  "dhcpMode": "disabled"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "DEVICE_OR_PATH_UNREACHABLE",
+            "confidence": "INDETERMINATE",
+            "recoveryPlanStatus": "BLOCKED",
+            "merakiState": "healthy",
+            "mustClaim": [
+              "INDETERMINATE"
+            ],
+            "mustNotClaim": [
+              "DEVICE_OFFLINE",
+              "HOST_NETWORK_CHANGED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "BACKEND_RESTART",
+      "description": "The management service is reconstructed between a healthy observation and a subnet transition.",
+      "purpose": "Prove that durable last-known-good evidence survives process/service reconstruction with its original timestamp.",
+      "phases": [
+        {
+          "id": "before-restart",
+          "at": "2026-08-26T12:10:00Z",
+          "transition": "A healthy observation is committed to the temporary history store.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "after-restart",
+          "at": "2026-08-26T12:12:00Z",
+          "transition": "A reconstructed service observes the same adapter on another subnet.",
+          "restartBackend": true,
+          "evidence": {
+            "management": {
+              "sourceIp": "198.51.100.7",
+              "connectedPrefix": "198.51.100.0/24",
+              "targetOnConnectedPrefix": false,
+              "dhcpServer": "198.51.100.1",
+              "dhcpLeaseObtained": "2026-08-26T12:11:00Z",
+              "defaultGateway": "198.51.100.1",
+              "route": {
+                "destinationPrefix": "0.0.0.0/0",
+                "nextHop": "198.51.100.1",
+                "kind": "default"
+              },
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_NETWORK_CHANGED",
+            "confidence": "HIGH",
+            "recoveryPlanStatus": "BLOCKED",
+            "lastKnownGoodObservedAt": "2026-08-26T12:10:00Z",
+            "mustNotClaim": [
+              "DEVICE_OFFLINE"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "RECOVERY_PLAN_STALE_AFTER_DHCP_CHANGE",
+      "description": "A blocked recovery plan is retained while DHCP changes the bound primary address and observation timestamp.",
+      "purpose": "Demonstrate that a previously generated plan fails state-binding validation before any execution authority exists.",
+      "phases": [
+        {
+          "id": "known-good",
+          "at": "2026-08-26T12:20:00Z",
+          "transition": "The original path establishes last-known-good evidence.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "planned",
+          "at": "2026-08-26T12:22:00Z",
+          "transition": "A subnet change produces a bounded, non-executable recovery plan.",
+          "evidence": {
+            "management": {
+              "sourceIp": "198.51.100.5",
+              "connectedPrefix": "198.51.100.0/24",
+              "targetOnConnectedPrefix": false,
+              "dhcpServer": "198.51.100.1",
+              "dhcpLeaseObtained": "2026-08-26T12:21:00Z",
+              "defaultGateway": "198.51.100.1",
+              "route": {
+                "destinationPrefix": "0.0.0.0/0",
+                "nextHop": "198.51.100.1",
+                "kind": "default"
+              },
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_NETWORK_CHANGED",
+            "recoveryPlanStatus": "BLOCKED"
+          }
+        },
+        {
+          "id": "lease-changed",
+          "at": "2026-08-26T12:23:00Z",
+          "transition": "DHCP changes the bound address before the prior plan can be used.",
+          "evidence": {
+            "management": {
+              "sourceIp": "198.51.100.6",
+              "connectedPrefix": "198.51.100.0/24",
+              "targetOnConnectedPrefix": false,
+              "dhcpServer": "198.51.100.1",
+              "dhcpLeaseObtained": "2026-08-26T12:23:00Z",
+              "defaultGateway": "198.51.100.1",
+              "route": {
+                "destinationPrefix": "0.0.0.0/0",
+                "nextHop": "198.51.100.1",
+                "kind": "default"
+              },
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_NETWORK_CHANGED",
+            "recoveryPlanStatus": "BLOCKED",
+            "bindingFromPhase": "planned",
+            "bindingValid": false,
+            "mustNotClaim": [
+              "RECOVERY_EXECUTED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "CONFLICTING_EVIDENCE_PRODUCES_INDETERMINATE",
+      "description": "The host observer explicitly reports internally conflicting route/source evidence.",
+      "purpose": "Fail closed when normalized evidence is incomplete or contradictory instead of choosing a confident root cause.",
+      "phases": [
+        {
+          "id": "coherent",
+          "at": "2026-08-26T12:30:00Z",
+          "transition": "The evidence sources initially agree.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "conflict",
+          "at": "2026-08-26T12:31:00Z",
+          "transition": "Normalization rejects the conflicting source and route evidence.",
+          "evidence": {
+            "management": {
+              "collectionError": "conflicting_source_and_route_evidence",
+              "tcp22": "unavailable",
+              "icmpReachable": null,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "INDETERMINATE",
+            "confidence": "INDETERMINATE",
+            "recoveryPlanStatus": "NOT_SUPPORTED",
+            "mustClaim": [
+              "INDETERMINATE"
+            ],
+            "mustNotClaim": [
+              "DEVICE_OFFLINE",
+              "VLAN_MISCONFIGURED",
+              "HOST_NETWORK_CHANGED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ROUTE_RESTORED",
+      "description": "A removed management route is restored and SwitchOps returns to a healthy understanding.",
+      "purpose": "Prove the product recovers its own model after the environment becomes healthy again, and that the plan built while degraded no longer binds.",
+      "phases": [
+        {
+          "id": "healthy",
+          "at": "2026-08-27T09:00:00Z",
+          "transition": "The management path is healthy.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "route-removed",
+          "at": "2026-08-27T09:01:00Z",
+          "transition": "The selected IPv4 route disappears.",
+          "evidence": {
+            "management": {
+              "sourceIp": null,
+              "prefixLength": null,
+              "connectedPrefix": null,
+              "targetOnConnectedPrefix": null,
+              "defaultGateway": null,
+              "route": {
+                "destinationPrefix": null,
+                "nextHop": null,
+                "kind": "none",
+                "routeMetric": null
+              },
+              "tcp22": "unavailable",
+              "icmpReachable": null,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_ROUTE_MISSING",
+            "confidence": "HIGH",
+            "recoveryPlanStatus": "BLOCKED",
+            "mustClaim": [
+              "MANAGEMENT_PATH_DEGRADED"
+            ],
+            "mustNotClaim": [
+              "DEVICE_OFFLINE"
+            ]
+          }
+        },
+        {
+          "id": "route-restored",
+          "at": "2026-08-27T09:02:00Z",
+          "transition": "The route returns and the path is healthy again.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED",
+            "bindingFromPhase": "route-removed",
+            "bindingValid": false,
+            "mustClaim": [
+              "MANAGEMENT_PATH_HEALTHY"
+            ],
+            "mustNotClaim": [
+              "MANAGEMENT_PATH_DEGRADED",
+              "RECOVERY_EXECUTED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ENDPOINT_DISCONNECT_RECONNECT_SAME_PORT",
+      "description": "A confirmed endpoint briefly disconnects and returns to the same access port.",
+      "purpose": "Prove a brief absence does not create a second endpoint or a false movement claim.",
+      "phases": [
+        {
+          "id": "attached",
+          "at": "2026-08-27T09:10:00Z",
+          "transition": "The confirmed endpoint is attached to Gi0/2.",
+          "evidence": {
+            "management": {},
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2",
+                  "status": "connected"
+                },
+                {
+                  "port": "Gi0/5",
+                  "status": "notconnect"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530a",
+                  "port": "Gi0/2"
+                }
+              ],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530a"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "duplicateEntityIds": 0,
+            "mustNotClaim": [
+              "ENDPOINT_MOVED",
+              "DEVICE_REPLACED"
+            ]
+          }
+        },
+        {
+          "id": "disconnected",
+          "at": "2026-08-27T09:11:00Z",
+          "transition": "The endpoint disconnects and no MAC is learned.",
+          "evidence": {
+            "management": {},
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2",
+                  "status": "notconnect"
+                },
+                {
+                  "port": "Gi0/5",
+                  "status": "notconnect"
+                }
+              ],
+              "macs": [],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530a"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "duplicateEntityIds": 0,
+            "mustNotClaim": [
+              "ENDPOINT_MOVED",
+              "DEVICE_REPLACED",
+              "ATTACHMENT_CONFLICT"
+            ]
+          }
+        },
+        {
+          "id": "reconnected",
+          "at": "2026-08-27T09:12:00Z",
+          "transition": "The same hardware identity returns to Gi0/2.",
+          "evidence": {
+            "management": {},
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2",
+                  "status": "connected"
+                },
+                {
+                  "port": "Gi0/5",
+                  "status": "notconnect"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530a",
+                  "port": "Gi0/2"
+                }
+              ],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530a"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "duplicateEntityIds": 0,
+            "currentAttachment": "Gi0/2",
+            "mustNotClaim": [
+              "DEVICE_REPLACED",
+              "NEW_DEVICE",
+              "ATTACHMENT_CONFLICT"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ENDPOINT_DISCONNECT_RECONNECT_NEW_PORT",
+      "description": "A confirmed endpoint disconnects and reappears on a different access port.",
+      "purpose": "Prove a cable move across an absence is reconciled as movement of one identity, not a replacement.",
+      "phases": [
+        {
+          "id": "on-gi0-2",
+          "at": "2026-08-27T09:20:00Z",
+          "transition": "The confirmed endpoint is attached to Gi0/2.",
+          "evidence": {
+            "management": {},
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2",
+                  "status": "connected"
+                },
+                {
+                  "port": "Gi0/5",
+                  "status": "notconnect"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530a",
+                  "port": "Gi0/2"
+                }
+              ],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530a"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "duplicateEntityIds": 0,
+            "mustNotClaim": [
+              "ENDPOINT_MOVED"
+            ]
+          }
+        },
+        {
+          "id": "absent",
+          "at": "2026-08-27T09:21:00Z",
+          "transition": "The cable is unplugged and the endpoint is not observed.",
+          "evidence": {
+            "management": {},
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2",
+                  "status": "notconnect"
+                },
+                {
+                  "port": "Gi0/5",
+                  "status": "notconnect"
+                }
+              ],
+              "macs": [],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530a"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "duplicateEntityIds": 0,
+            "mustNotClaim": [
+              "DEVICE_REPLACED"
+            ]
+          }
+        },
+        {
+          "id": "on-gi0-5",
+          "at": "2026-08-27T09:22:00Z",
+          "transition": "The same hardware identity appears on Gi0/5.",
+          "evidence": {
+            "management": {},
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2",
+                  "status": "notconnect"
+                },
+                {
+                  "port": "Gi0/5",
+                  "status": "connected"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530a",
+                  "port": "Gi0/5"
+                }
+              ],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530a"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "topologyTransition": "ENDPOINT_MOVED",
+            "identityRetained": true,
+            "duplicateEntityIds": 0,
+            "currentAttachment": "Gi0/5",
+            "previousAttachment": "Gi0/2",
+            "mustClaim": [
+              "IDENTITY_RETAINED"
+            ],
+            "mustNotClaim": [
+              "DEVICE_REPLACED",
+              "NEW_DEVICE"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "DHCP_UNAVAILABLE_APIPA_RECOVERY",
+      "description": "DHCP stops answering, Windows self-assigns a link-local address, and the lease is later restored.",
+      "purpose": "Prove an APIPA fallback is classified as a host-side path fault and that recovery returns the model to healthy.",
+      "phases": [
+        {
+          "id": "leased",
+          "at": "2026-08-27T09:30:00Z",
+          "transition": "A normal DHCP lease is held.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "apipa",
+          "at": "2026-08-27T09:31:00Z",
+          "transition": "No DHCP server answers and Windows self-assigns 169.254.0.0/16.",
+          "evidence": {
+            "management": {
+              "sourceIp": "169.254.10.20",
+              "prefixLength": 16,
+              "connectedPrefix": "169.254.0.0/16",
+              "targetOnConnectedPrefix": false,
+              "dhcpEnabled": true,
+              "dhcpServer": null,
+              "defaultGateway": null,
+              "route": {
+                "destinationPrefix": null,
+                "nextHop": null,
+                "kind": "none",
+                "routeMetric": null
+              },
+              "windowsConnectivity": "LocalNetwork",
+              "tcp22": "unavailable",
+              "icmpReachable": null,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_ROUTE_MISSING",
+            "confidence": "HIGH",
+            "recoveryPlanStatus": "BLOCKED",
+            "mustNotClaim": [
+              "DEVICE_OFFLINE"
+            ]
+          }
+        },
+        {
+          "id": "lease-restored",
+          "at": "2026-08-27T09:32:00Z",
+          "transition": "DHCP answers again and the original prefix is restored.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED",
+            "bindingFromPhase": "apipa",
+            "bindingValid": false,
+            "mustClaim": [
+              "MANAGEMENT_PATH_HEALTHY"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "DEVICE_RELOAD_RECONNECT",
+      "description": "The Catalyst stops answering while the host path stays intact, then returns.",
+      "purpose": "Prove SwitchOps reports an indeterminate device-or-path outcome rather than asserting a device state it cannot observe, and reconnects to the same identity.",
+      "phases": [
+        {
+          "id": "before-reload",
+          "at": "2026-08-27T09:40:00Z",
+          "transition": "The device is reachable and the session is live.",
+          "evidence": {
+            "management": {},
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2",
+                  "status": "connected"
+                },
+                {
+                  "port": "Gi0/5",
+                  "status": "notconnect"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530a",
+                  "port": "Gi0/2"
+                }
+              ],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530a"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "reloading",
+          "at": "2026-08-27T09:41:00Z",
+          "transition": "The device stops answering while the host route stays on-link.",
+          "evidence": {
+            "management": {
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "DEVICE_OR_PATH_UNREACHABLE",
+            "confidence": "INDETERMINATE",
+            "mustClaim": [
+              "INDETERMINATE"
+            ],
+            "mustNotClaim": [
+              "DEVICE_OFFLINE",
+              "HOST_NETWORK_CHANGED"
+            ]
+          }
+        },
+        {
+          "id": "back-online",
+          "at": "2026-08-27T09:43:00Z",
+          "transition": "The device answers again on the same attachment.",
+          "evidence": {
+            "management": {},
+            "topology": {
+              "interfaces": [
+                {
+                  "port": "Gi0/2",
+                  "status": "connected"
+                },
+                {
+                  "port": "Gi0/5",
+                  "status": "notconnect"
+                }
+              ],
+              "macs": [
+                {
+                  "mac": "0000.5e00.530a",
+                  "port": "Gi0/2"
+                }
+              ],
+              "adapters": [
+                {
+                  "mac": "0000.5e00.530a"
+                }
+              ]
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED",
+            "duplicateEntityIds": 0,
+            "currentAttachment": "Gi0/2",
+            "mustClaim": [
+              "MANAGEMENT_PATH_HEALTHY"
+            ],
+            "mustNotClaim": [
+              "DEVICE_REPLACED",
+              "MANAGEMENT_PATH_DEGRADED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "RECOVERY_PLAN_STALE_AFTER_ROUTE_CHANGE",
+      "description": "A blocked recovery plan is retained while the selected route changes underneath it.",
+      "purpose": "Prove plan state-binding rejects a route change, not only an address change.",
+      "phases": [
+        {
+          "id": "known-good",
+          "at": "2026-08-27T09:50:00Z",
+          "transition": "The original path establishes last-known-good evidence.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "planned",
+          "at": "2026-08-27T09:51:00Z",
+          "transition": "The host leaves the management prefix and a bounded plan is produced.",
+          "evidence": {
+            "management": {
+              "sourceIp": "198.51.100.5",
+              "connectedPrefix": "198.51.100.0/24",
+              "targetOnConnectedPrefix": false,
+              "dhcpServer": "198.51.100.1",
+              "defaultGateway": "198.51.100.1",
+              "route": {
+                "destinationPrefix": "0.0.0.0/0",
+                "nextHop": "198.51.100.1",
+                "kind": "default"
+              },
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_NETWORK_CHANGED",
+            "recoveryPlanStatus": "BLOCKED"
+          }
+        },
+        {
+          "id": "route-changed",
+          "at": "2026-08-27T09:52:00Z",
+          "transition": "A different gateway takes over the default route before the plan could be used.",
+          "evidence": {
+            "management": {
+              "sourceIp": "198.51.100.5",
+              "connectedPrefix": "198.51.100.0/24",
+              "targetOnConnectedPrefix": false,
+              "dhcpServer": "198.51.100.1",
+              "defaultGateway": "198.51.100.254",
+              "route": {
+                "destinationPrefix": "0.0.0.0/0",
+                "nextHop": "198.51.100.254",
+                "kind": "default"
+              },
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_NETWORK_CHANGED",
+            "recoveryPlanStatus": "BLOCKED",
+            "bindingFromPhase": "planned",
+            "bindingValid": false,
+            "mustNotClaim": [
+              "RECOVERY_EXECUTED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "REAL_DHCP_SUBNET_MOVE",
+      "description": "Anonymized replay of the observed incident in which the host acquired a lease on a different prefix while the Catalyst stayed on its historical management prefix.",
+      "purpose": "Regression-lock the real diagnosis: same Catalyst identity, no unsupported device-offline claim, recovery planned but blocked.",
+      "phases": [
+        {
+          "id": "last-known-good",
+          "at": "2026-01-01T12:00:00Z",
+          "transition": "The recorded last-known-good management path.",
+          "evidence": {
+            "management": {
+              "target": "192.0.2.10",
+              "adapterName": "Ethernet",
+              "sourceIp": "192.0.2.95",
+              "prefixLength": 24,
+              "connectedPrefix": "192.0.2.0/24",
+              "targetOnConnectedPrefix": true,
+              "route": {
+                "kind": "connected",
+                "destinationPrefix": null,
+                "nextHop": null
+              },
+              "tcp22": "reachable",
+              "icmpReachable": true,
+              "sessionState": "live",
+              "windowsConnectivity": "Internet",
+              "defaultGateway": "192.0.2.1",
+              "adapterId": "adapter-0001"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED"
+          }
+        },
+        {
+          "id": "incident",
+          "at": "2026-01-02T17:54:35.357577Z",
+          "transition": "The observed incident state.",
+          "evidence": {
+            "management": {
+              "target": "192.0.2.10",
+              "supported": true,
+              "adapterName": "Ethernet",
+              "interfaceIndex": 16,
+              "interfaceMetric": 25,
+              "adapterState": "Up",
+              "prefixLength": 24,
+              "targetOnConnectedPrefix": false,
+              "dhcpEnabled": true,
+              "dhcpStaticCoexistence": false,
+              "windowsConnectivity": "Internet",
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "route": {
+                "kind": "default",
+                "routeMetric": 0,
+                "protocol": "NetMgmt",
+                "destinationPrefix": "0.0.0.0/0",
+                "nextHop": "198.51.100.1"
+              },
+              "adapterId": "adapter-0001",
+              "sourceIp": "198.51.100.5",
+              "connectedPrefix": "198.51.100.0/24",
+              "defaultGateway": "198.51.100.1",
+              "dhcpServer": "198.51.100.1",
+              "dhcpLeaseObtained": "2026-01-02T12:01:01.795673Z",
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_NETWORK_CHANGED",
+            "confidence": "MEDIUM",
+            "recoveryPlanStatus": "BLOCKED",
+            "mustNotClaim": [
+              "RECOVERY_EXECUTED",
+              "DEVICE_OFFLINE"
+            ],
+            "mustClaim": [
+              "MANAGEMENT_PATH_DEGRADED"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MANAGEMENT_PATH_RESTORED_AFTER_HOST_RETURNS",
+      "description": "The host regains an on-link address in the Catalyst management prefix and management recovers.",
+      "purpose": "Prove SwitchOps reconciles back to healthy once the management path exists again, and that a plan produced while degraded no longer binds. The restoration is modelled as an environment change: SwitchOps has no executor and performs no part of it.",
+      "phases": [
+        {
+          "id": "healthy-on-management-prefix",
+          "at": "2026-08-28T09:00:00Z",
+          "transition": "The host is on the Catalyst management prefix and management is healthy.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED",
+            "mustNotClaim": [
+              "RECOVERY_EXECUTED",
+              "TEMPORARY_ADDRESS_APPLIED"
+            ]
+          }
+        },
+        {
+          "id": "host-leaves-prefix",
+          "at": "2026-08-28T09:01:00Z",
+          "transition": "The host acquires a lease on a different prefix and the target follows the default route.",
+          "evidence": {
+            "management": {
+              "sourceIp": "198.51.100.5",
+              "connectedPrefix": "198.51.100.0/24",
+              "targetOnConnectedPrefix": false,
+              "dhcpServer": "198.51.100.1",
+              "defaultGateway": "198.51.100.1",
+              "route": {
+                "destinationPrefix": "0.0.0.0/0",
+                "nextHop": "198.51.100.1",
+                "kind": "default"
+              },
+              "tcp22": "timed_out",
+              "icmpReachable": false,
+              "sessionState": "offline"
+            }
+          },
+          "expected": {
+            "managementDiagnosis": "HOST_NETWORK_CHANGED",
+            "recoveryPlanStatus": "BLOCKED",
+            "mustClaim": [
+              "MANAGEMENT_PATH_DEGRADED"
+            ],
+            "mustNotClaim": [
+              "DEVICE_OFFLINE",
+              "RECOVERY_EXECUTED",
+              "TEMPORARY_ADDRESS_APPLIED"
+            ]
+          }
+        },
+        {
+          "id": "management-path-restored",
+          "at": "2026-08-28T09:05:00Z",
+          "transition": "An on-link path to the management prefix exists again and TCP/22 answers.",
+          "evidence": {
+            "management": {}
+          },
+          "expected": {
+            "managementDiagnosis": "MANAGEMENT_PATH_HEALTHY",
+            "recoveryPlanStatus": "NOT_NEEDED",
+            "bindingFromPhase": "host-leaves-prefix",
+            "bindingValid": false,
+            "mustClaim": [
+              "MANAGEMENT_PATH_HEALTHY"
+            ],
+            "mustNotClaim": [
+              "MANAGEMENT_PATH_DEGRADED",
+              "RECOVERY_EXECUTED",
+              "TEMPORARY_ADDRESS_APPLIED",
+              "ROLLBACK_COMPLETED"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

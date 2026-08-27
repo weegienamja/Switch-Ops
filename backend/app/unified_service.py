@@ -7,6 +7,7 @@ from typing import Callable
 
 from .catalyst_evidence_adapter import normalize_catalyst_dashboard
 from .identity_protection import IdentityProtector
+from .credential_store import get_credential_store
 from .meraki_client import MerakiApiError, MerakiClient
 from .meraki_collector import MerakiEvidenceCollector
 from .meraki_credentials import MerakiCredentialStore, get_meraki_credential_store
@@ -17,6 +18,7 @@ from .meraki_models import (
     MerakiSelection,
     MerakiSetupStatus,
 )
+from .meraki_management import MerakiManagementEvidence
 from .meraki_selection import MerakiSelectionStore, get_meraki_selection_store
 from .models import DashboardResponse
 from .unified_models import SourceHealth, UnifiedLabState
@@ -33,6 +35,7 @@ class UnifiedLabService:
         selection_store: MerakiSelectionStore | None = None,
         protector: IdentityProtector | None = None,
         client_factory: Callable[[str], MerakiClient] = MerakiClient,
+        management_target_provider: Callable[[], str | None] | None = None,
         refresh_seconds: float = 300.0,
     ) -> None:
         self._store = store or get_unified_lab_store()
@@ -40,6 +43,7 @@ class UnifiedLabService:
         self._selections = selection_store or get_meraki_selection_store()
         self._protector = protector or IdentityProtector()
         self._client_factory = client_factory
+        self._management_target_provider = management_target_provider or (lambda: None)
         self._refresh_seconds = max(60.0, refresh_seconds)
         self._collection_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -228,6 +232,7 @@ class UnifiedLabService:
                         client,
                         selection,
                         protector=self._protector,
+                        management_target=self._management_target_provider(),
                     ).collect()
             except Exception:
                 health = self._failure_health(now, "collection", "unavailable")
@@ -242,7 +247,71 @@ class UnifiedLabService:
                 )
             else:
                 self._store.save_source_health(collection.source_health)
+            if collection.management_evidence.observed_at is not None:
+                self._store.save_meraki_management_evidence(
+                    collection.management_evidence
+                )
             return collection.source_health
+
+    def management_path_evidence(
+        self, *, now: datetime | None = None
+    ) -> MerakiManagementEvidence:
+        checked_at = now or datetime.now(timezone.utc)
+        stored = self._store.load_meraki_management_evidence()
+        status = self.setup_status()
+        health = status.source_health
+        state = health.state
+        normalized_state = (
+            state
+            if state in {"not-configured", "healthy", "partial", "unavailable"}
+            else "unavailable"
+        )
+        if stored is None:
+            return MerakiManagementEvidence.unavailable(
+                checked_at=health.checked_at,
+                state=normalized_state,  # type: ignore[arg-type]
+                detail=health.detail,
+                failed_operations=health.failed_operations,
+            )
+        management_operations = {
+            "appliance_vlan_settings",
+            "appliance_vlans",
+            "appliance_single_lan",
+            "appliance_ports",
+            "appliance_lan_mode",
+            "collection",
+            "connection",
+        }
+        relevant_failures = sorted(
+            operation
+            for operation in health.failed_operations
+            if operation in management_operations
+        )
+        if normalized_state == "not-configured":
+            runtime_state = "not-configured"
+            runtime_detail = health.detail
+            runtime_complete = False
+            runtime_failures = relevant_failures
+        elif relevant_failures:
+            runtime_state = "partial" if stored.observed_at else "unavailable"
+            runtime_detail = health.detail
+            runtime_complete = False
+            runtime_failures = relevant_failures
+        else:
+            # Inventory, client, or uplink failures do not invalidate a compact
+            # LAN/port snapshot that completed independently.
+            runtime_state = stored.state
+            runtime_detail = stored.detail
+            runtime_complete = stored.complete
+            runtime_failures = stored.failed_operations
+        return stored.with_runtime_health(
+            state=runtime_state,  # type: ignore[arg-type]
+            checked_at=health.checked_at,
+            detail=runtime_detail,
+            complete=runtime_complete,
+            failed_operations=runtime_failures,
+            now=checked_at,
+        )
 
     def decide_identity(self, link_id: str, decision: str) -> UnifiedLabState:
         current = self.state()
@@ -287,5 +356,9 @@ _service: UnifiedLabService | None = None
 def get_unified_lab_service() -> UnifiedLabService:
     global _service
     if _service is None:
-        _service = UnifiedLabService()
+        def configured_target() -> str | None:
+            credentials = get_credential_store().load()
+            return credentials.host if credentials else None
+
+        _service = UnifiedLabService(management_target_provider=configured_target)
     return _service

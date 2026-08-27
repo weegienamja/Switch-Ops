@@ -23,9 +23,12 @@ export interface RuntimeInfo {
   hostKeyPinned: boolean;
   telemetryRetentionDays: number;
   telemetryCollection: "live-tiered";
-  dataDir: string;
-  backupDir: string;
-  logDir: string;
+  // Semantic storage state. Absolute paths are deliberately not part of this
+  // contract: on Windows they always contain the local user name.
+  storageMode: "packaged" | "development";
+  dataStoreAvailable: boolean;
+  loggingAvailable: boolean;
+  backupAvailable: boolean;
   corsOrigins: string[];
   deviceDriver?: string | null;
 }
@@ -726,6 +729,9 @@ export interface NetworkDevice {
   classificationStage: "unknown" | "category" | "vendor" | "model";
   online: boolean;
   connectedInterface?: string | null;
+  previousConnectedInterface?: string | null;
+  attachmentState?: "current" | "moved" | "ambiguous" | "historical" | "unknown";
+  attachmentConfidence?: Confidence;
   visualCategory: DeviceType;
   capabilities: DeviceCapability[];
   lastSeen?: string | null;
@@ -817,6 +823,19 @@ export interface TopologyModel {
   evidence?: DiscoveryEvidence[];
   expectations?: TopologyExpectation[];
   historicalDevices?: NetworkDevice[];
+  transitions?: Array<{
+    kind: "ENDPOINT_MOVED" | "DEVICE_REPLACED" | "ATTACHMENT_CONFLICT";
+    entityId?: string | null;
+    previousEntityId?: string | null;
+    previousInterface?: string | null;
+    currentInterface?: string | null;
+    locations: string[];
+    identityRetained?: boolean | null;
+    identityConfidence: Confidence;
+    attachmentConfidence: Confidence;
+    observedAt: string;
+    detail: string;
+  }>;
   evidenceModelVersion?: number;
 }
 

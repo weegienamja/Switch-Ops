@@ -14,7 +14,7 @@ from typing import Optional
 from .config import BACKUP_DIR, DATA_DIR
 from .file_security import harden_private_file
 from .models import ConfigurationHistoryEntry
-from .parsers.config_parser import redact_config
+from .parsers.config_parser import parse_running_config, redact_config
 
 
 DB_PATH = DATA_DIR / "configuration-history.sqlite"
@@ -174,6 +174,33 @@ class ConfigurationHistoryStore:
         with self._lock, self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [self._from_row(row) for row in rows]
+
+    def management_context_for_target(self, target: str) -> dict[str, object] | None:
+        """Read only the bounded network context from a retained configuration."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT device_id, timestamp, filename FROM configuration_versions ORDER BY id DESC"
+            ).fetchall()
+        history_root = self.history_dir.resolve()
+        for row in rows:
+            candidate = (history_root / row["filename"]).resolve()
+            if candidate.parent != history_root or not candidate.exists():
+                continue
+            try:
+                parsed = parse_running_config(candidate.read_text(encoding="utf-8"))
+                observed_at = datetime.fromisoformat(row["timestamp"])
+            except (OSError, UnicodeError, ValueError):
+                continue
+            if str(parsed.get("management_ip") or "") != target:
+                continue
+            return {
+                "device_id": row["device_id"],
+                "observed_at": observed_at,
+                "management_ip": target,
+                "management_mask": parsed.get("management_mask"),
+                "gateway": parsed.get("gateway"),
+            }
+        return None
 
     def mark_known_good(self, entry_id: int) -> ConfigurationHistoryEntry:
         with self._lock, self._connect() as conn:

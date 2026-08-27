@@ -94,3 +94,7 @@ tmp/
 # Logs
 *.log
 logs/
+
+# Recovery Lab harness state: transient records of temporary addresses
+# created on this machine. Never committed.
+backend/recovery_lab/state/

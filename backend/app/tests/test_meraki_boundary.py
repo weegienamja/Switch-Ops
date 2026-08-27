@@ -97,6 +97,28 @@ def test_only_named_get_operations_are_available() -> None:
         client.get("organizations", query={"url": "https://example.invalid"})
 
 
+@pytest.mark.parametrize("operation,path", [
+    ("appliance_vlan_settings", "/api/v1/networks/NET_SYNTH/appliance/vlans/settings"),
+    ("appliance_vlans", "/api/v1/networks/NET_SYNTH/appliance/vlans"),
+    ("appliance_single_lan", "/api/v1/networks/NET_SYNTH/appliance/singleLan"),
+    ("appliance_ports", "/api/v1/networks/NET_SYNTH/appliance/ports"),
+])
+def test_management_configuration_operations_are_fixed_get_only(operation, path) -> None:
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        return httpx.Response(200, json={})
+
+    result = _client(handler).get(
+        operation,
+        path_parameters={"network_id": "NET_SYNTH"},
+    )
+
+    assert result.complete is True
+    assert requests == [("GET", path)]
+
+
 def test_pagination_follows_only_same_origin_allowlisted_queries() -> None:
     seen: list[str] = []
 

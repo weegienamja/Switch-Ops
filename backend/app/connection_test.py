@@ -23,10 +23,12 @@ from .config import get_settings
 from .credential_store import get_credential_store
 from .errors import (
     CredentialsMissingError,
-    SwitchOpsError,
     HostKeyChangedError,
     LegacySshNegotiationError,
+    SwitchAuthenticationError,
     SwitchConnectionError,
+    SwitchOpsError,
+    SwitchUnreachableError,
 )
 from .host_key_store import is_host_pinned
 from .models import ConnectionCheck, ConnectionTestResult
@@ -61,6 +63,14 @@ def _pending_checks() -> dict[str, ConnectionCheck]:
 
 def _classify(exc: BaseException) -> str:
     """Map an exception chain to a safe failure code. Never returns detail."""
+    if isinstance(exc, HostKeyChangedError):
+        return "host_key_changed"
+    if isinstance(exc, SwitchAuthenticationError):
+        return "authentication_failed"
+    if isinstance(exc, SwitchUnreachableError):
+        return "host_unreachable"
+    if isinstance(exc, LegacySshNegotiationError):
+        return "ssh_negotiation_failed"
     names: list[str] = []
     current: BaseException | None = exc
     while current is not None and len(names) < 8:

@@ -9,11 +9,12 @@ import threading
 
 from .config import DATA_DIR
 from .file_security import harden_private_file
+from .meraki_management import MerakiManagementEvidence
 from .unified_models import NormalizedClaim, ProviderEntity, SourceHealth
 
 
 STORE_PATH = DATA_DIR / "unified-lab.sqlite"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class UnifiedLabStore:
@@ -45,6 +46,11 @@ class UnifiedLabStore:
                     link_id TEXT PRIMARY KEY,
                     decision TEXT NOT NULL CHECK (decision IN ('confirm', 'reject')),
                     decided_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS meraki_management_snapshots (
+                    provider TEXT PRIMARY KEY,
+                    observed_at TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL
                 );
                 """
             )
@@ -116,6 +122,42 @@ class UnifiedLabStore:
             claims.extend(NormalizedClaim.model_validate(item) for item in json.loads(row[1]))
             health.append(SourceHealth.model_validate_json(row[2]))
         return entities, claims, health
+
+    def save_meraki_management_evidence(
+        self, evidence: MerakiManagementEvidence
+    ) -> None:
+        """Persist only the compact normalized current-configuration snapshot."""
+        if evidence.observed_at is None:
+            return
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO meraki_management_snapshots(provider, observed_at, evidence_json)
+                VALUES('meraki-dashboard', ?, ?)
+                ON CONFLICT(provider) DO UPDATE SET
+                    observed_at=excluded.observed_at,
+                    evidence_json=excluded.evidence_json
+                """,
+                (
+                    evidence.observed_at.isoformat(),
+                    evidence.model_dump_json(by_alias=True),
+                ),
+            )
+
+    def load_meraki_management_evidence(
+        self,
+    ) -> MerakiManagementEvidence | None:
+        with self._lock:
+            row = self._connection.execute(
+                """SELECT evidence_json FROM meraki_management_snapshots
+                   WHERE provider = 'meraki-dashboard'"""
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return MerakiManagementEvidence.model_validate_json(row[0])
+        except (ValueError, TypeError):
+            return None
 
     def set_identity_decision(
         self,

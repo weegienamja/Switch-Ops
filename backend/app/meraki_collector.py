@@ -7,6 +7,12 @@ from typing import Callable
 
 from .identity_protection import IdentityProtector
 from .meraki_client import MerakiApiError, MerakiApiResult, MerakiClient
+from .meraki_management import (
+    MerakiManagementEvidence,
+    normalize_lans,
+    normalize_ports,
+    port_identifier,
+)
 from .meraki_models import MerakiSelection
 from .normalized_evidence import (
     claim,
@@ -29,6 +35,7 @@ class MerakiCollection:
     entities: list[ProviderEntity]
     claims: list[NormalizedClaim]
     source_health: SourceHealth
+    management_evidence: MerakiManagementEvidence
 
 
 def _observed_at(value: object, fallback: datetime) -> datetime:
@@ -60,17 +67,24 @@ class MerakiEvidenceCollector:
         selection: MerakiSelection,
         *,
         protector: IdentityProtector | None = None,
+        management_target: str | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._client = client
         self._selection = selection
         self._protector = protector or IdentityProtector()
+        self._management_target_id = (
+            self._protector.management_address(management_target)
+            if management_target
+            else None
+        )
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._failures: list[str] = []
         self._rate_limited = False
 
     def collect(self) -> MerakiCollection:
         collected_at = self._now()
+        management = self._collect_management_evidence(collected_at)
         devices_result = self._fetch(
             "organization_devices",
             path_parameters={"organization_id": self._selection.organization_id},
@@ -82,6 +96,7 @@ class MerakiEvidenceCollector:
                 entities=[],
                 claims=[],
                 source_health=self._health(collected_at, success=False),
+                management_evidence=management,
             )
 
         raw_devices = [
@@ -92,14 +107,15 @@ class MerakiEvidenceCollector:
         ]
         availability = self._availability_by_serial(collected_at)
         uplinks = self._uplinks_by_serial()
-        appliance_ports = self._list_result(
-            "appliance_ports",
-            path_parameters={"network_id": self._selection.network_id},
-        )
+        appliance_ports = [
+            item.model_dump(by_alias=True)
+            for item in management.ports
+        ]
 
         entities: list[ProviderEntity] = []
         claims: list[NormalizedClaim] = []
         entity_by_serial: dict[str, ProviderEntity] = {}
+        lldp_by_serial: dict[str, dict] = {}
         for raw in raw_devices:
             entity, entity_claims = self._normalize_device(
                 raw,
@@ -128,6 +144,7 @@ class MerakiEvidenceCollector:
                 "device_lldp_cdp",
                 path_parameters={"serial": serial},
             )
+            lldp_by_serial[serial] = lldp_cdp
             adjacent_entities, adjacency_claims = self._normalize_lldp_cdp(
                 entity, raw, lldp_cdp, collected_at
             )
@@ -156,12 +173,115 @@ class MerakiEvidenceCollector:
         entities.extend(client_entities)
         claims.extend(client_claims)
 
+        management = self._identify_catalyst_port(
+            management,
+            raw_devices=raw_devices,
+            lldp_by_serial=lldp_by_serial,
+        )
+
         # Raw provider dictionaries are now out of scope and are never placed
         # in the return value or persistence layer.
         return MerakiCollection(
             entities=entities,
             claims=claims,
             source_health=self._health(collected_at, success=True),
+            management_evidence=management,
+        )
+
+    def _collect_management_evidence(
+        self, collected_at: datetime
+    ) -> MerakiManagementEvidence:
+        before = set(self._failures)
+        scope = {"network_id": self._selection.network_id}
+        settings = self._dict_result(
+            "appliance_vlan_settings", path_parameters=scope
+        )
+        enabled = (
+            settings.get("vlansEnabled")
+            if isinstance(settings.get("vlansEnabled"), bool)
+            else None
+        )
+        raw_lans: list[dict] = []
+        if enabled is True:
+            raw_lans = self._list_result(
+                "appliance_vlans", path_parameters=scope
+            )
+        elif enabled is False:
+            single = self._dict_result(
+                "appliance_single_lan", path_parameters=scope
+            )
+            if single:
+                raw_lans = [single]
+        else:
+            self._failures.append("appliance_lan_mode")
+        raw_ports = self._list_result("appliance_ports", path_parameters=scope)
+        failures = sorted(set(self._failures) - before)
+        lans = normalize_lans(vlans_enabled=enabled, raw_lans=raw_lans)
+        ports = normalize_ports(raw_ports)
+        observed = bool(settings or lans or ports)
+        return MerakiManagementEvidence(
+            state="partial" if failures else "healthy",
+            checkedAt=collected_at,
+            observedAt=collected_at if observed else None,
+            freshness="current" if observed else "historical",
+            complete=observed and not failures,
+            detail=(
+                "Meraki current LAN and appliance-port configuration was normalized."
+                if observed
+                else "Meraki management-path configuration was unavailable."
+            ),
+            failedOperations=failures,
+            vlansEnabled=enabled,
+            lans=lans,
+            ports=ports,
+        )
+
+    def _identify_catalyst_port(
+        self,
+        evidence: MerakiManagementEvidence,
+        *,
+        raw_devices: list[dict],
+        lldp_by_serial: dict[str, dict],
+    ) -> MerakiManagementEvidence:
+        if not self._management_target_id:
+            return evidence
+        appliance_serials = {
+            str(item.get("serial") or "")
+            for item in raw_devices
+            if _category(
+                str(item.get("productType") or ""),
+                str(item.get("model") or ""),
+            )
+            == "security-appliance"
+        }
+        matching_ports: set[str] = set()
+        for serial in appliance_serials:
+            payload = lldp_by_serial.get(serial, {})
+            ports = payload.get("ports") if isinstance(payload.get("ports"), dict) else {}
+            for local_port, observation in ports.items():
+                if not isinstance(observation, dict):
+                    continue
+                for protocol in ("lldp", "cdp"):
+                    neighbor = observation.get(protocol)
+                    if not isinstance(neighbor, dict):
+                        continue
+                    address = str(
+                        neighbor.get("managementAddress")
+                        or neighbor.get("address")
+                        or ""
+                    )
+                    if self._protector.management_address(address) == self._management_target_id:
+                        matching_ports.add(port_identifier(local_port))
+        if not matching_ports:
+            return evidence
+        updated = []
+        identified = False
+        for port in evidence.ports:
+            matched = port_identifier(port.port_id) in matching_ports
+            identified = identified or matched
+            updated.append(port.model_copy(update={"catalyst_facing": True if matched else None}))
+        return evidence.model_copy(
+            update={"ports": updated, "catalyst_port_identified": identified}
         )
 
     def _fetch(
@@ -317,10 +437,24 @@ class MerakiEvidenceCollector:
             ))
         if entity.category == "security-appliance":
             for port in raw_appliance_ports:
-                number = safe_text(port.get("number"), fallback="unknown", limit=12)
-                context = f"port {number}: {safe_text(port.get('type'), fallback='unknown', limit=20)}"
-                if port.get("vlan") is not None:
-                    context += f" vlan {safe_text(port.get('vlan'), fallback='unknown', limit=8)}"
+                number = safe_text(
+                    port.get("number") or port.get("portId"),
+                    fallback="unknown",
+                    limit=12,
+                )
+                mode = safe_text(
+                    port.get("type") or port.get("mode"),
+                    fallback="unknown",
+                    limit=20,
+                )
+                context = f"port {number}: {mode}"
+                vlan = (
+                    port.get("vlan")
+                    or port.get("accessVlan")
+                    or port.get("nativeVlan")
+                )
+                if vlan is not None:
+                    context += f" vlan {safe_text(vlan, fallback='unknown', limit=8)}"
                 entity_claims.append(claim(
                     provider="meraki-dashboard", subject_ref=ref, field="port", value=context,
                     strength="supporting", provenance_record=source,

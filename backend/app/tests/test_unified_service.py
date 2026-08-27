@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from app.identity_protection import IdentityProtector
 from app.meraki_credentials import MerakiCredentialStore
 from app.meraki_selection import MerakiSelectionStore
+from app.meraki_management import MerakiManagementEvidence
 from app.unified_models import ProviderEntity, ProviderIdentifier, SourceHealth
 from app.unified_service import UnifiedLabService
 from app.unified_store import UnifiedLabStore
@@ -55,6 +56,9 @@ def test_optional_meraki_source_starts_no_thread_or_network_when_unconfigured(tm
     assert service._thread is None
     assert result.ok is False
     assert result.source_health.state == "not-configured"
+    management = service.management_path_evidence(now=NOW)
+    assert management.state == "not-configured"
+    assert management.observed_at is None
     store.close()
 
 
@@ -85,6 +89,35 @@ def test_meraki_failure_health_does_not_delete_or_interrupt_catalyst_state(tmp_p
     assert meraki_health.state == "not-configured"
     assert any(item.label == "Synthetic Catalyst" for item in state.entities)
     assert next(item for item in state.source_health if item.provider == "catalyst-ios").state == "healthy"
+    store.close()
+
+
+def test_unrelated_inventory_failure_does_not_invalidate_complete_management_snapshot(tmp_path) -> None:
+    service, store, _ = _service(tmp_path)
+    store.save_meraki_management_evidence(MerakiManagementEvidence(
+        state="healthy",
+        checkedAt=NOW,
+        observedAt=NOW,
+        freshness="current",
+        complete=True,
+        detail="Synthetic complete LAN and port snapshot.",
+        lans=[{"subnet": "198.18.20.0/24", "dhcpMode": "server"}],
+    ))
+    store.save_source_health(SourceHealth(
+        provider="meraki-dashboard",
+        state="partial",
+        detail="Synthetic client inventory failed.",
+        checkedAt=NOW,
+        complete=False,
+        failedOperations=["network_clients"],
+    ))
+
+    management = service.management_path_evidence(now=NOW)
+
+    assert management.state == "healthy"
+    assert management.complete is True
+    assert management.failed_operations == []
+    assert management.lans[0].subnet == "198.18.20.0/24"
     store.close()
 
 

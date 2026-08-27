@@ -8,7 +8,7 @@ from typing import Optional
 from ..audit_store import get_audit_store
 from ..command_registry import build_write_action
 from ..credential_store import get_credential_store
-from ..errors import WriteActionsDisabledError
+from ..errors import WriteActionsDisabledError, public_error_message
 from ..interface_policy import get_interface_policy_store
 from ..models import WriteActionResult
 from ..switch_client import SwitchClient, MockSwitchClient
@@ -88,7 +88,7 @@ def _execute_safe_write_authorized(
     except Exception as exc:
         success = False
         err_type = type(exc).__name__
-        err_msg = str(exc)
+        err_msg = public_error_message(exc)
         raise
     finally:
         duration_ms = int((time.monotonic() - start) * 1000)

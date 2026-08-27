@@ -620,6 +620,17 @@ class TelemetryStore:
             ],
         )
 
+    def latest_successful_observation_at(self, device_id: str) -> datetime | None:
+        """Return the newest device-bound reachable observation timestamp."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """SELECT timestamp FROM device_observations
+                   WHERE device_id = ? AND reachable = 1
+                   ORDER BY id DESC LIMIT 1""",
+                (device_id,),
+            ).fetchone()
+        return datetime.fromisoformat(row["timestamp"]) if row else None
+
 
 _store: Optional[TelemetryStore] = None
 

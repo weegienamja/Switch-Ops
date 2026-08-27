@@ -1,5 +1,8 @@
+import pytest
+
 from app.audit_store import AuditStore
 from app.logging_config import redact, register_secret
+from app.tools import read_only
 
 
 def test_redact_inline_password():
@@ -46,3 +49,20 @@ def test_audit_redacts_secrets(tmp_path):
     blob = (tmp_path / "b.jsonl").read_text(encoding="utf-8")
     assert "Hunter22LongEnough" not in blob
     assert "<redacted>" in blob
+
+
+def test_read_audit_does_not_persist_raw_library_exception(monkeypatch, tmp_path):
+    store = AuditStore(db_path=tmp_path / "c.sqlite", jsonl_path=tmp_path / "c.jsonl")
+    monkeypatch.setattr(read_only, "get_audit_store", lambda: store)
+
+    class BrokenClient:
+        def run(self, _symbol):
+            raise RuntimeError("socket failed for 192.0.2.44 at C:\\private\\driver.py")
+
+    with pytest.raises(RuntimeError):
+        read_only.run_and_audit(BrokenClient(), symbol="show_version")
+
+    event = store.recent(limit=1)[0]
+    assert event.error_type == "RuntimeError"
+    assert event.error_message == "The device operation failed."
+    assert "192.0.2.44" not in (tmp_path / "c.jsonl").read_text(encoding="utf-8")

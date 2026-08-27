@@ -58,6 +58,21 @@ OPERATIONS: dict[str, OperationSpec] = {
         frozenset({"network_id"}),
         frozenset(),
     ),
+    "appliance_vlan_settings": OperationSpec(
+        "/networks/{network_id}/appliance/vlans/settings",
+        frozenset({"network_id"}),
+        frozenset(),
+    ),
+    "appliance_vlans": OperationSpec(
+        "/networks/{network_id}/appliance/vlans",
+        frozenset({"network_id"}),
+        frozenset(),
+    ),
+    "appliance_single_lan": OperationSpec(
+        "/networks/{network_id}/appliance/singleLan",
+        frozenset({"network_id"}),
+        frozenset(),
+    ),
     "switch_port_statuses": OperationSpec(
         "/devices/{serial}/switch/ports/statuses",
         frozenset({"serial"}),

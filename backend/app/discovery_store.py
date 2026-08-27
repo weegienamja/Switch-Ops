@@ -22,6 +22,7 @@ from .models import (
     NetworkDevice,
     NetworkLink,
     TopologyModel,
+    TopologyTransition,
 )
 
 
@@ -88,6 +89,31 @@ class DiscoveryHistoryStore:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def latest_local_host(self, device_id: str) -> dict[str, object] | None:
+        """Return minimal historical host attachment evidence for one device."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """SELECT last_seen, last_interface, entity_json
+                   FROM discovered_entities
+                   WHERE device_id = ? ORDER BY last_seen DESC""",
+                (device_id,),
+            ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["entity_json"])
+                last_seen = datetime.fromisoformat(row["last_seen"])
+            except (TypeError, json.JSONDecodeError, ValueError):
+                continue
+            if payload.get("identitySource") != "local-host":
+                continue
+            return {
+                "last_seen": last_seen,
+                "interface": row["last_interface"],
+                "ip": payload.get("ip"),
+                "mac": payload.get("mac"),
+            }
+        return None
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
@@ -168,10 +194,58 @@ class DiscoveryHistoryStore:
                 entity.first_seen = datetime.fromisoformat(first_seen)
                 entity.last_seen = observed_at
 
+                if old is not None:
+                    prior_entity = self._device_from_row(old)
+                    prior_interface = old["last_interface"]
+                    if (
+                        prior_interface
+                        and entity.connected_interface
+                        and prior_interface != entity.connected_interface
+                    ):
+                        entity.previous_connected_interface = prior_interface
+                        entity.attachment_state = "moved"
+                        entity.attachment_confidence = (
+                            "high"
+                            if entity.identity_confidence in {"high", "confirmed"}
+                            or entity.identity_source in {"local-host", "cdp", "lldp"}
+                            else "medium"
+                        )
+                        topology.transitions.append(
+                            TopologyTransition(
+                                kind="ENDPOINT_MOVED",
+                                entityId=entity.id,
+                                previousInterface=prior_interface,
+                                currentInterface=entity.connected_interface,
+                                locations=[prior_interface, entity.connected_interface],
+                                identityRetained=True,
+                                identityConfidence=entity.identity_confidence,
+                                attachmentConfidence=entity.attachment_confidence,
+                                observedAt=observed_at,
+                                detail=(
+                                    "The same stable endpoint identity was observed on a "
+                                    "different current interface."
+                                ),
+                            )
+                        )
+                    else:
+                        entity.previous_connected_interface = (
+                            prior_entity.previous_connected_interface
+                        )
+                        if entity.attachment_state == "unknown":
+                            entity.attachment_state = "current"
+                        if entity.attachment_confidence == "unknown":
+                            entity.attachment_confidence = (
+                                prior_entity.attachment_confidence
+                            )
+
                 # If a new stable identity appears on a port, retain the last
                 # identified occupant as historical context instead of merging
                 # the two identities.
-                if old is None and entity.connected_interface:
+                if (
+                    old is None
+                    and entity.connected_interface
+                    and entity.attachment_state != "ambiguous"
+                ):
                     occupant = conn.execute(
                         """SELECT entity_json FROM discovered_entities
                            WHERE device_id = ? AND last_interface = ? AND entity_id != ?
@@ -182,6 +256,25 @@ class DiscoveryHistoryStore:
                         prior = NetworkDevice.model_validate_json(occupant["entity_json"])
                         if prior.identity_source != "none":
                             entity.historical_identity = prior.name
+                            entity.previous_connected_interface = entity.connected_interface
+                            topology.transitions.append(
+                                TopologyTransition(
+                                    kind="DEVICE_REPLACED",
+                                    entityId=entity.id,
+                                    previousEntityId=prior.id,
+                                    previousInterface=entity.connected_interface,
+                                    currentInterface=entity.connected_interface,
+                                    locations=[entity.connected_interface],
+                                    identityRetained=False,
+                                    identityConfidence=entity.identity_confidence,
+                                    attachmentConfidence=entity.attachment_confidence,
+                                    observedAt=observed_at,
+                                    detail=(
+                                        "A different stable endpoint identity replaced the "
+                                        "previous identified occupant on this interface."
+                                    ),
+                                )
+                            )
 
                 link = link_by_entity.get(entity.id)
                 conn.execute(

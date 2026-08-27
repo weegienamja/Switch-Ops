@@ -612,6 +612,42 @@ a:focus-visible {
 .view-tabs strong { font-size: 13px; margin-bottom: 3px; }
 .view-tabs span { overflow: hidden; color: var(--text-dim); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .partial-telemetry { margin-bottom: 20px; }
+.stale-telemetry { display: grid; gap: 6px; margin-bottom: 20px; }
+.stale-telemetry strong { letter-spacing: .08em; }
+.stale-telemetry .btn { justify-self: start; margin-top: 4px; }
+.management-path-assurance { display: grid; gap: 12px; margin: 0 0 18px; padding: 14px; border: 1px solid rgba(245,158,11,.28); border-radius: 10px; background: rgba(245,158,11,.05); color: var(--text-muted); font-size: 13px; }
+.management-path-assurance > div { display: grid; gap: 4px; }
+.management-path-assurance strong { color: var(--text); letter-spacing: .04em; }
+.management-path-assurance summary { cursor: pointer; color: var(--cyan); }
+.management-path-assurance ul { margin: 10px 0; padding-left: 20px; }
+.management-path-conclusion { margin: 10px 0 0; color: var(--text); font-size: 11px; letter-spacing: .04em; }
+.backend-unverified { border-color: rgba(239,68,68,.35); }
+.backend-unverified__facts { display: grid; gap: 12px; margin: 16px 0; padding: 14px; border: 1px solid rgba(239,68,68,.28); border-radius: 10px; background: rgba(239,68,68,.05); font-size: 13px; }
+.backend-unverified__facts > div { display: grid; gap: 4px; }
+.backend-unverified__facts strong { color: var(--text); letter-spacing: .04em; font-size: 11px; text-transform: uppercase; }
+.backend-unverified__facts span { color: var(--text-muted); line-height: 1.5; }
+.backend-unverified__scope { color: var(--text-dim); font-size: 12px; line-height: 1.6; margin: 0; }
+.management-path-review { display: grid; gap: 10px; width: 100%; color: var(--text-muted); font-family: var(--sans); text-align: left; }
+.meraki-path-evidence, .recovery-plan { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: rgba(7, 12, 21, .72); font-size: 11px; line-height: 1.5; }
+.management-review__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.management-review__head > div { display: grid; gap: 3px; }
+.management-review__head strong, .recovery-plan__section strong, .recovery-plan__binding strong { color: var(--text); }
+.meraki-path-evidence > span { color: var(--text-dim); }
+.meraki-path-evidence ul, .recovery-plan ul { display: grid; gap: 5px; margin: 0; padding-left: 18px; }
+.meraki-path-evidence b { color: var(--text-muted); }
+.evidence-freshness, .recovery-status { display: inline-flex; width: fit-content; padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted); font-family: var(--mono); font-size: 8px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.evidence-freshness--current, .recovery-status--good { border-color: rgba(34, 197, 94, .35); background: rgba(34, 197, 94, .07); color: var(--green); }
+.evidence-freshness--aging, .evidence-freshness--stale, .recovery-status--warn { border-color: rgba(245, 158, 11, .38); background: rgba(245, 158, 11, .07); color: var(--amber); }
+.evidence-freshness--historical, .recovery-status--bad { border-color: rgba(239, 68, 68, .38); background: rgba(239, 68, 68, .07); color: var(--red); }
+.recovery-plan p { margin: 0; color: var(--text-muted); }
+.planning-only { width: fit-content; padding: 5px 8px; border: 1px solid rgba(245, 158, 11, .3); border-radius: 6px; background: rgba(245, 158, 11, .06); color: var(--amber); font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.recovery-plan details { border-top: 1px solid var(--border); padding-top: 8px; }
+.recovery-plan summary { cursor: pointer; color: var(--cyan); font-family: var(--mono); font-size: 10px; font-weight: 700; }
+.recovery-plan__body { display: grid; gap: 12px; padding-top: 12px; }
+.recovery-plan__section, .recovery-plan__binding { display: grid; gap: 5px; }
+.recovery-plan__binding { padding: 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-dim); font-size: 9px; }
+.stale-telemetry .management-path-review { margin: 6px 0; }
+.stale-telemetry .meraki-path-evidence, .stale-telemetry .recovery-plan { background: rgba(7, 12, 21, .82); }
 .view-content { display: grid; gap: 20px; }
 .eyebrow {
   color: var(--cyan);
