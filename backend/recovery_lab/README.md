@@ -58,20 +58,20 @@ statically addressed adapter. Real IPv4 DAD, the `TENTATIVE → PREFERRED`
 transition, explicit on-link prefix behaviour, exact deletion, and clean
 rollback are therefore **observed**, not inferred.
 
-Gate 2 has since been measured as well, on a disposable VirtualBox DHCP adapter
-(see below). Still unvalidated:
+Gate 2, Gate 3 and process-death crash ownership have since been measured as
+well, all on a disposable VirtualBox DHCP adapter (see below). Still
+unvalidated:
 
-* process-death/new-process crash ownership reconciliation. The mechanism and
-  adversarial tests now exist, but the deliberate two-process experiment has
-  **not** been run;
 * anything at all on a production adapter, by design.
 
 `production_recovery_validated` therefore remains **false**: it is the
-conjunction of every required capability, and two are still `NOT_ATTEMPTED` --
-`CRASH_OWNERSHIP_RECONCILIATION` and `PRODUCTION_ADAPTER_CLASS`. The second is a
-required capability on purpose. Every measurement so far was taken on a
-disposable virtual adapter, so a field named for production must not go true
-while no production adapter has ever been touched.
+conjunction of every required capability, and one is still `NOT_ATTEMPTED` --
+`PRODUCTION_ADAPTER_CLASS`. That is a required capability on purpose. Every
+measurement so far was taken on a disposable virtual adapter, so a field named
+for production must not go true while no production adapter has ever been
+touched. With every lab-measurable capability now validated, it is the only
+thing standing between this record and a production claim, which is exactly the
+job it was added to do.
 
 ## Running it
 
@@ -293,10 +293,14 @@ released, or old bound reservation can never authorise a new operation.
 No window turns incomplete evidence into permission. Some process crashes are
 therefore intentionally manual rather than automatically recoverable.
 
-### Two-process experiment (prepared, not run)
+### Two-process experiment (measured)
 
-**The real crash experiment has not run.** Consequently
-`CRASH_OWNERSHIP_RECONCILIATION` remains `NOT_ATTEMPTED / NONE`.
+**The real crash experiment has now run**, elevated, on the harness-owned
+disposable DHCP environment. `CRASH_OWNERSHIP_RECONCILIATION` is
+`VALIDATED / DISPOSABLE_DHCP_ADAPTER`. What that does and does not cover is
+recorded under [Measured result](#measured-result-crash-ownership) below; the
+commands in this section are the ones that were actually run, and re-running
+them repeats the experiment rather than describing a plan.
 
 Phase A is a Recovery Lab-only command. It re-proves the disposable environment,
 requires a fresh exact reservation, refuses any target interface carrying a
@@ -359,6 +363,64 @@ records, the exact DHCP/network baseline preserved, and the matching reservation
 released. Any incomplete or contradictory proof reports `BLOCKED` and does not
 broaden cleanup.
 
+#### Measured result: crash ownership
+
+Run elevated on the harness-owned disposable DHCP adapter, within one Windows
+boot.
+
+Phase A reported `CRASHED_AS_INTENDED` with one create and DAD at `PREFERRED`,
+passing every step in order: environment authority, candidate, reservation
+authority, DHCP baseline, operation lock, reservation binding, journal intent,
+create, journal-created, DAD, crash. The process then left through
+`os._exit(89)`; the observed exit code was `89` and no rollback, reservation
+release or journal close ran.
+
+A separate process then observed one outstanding record, its owner gone, the row
+present and `PREFERRED`, the post-apply evidence matching, and the reservation
+still bound and unreleased. Independent Windows inspection showed both rows at
+the same time -- the DHCP primary as `Dhcp/Dhcp` `Preferred`, and
+`192.0.2.251/24` as an independent `Manual/Manual` `Preferred` row that had
+outlived the process that made it. That simultaneity is the observation the
+whole gate rests on: an address with no live owner, next to an untouched lease.
+
+Phase B, from a new elevated process, reported `RECONCILED`, one delete and zero
+outstanding after, passing journal, adjudicate, delete, verify-absent,
+dhcp-primary, baseline-restored, network-baseline, reservation-release and
+journal-close. The adjudication verdict was `DELETE_AUTHORISED`: the adapter was
+re-proven against the recorded GUID, the live interface LUID and index still
+matched, the exact `192.0.2.251/24` row satisfied every ownership predicate, and
+the Windows `CreationTimeStamp` matched the value persisted before the crash.
+Afterwards `crash-status` reported zero outstanding, `restart-check` reported
+`CLEAN`, the reservation showed `released`, and the adapter carried only its
+original DHCP primary with a finite lease still counting down. `192.0.2.251` was
+absent.
+
+`CreationTimeStamp` did its intended job here and no more. It is an additional
+**same-boot** discriminator that separates the row this harness created from a
+row recreated at the same address, alongside the GUID, LUID and index checks. It
+is not a cryptographic value, not a permanent object id, and carries no meaning
+across a reboot.
+
+**Evidence timestamp.** `CRASH_OWNERSHIP_RECONCILIATION` is stamped
+`2026-08-27T15:05:50.033140Z`, read back from the reservation the reconciling
+process released rather than typed by hand. Phase B releases that reservation
+only after the delete, the post-delete absence re-proof, the exact DHCP primary
+check and both baseline fingerprints have all passed, so the *existence* of that
+stamp is the durable record that reconciliation succeeded. The *value* is the
+instant the reconciling process read its own clock at startup: it identifies the
+run, and does not claim to time its final write. The journal close that follows
+records a reason but no time of its own, so it is the latest completion-gated
+timestamp the run persisted.
+
+**What this did not measure.** Process death inside one boot, and nothing
+wider. It is not evidence about a Windows reboot, a machine crash, a power loss,
+a NIC reset, a driver restart, or an adapter recreated underneath the ownership
+record -- all of which can invalidate the interface index, the LUID, the
+`CreationTimeStamp`, or the adapter itself. It says nothing about a production
+adapter, a production executor, or production recovery, and it creates no
+address authority: the live production plan is still `BLOCKED` with
+`COLLISION_SAFE_ADDRESS_UNAVAILABLE`, exactly as before.
+
 ## Relationship to the product
 
 The Recovery Lab validates a primitive. `backend/app/recovery_execution.py`
@@ -375,7 +437,7 @@ permission to act.
 | 2 | Does it coexist with a DHCP-controlled primary on the same interface? | **PROVEN** |
 | 3 | Can SwitchOps require, validate, bind and consume reservation authority before mutation? | **PROVEN** |
 | 3a | Is there an authoritative collision-safe address on the *real* management prefix? | NOT AVAILABLE |
-| Crash ownership prerequisite | Can a new process prove and reconcile a dead process's exact row? | NOT ATTEMPTED; mechanism ready |
+| Crash ownership prerequisite | Can a new process prove and reconcile a dead process's exact row? | **PROVEN** (same boot, process death) |
 | 4 | Is there an operator-approved elevated production executor? | NOT IMPLEMENTED |
 | 5 | Does physical acceptance have live Catalyst topology? | BLOCKED |
 
@@ -643,8 +705,8 @@ the product assessor rejects outright for production.
 No production-scoped reservation can be inferred from historical topology, from
 the subnet a Catalyst management interface once used, or from anything else that
 is not a positive claim somebody is accountable for. `production_recovery_validated`
-remains false on two counts: a deliberate crash has never been exercised, and no
-production adapter has ever been touched. No executor exists.
+remains false on the one count no lab experiment can retire: no production
+adapter has ever been touched. No executor exists.
 
 ## Disposable DHCP environment
 

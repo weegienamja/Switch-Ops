@@ -359,7 +359,7 @@ def test_gate_three_is_still_required_for_production_recovery():
     state = current_capability_state()
     assert state.production_recovery_validated is False
     assert "COLLISION_SAFE_ADDRESS_AUTHORITY" not in state.unvalidated_for_production
-    assert "CRASH_OWNERSHIP_RECONCILIATION" in state.unvalidated_for_production
+    assert "PRODUCTION_ADAPTER_CLASS" in state.unvalidated_for_production
 
 
 def test_a_valid_reservation_does_not_make_the_product_an_executor():

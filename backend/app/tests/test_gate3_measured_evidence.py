@@ -115,10 +115,17 @@ def test_gate_two_remains_validated_on_the_disposable_dhcp_adapter():
 
 # --- what stayed false -----------------------------------------------------
 
-def test_crash_ownership_reconciliation_remains_unattempted():
+def test_gate_three_did_not_supply_the_crash_ownership_evidence():
+    """Crash ownership has since been measured -- by its own experiment.
+
+    Gate 3's run created and deleted an address normally; it never died holding
+    one. That the two capabilities carry different observation times is the
+    check that keeps one gate's result from being read as the other's.
+    """
     entry = _capability("CRASH_OWNERSHIP_RECONCILIATION")
-    assert entry.status == "NOT_ATTEMPTED"
-    assert entry.environment == "NONE"
+    authority = _capability("COLLISION_SAFE_ADDRESS_AUTHORITY")
+    assert entry.observed_at is not None and authority.observed_at is not None
+    assert entry.observed_at != authority.observed_at
 
 
 def test_no_experiment_has_run_on_a_production_adapter():
@@ -133,12 +140,10 @@ def test_no_experiment_has_run_on_a_production_adapter():
 def test_production_recovery_is_still_not_validated():
     state = current_capability_state()
     assert state.production_recovery_validated is False
-    # Gate 3 is no longer among the reasons. Two capabilities are: a deliberate
-    # crash has never been exercised, and no production adapter has been touched.
-    assert state.unvalidated_for_production == [
-        "CRASH_OWNERSHIP_RECONCILIATION",
-        "PRODUCTION_ADAPTER_CLASS",
-    ]
+    # Gate 3 is no longer among the reasons, and neither is the crash gate that
+    # was still outstanding when this file was written. One capability is: no
+    # production adapter has been touched.
+    assert state.unvalidated_for_production == ["PRODUCTION_ADAPTER_CLASS"]
     assert "COLLISION_SAFE_ADDRESS_AUTHORITY" in PRODUCTION_REQUIRED_CAPABILITIES
 
 
@@ -302,6 +307,9 @@ def test_validating_crash_ownership_alone_cannot_validate_production_recovery():
     crash-ownership reconciliation were the last required capability, validating
     it would have flipped `production_recovery_validated` to True while no
     production adapter had ever been touched.
+
+    That experiment has since run and been recorded, so the patch below is now a
+    no-op against the live record -- and the verdict it guards still held.
     """
     from app.recovery_capability import build_capability_state
 

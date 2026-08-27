@@ -1549,7 +1549,7 @@ def test_the_crash_exit_code_is_distinctive():
         ("192.0.2.250", True),
         ("198.51.100.5", True),
         ("203.0.113.9", True),
-        ("192.168.254.5", False),
+        ("192.168.99.5", False),
         ("10.0.0.1", False),
         ("198.18.0.101", False),
         ("not-an-address", False),
@@ -1704,7 +1704,7 @@ def test_phase_a_refuses_on_an_unproven_environment(tmp_path):
 def test_phase_a_refuses_a_candidate_outside_documentation_space(tmp_path):
     world = CreateWorld()
     result, journal, _registry = _phase_a(
-        tmp_path, world, candidate_address="192.168.254.99"
+        tmp_path, world, candidate_address="192.168.99.99"
     )
     assert result.outcome == "CANDIDATE_NOT_DOCUMENTATION_SPACE"
     assert world.creates == 0
@@ -1956,8 +1956,15 @@ def test_a_production_plan_without_a_reservation_remains_blocked():
 
 # --- capability semantics ---------------------------------------------------
 
-def test_crash_reconciliation_remains_unmeasured_after_implementation():
-    """Code and tests are not a measurement. The experiment has not run."""
+def test_the_capability_is_validated_by_the_run_and_not_by_this_suite():
+    """Code and tests are still not a measurement; a real run is.
+
+    Everything above this line is adversarial simulation. None of it may be what
+    validates the capability, so the record has to be anchored to an observation
+    taken somewhere -- a named environment and a time -- rather than to the fact
+    that these tests pass. What that run measured is asserted separately, in
+    `test_crash_ownership_measured_evidence`.
+    """
     from app.recovery_capability import current_capability_state
 
     entry = next(
@@ -1965,9 +1972,9 @@ def test_crash_reconciliation_remains_unmeasured_after_implementation():
         for item in current_capability_state().capabilities
         if item.capability == "CRASH_OWNERSHIP_RECONCILIATION"
     )
-    assert entry.status == "NOT_ATTEMPTED"
-    assert entry.environment == "NONE"
-    assert entry.observed_at is None
+    assert entry.status == "VALIDATED"
+    assert entry.environment == "DISPOSABLE_DHCP_ADAPTER"
+    assert entry.observed_at is not None
 
 
 def test_the_production_adapter_class_remains_unmeasured():
@@ -1987,14 +1994,18 @@ def test_production_recovery_remains_unvalidated():
 
     state = current_capability_state()
     assert state.production_recovery_validated is False
-    assert state.unvalidated_for_production == [
-        "CRASH_OWNERSHIP_RECONCILIATION",
-        "PRODUCTION_ADAPTER_CLASS",
-    ]
+    # Crash ownership is no longer one of the reasons. One is left, and no
+    # experiment on a disposable adapter can ever retire it.
+    assert state.unvalidated_for_production == ["PRODUCTION_ADAPTER_CLASS"]
 
 
-def test_a_future_crash_validation_alone_still_cannot_validate_production():
-    """Looking ahead: even a successful crash experiment is not enough."""
+def test_the_successful_crash_validation_alone_did_not_validate_production():
+    """Looking back: the successful crash experiment was not enough.
+
+    This was written as a lookahead before the experiment ran. It now describes
+    what happened: the patch below is a no-op against the live record, and
+    production recovery stayed False anyway.
+    """
     from app.recovery_capability import build_capability_state, current_capability_state
 
     patched = [
@@ -2021,10 +2032,15 @@ def test_the_fixtures_carry_no_real_machine_values():
         assert re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}", guid)
         assert len(set(guid.replace("-", ""))) <= 6
 
+    import getpass
+
+    # Read the account name rather than hard-coding one: spelling a real
+    # username here to assert its absence would be the leak it checks for.
+    account = getpass.getuser()
     for name in (ENVIRONMENT, OTHER_ENVIRONMENT, OPERATION, RESERVATION, ALIAS):
         assert "recovery-env-" not in name or "synthetic" in name
         assert not re.search(r"[A-Za-z]:\\", name)
-        assert "jab19" not in name
+        assert account.lower() not in name.lower()
 
     documentation = ipaddress.ip_network("192.0.2.0/24")
     benchmark = ipaddress.ip_network("198.18.0.0/15")

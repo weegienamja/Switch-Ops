@@ -188,10 +188,13 @@ def dhcp_coexistence_validated() -> bool:
 def current_capability_state() -> RecoveryPrimitiveCapability:
     """The capability state as actually evidenced today.
 
-    The validated entries come from the isolated elevated experiment recorded in
-    the development validation harness. ``DHCP_SAME_INTERFACE_COEXISTENCE`` stays
-    unvalidated until the same measurement is taken on a disposable
-    DHCP-controlled adapter, and no other result may stand in for it.
+    Each validated entry names the environment its measurement was taken in, and
+    no result stands in for another: the isolated static adapter answered the
+    create/DAD/delete core, and the disposable DHCP adapter separately answered
+    coexistence, reservation authority, and crash ownership. Nothing here was
+    measured on a production adapter, which is why
+    ``PRODUCTION_ADAPTER_CLASS`` is still the one capability holding
+    ``production_recovery_validated`` at False.
     """
     observed = datetime.fromisoformat("2026-08-27T00:00:00+00:00")
     coexistence_observed = datetime.fromisoformat("2026-08-27T02:00:00+00:00")
@@ -200,8 +203,18 @@ def current_capability_state() -> RecoveryPrimitiveCapability:
     # it started, which the runner also stamped on the reservation it released,
     # so it identifies the run to the second rather than marking its completion.
     # The two earlier gates predate that record and carry hand-entered dates;
-    # see `test_capability_timestamp_provenance`.
+    # see the provenance tests in `test_gate3_measured_evidence`.
     authority_observed = datetime.fromisoformat("2026-08-27T10:48:01.805216+00:00")
+    # Same provenance rule for the crash experiment: read from the reservation
+    # the reconciling process released, never typed. Phase B releases that
+    # reservation only after the delete, the post-delete absence re-proof, the
+    # exact DHCP primary check, and both baseline fingerprints have all passed,
+    # so the *existence* of this stamp is the durable record that reconciliation
+    # succeeded. The *value* is the instant the reconciling process read its own
+    # clock on startup, which identifies the run rather than timing its last
+    # write; the journal close that follows records a reason but no time of its
+    # own. See `test_crash_ownership_measured_evidence`.
+    crash_observed = datetime.fromisoformat("2026-08-27T15:05:50.033140+00:00")
     isolated = "ISOLATED_STATIC_ADAPTER"
     return build_capability_state(
         [
@@ -242,11 +255,34 @@ def current_capability_state() -> RecoveryPrimitiveCapability:
             ),
             CapabilityEvidence(
                 capability="CRASH_OWNERSHIP_RECONCILIATION",
-                status="NOT_ATTEMPTED",
-                environment="NONE",
+                status="VALIDATED",
+                environment="DISPOSABLE_DHCP_ADAPTER",
+                observedAt=crash_observed,
                 detail=(
-                    "The journal cleared correctly on a successful transaction, but a "
-                    "deliberate crash between create and delete has not been exercised."
+                    "Measured on a disposable DHCP adapter, elevated, within a "
+                    "single Windows boot. One process took a fresh "
+                    "harness-owned reservation, captured the DHCP baseline, "
+                    "persisted intent, created exactly one temporary RFC 5737 "
+                    "address, persisted its post-apply identity, saw real "
+                    "duplicate address detection reach Preferred, and then "
+                    "terminated through the crash path with exit code 89, so "
+                    "no rollback, reservation release or journal close ran. "
+                    "Windows then showed both rows at once: the DHCP primary "
+                    "still DHCP/DHCP and Preferred, and 192.0.2.251/24 as an "
+                    "independent MANUAL/MANUAL row that had outlived its "
+                    "creator. A second, unrelated process reconstructed "
+                    "ownership from durable state alone, re-proved the adapter "
+                    "against the recorded GUID with a matching interface LUID "
+                    "and index, matched every ownership predicate on the exact "
+                    "row including the Windows CreationTimeStamp recorded "
+                    "before the crash, adjudicated DELETE_AUTHORISED, deleted "
+                    "exactly once, re-proved the row absent, and confirmed the "
+                    "original DHCP primary and both the addressing and network "
+                    "baselines intact before releasing the reservation and "
+                    "closing the journal to zero outstanding records. Same "
+                    "boot only: this is process death, not reboot, machine "
+                    "crash, power loss, NIC reset, driver restart or adapter "
+                    "recreation, and not a production adapter."
                 ),
             ),
             CapabilityEvidence(

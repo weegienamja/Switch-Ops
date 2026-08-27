@@ -56,10 +56,10 @@ def test_the_isolated_experiment_is_recorded_as_validated():
 def test_the_primitive_is_validated_but_production_recovery_is_not():
     state = current_capability_state()
     assert state.primitive_validated is True
-    # Gate 2 passing does not make production recovery validated: crash
-    # ownership reconciliation has still never been exercised.
+    # Passing gate after gate does not make production recovery validated: every
+    # one of those measurements was taken on a disposable virtual adapter.
     assert state.production_recovery_validated is False
-    assert "CRASH_OWNERSHIP_RECONCILIATION" in state.unvalidated_for_production
+    assert "PRODUCTION_ADAPTER_CLASS" in state.unvalidated_for_production
 
 
 def test_dhcp_coexistence_is_now_validated_on_a_disposable_dhcp_adapter():
