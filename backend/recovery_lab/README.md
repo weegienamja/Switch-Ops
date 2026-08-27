@@ -61,9 +61,9 @@ rollback are therefore **observed**, not inferred.
 Gate 2 has since been measured as well, on a disposable VirtualBox DHCP adapter
 (see below). Still unvalidated:
 
-* that a created address survives the creating process exiting -- Microsoft
-  documents it, and successful transactions cleared their own journals, but a
-  deliberate crash has not been exercised;
+* process-death/new-process crash ownership reconciliation. The mechanism and
+  adversarial tests now exist, but the deliberate two-process experiment has
+  **not** been run;
 * anything at all on a production adapter, by design.
 
 `production_recovery_validated` therefore remains **false**: it is the
@@ -77,7 +77,8 @@ while no production adapter has ever been touched.
 
 ```powershell
 python -m backend.recovery_lab inspect          # read-only, no elevation needed
-python -m backend.recovery_lab restart-check    # do we still own a temporary address?
+python -m backend.recovery_lab restart-check    # compare journal descriptions (read-only)
+python -m backend.recovery_lab crash-status     # inspect crash state (read-only)
 
 # Mutating. Requires elevation and an explicit --allow.
 python -m backend.recovery_lab experiment `
@@ -98,28 +99,265 @@ already present. Those blockers are independent of elevation: being
 administrator does not make the production interface eligible, because "we were
 not admin at the time" is not a safety property.
 
-## Ownership and the journal
+## Crash ownership and reconciliation
 
-Microsoft states the address "exists only as long as the adapter object
-exists" — it survives the death of the creating process and is destroyed by
-reboot, NIC reset, and some PnP events. A harness that crashed between create
-and delete would therefore leave an address behind with nothing recording who
-created it.
+A temporary unicast row is not tied to the lifetime of the process that called
+`CreateUnicastIpAddressEntry`. A process can therefore die after creation and
+before ordinary rollback. The replacement process must reconstruct authority;
+it may not inherit the dead process's belief that a row was its own.
 
-So the claim is journalled **before** the address is created, and cleared only
-once the address is confirmed gone. Ownership matches on interface LUID,
-interface index, address, and prefix length together; any mismatch means "not
-ours" and nothing is removed. There is no "remove everything in this prefix"
-path, because that would eventually delete somebody else's address during a
-rollback.
+### Why intent is not ownership
 
-`restart-check` distinguishes two outcomes that look similar and are not:
+The journal is written before create. That ordering closes the opposite and
+more dangerous gap: a row must never exist with no durable indication that an
+operation might have created it. An intent record is still only a description.
+Consider this same-boot sequence:
 
-* `OWNED_STATE_DETECTED` — our address is still present and must be removed;
-* `OWNED_STATE_ABSENT` — the record is stale because Windows already reclaimed
-  the address on reboot or NIC reset.
+1. the harness creates `192.0.2.250` and dies;
+2. that row disappears for an unrelated reason;
+3. another actor creates `192.0.2.250` on the same adapter.
 
-A corrupt journal raises rather than reading as "nothing owned".
+LUID, ifIndex, address and prefix can all match the old intent. Deleting on
+those fields would delete the other actor's row.
+
+Windows exposes `CreationTimeStamp` in `MIB_UNICASTIPADDRESS_ROW`. Microsoft
+defines it as the time the address was created. It is **not documented as a
+unique, immutable, or cryptographic object identifier**. In the narrow same-
+boot experiment it is useful as an additional discriminator: a later-created
+row was observed with a different value. Immediately after create, Phase A
+therefore records the positive timestamp and a fingerprint of:
+
+* InterfaceLuid;
+* interface index;
+* address and prefix length;
+* creation timestamp;
+* prefix and suffix origin.
+
+DAD state is intentionally excluded because a legitimate row changes from
+`TENTATIVE` to `PREFERRED`. Any mismatch in the recorded properties removes
+deletion authority; a timestamp match alone does not grant it.
+
+There is an unavoidable user-space interval between the successful create and
+the durable post-apply write. If the process dies there, the journal contains
+intent only. A present matching row is then `OWNERSHIP_UNPROVABLE`, receives
+zero deletes, and requires human reconciliation. The deliberate experiment
+does not intentionally crash at that checkpoint.
+
+### Exact deletion predicates
+
+`DELETE_AUTHORISED` is the only verdict that permits a mutation. All of these
+must hold at the same time:
+
+1. the journal parses under the exact known schema and the record is
+   outstanding;
+2. the operation lock can be acquired, proving no cooperating owner still
+   holds it;
+3. live environment authority is re-established from the harness-created
+   environment, not copied from the journal;
+4. VirtualBox still reports the recorded host-only interface GUID and exactly
+   one Windows adapter reports that `InterfaceGuid`;
+5. that GUID-correlated adapter's current LUID and ifIndex exactly equal the
+   values recorded by Phase A;
+6. the record contains the exact pre-operation DHCP primary plus address and
+   network baseline fingerprints;
+7. no second outstanding record claims the same row;
+8. exactly one live row matches LUID, ifIndex, address and prefix;
+9. durable post-apply timestamp and row fingerprint both match;
+10. the live row remains `MANUAL/MANUAL`.
+
+The table and journal are read again immediately before delete. The Windows
+delete API is keyed by address plus interface LUID (ifIndex is the fallback);
+it is not an atomic compare-and-delete over the timestamp or fingerprint. The
+pre-delete recheck closes races visible before the call, but a non-cooperating
+external actor replacing the row in the final interval is an operating-system
+TOCTOU the user-space API cannot eliminate. This limitation is one reason the
+scope is a harness-owned disposable adapter with controlled actors.
+
+After the call, the complete adjudication runs again. The record closes only if
+the exact row remains absent, the same DHCP primary address/prefix is still
+`DHCP/DHCP`, `PREFERRED`, and finite-lease, the interface address fingerprint
+matches, and the routes/default routes/DNS/source-selection fingerprint matches
+the pre-operation snapshot. A mismatch is reported and left untouched.
+
+There is no subnet cleanup, documentation-range cleanup, `MANUAL`-row sweep,
+candidate cycling, adapter reset, DHCP change, DNS change, or route change.
+
+### Durable state and concurrency
+
+Journal and reservation writes use this process-death sequence:
+
+1. take a kernel byte-range lock around the complete read/modify/write;
+2. write a uniquely named temporary file;
+3. flush Python buffers and call `fsync` on that file;
+4. atomically replace the destination.
+
+The lock prevents concurrent writers from losing one another's records. Unique
+temporary names prevent writers from sharing a partial file. A malformed,
+truncated, duplicate-ID, unknown-field, impossible-state, or unknown-schema
+journal raises and is never interpreted as an empty journal. Operation IDs are
+hashed before becoming lock filenames, so journal content cannot escape the
+lock directory.
+
+The journal is structurally validated, not cryptographically signed. Its trust
+boundary is the local Recovery Lab account and its private ignored state
+directory. A user able to rewrite that state can forge a well-formed record;
+this mechanism is not suitable for a shared or adversarial host and is not a
+product authority store.
+
+This is a **process-death durability claim on the same boot only**. The parent
+directory is not separately synced and the experiment has not measured power
+loss, an OS crash, filesystem crash consistency, reboot, NIC reset, driver
+restart, adapter recreation, or upgrade.
+
+Three kernel locks have deliberately different lifetimes:
+
+* a short journal or reservation lock serialises one durable update;
+* the per-operation lock is acquired before intent and held until normal
+  completion or deliberate `os._exit`; the kernel releases it on process
+  death, so lock-file existence is never treated as liveness;
+* one Phase B reconciliation lock spans observation, adjudication, delete,
+  verification, reservation release and journal close. A second reconciler
+  gets `BLOCKED` with zero deletes.
+
+Phase B then takes and retains each dead operation's lock while processing it.
+Work discovery is not authority: it reloads that record and all claimants only
+after acquiring the lock. Tests exercise two actual processes contending for
+the same reconciliation and two actual processes writing intents concurrently.
+
+### Interface identity and absence
+
+An alias is only a label. Renaming it does not defeat ownership when GUID, LUID
+and ifIndex still match. GUID change, ambiguous GUID, LUID change, or ifIndex
+change is a contradiction and receives zero deletes. This deliberately refuses
+adapter removal/recreation and re-enumeration even when a display name is
+reused.
+
+If the exact row is absent, Phase B performs no delete and rechecks absence
+before closure. It may close as `ALREADY_ABSENT` only after environment, GUID,
+live LUID/ifIndex, DHCP primary, address baseline, and network baseline are all
+re-proven. It does not infer why the row disappeared. The same address on a
+different adapter is reported and left untouched; absence never becomes a
+search for something similar. The same address with the wrong prefix on the
+recorded interface is a contradiction, not absence.
+
+`restart-check` is retained as a legacy read-only description comparison. Its
+outcomes are `RECORDED_ROW_PRESENT` and `RECORDED_ROW_ABSENT`; neither is an
+ownership adjudication, neither closes the journal, and neither claims a cause.
+Use `crash-status` for intermediate crash evidence and `crash-reconcile` for the
+strict decision.
+
+### Reservation lifecycle
+
+Environment authority, address reservation authority, and row ownership remain
+three separate questions. A fresh `LAB_HARNESS_RESERVED` reservation authorises
+creation only in its named disposable environment. Phase A atomically compares
+and binds the observed reservation to a newly locked operation; two processes
+cannot both inherit an unbound reservation.
+
+If the process dies after the binding replace but before journal intent, no
+address has been created and no ownership record exists. The reservation stays
+bound to the dead operation and cannot authorise a new one; an operator must
+close that bookkeeping record manually. This safe but non-automatic interval is
+separate from the create-to-post-apply ownership gap.
+
+Before create, a refusal or baseline/default-route/lock failure consumes the
+selected one-shot reservation when it is still unchanged. A binding race never
+overwrites or releases the winning operation's binding. An intent or create
+failure closes bookkeeping only after the delete-key row is proven absent and
+the baseline is restored. After a row exists, missing post-apply evidence
+causes zero deletes and retains the bound reservation plus intent for manual
+handling. DAD failure or post-apply persistence failure uses normal same-process
+exact rollback; if rollback cannot be proven complete, durable state remains
+open.
+
+Crash cleanup does not need an unexpired reservation to remove an already-owned
+row: reservation authority answered whether creation was allowed, while row
+ownership answers whether deletion is allowed. Phase B releases only the
+reservation whose ID and operation binding both match the crashed record, and
+does so before closing the journal. A crash between those two writes is safe to
+replay. A release persistence error leaves the journal open. An expired,
+released, or old bound reservation can never authorise a new operation.
+
+### Crash windows
+
+| Window | Durable/live possibilities | Automatic result |
+| --- | --- | --- |
+| A. Intent durable, crash before create | Intent; row normally absent | `ALREADY_ABSENT` only after full environment and baseline re-proof; zero deletes |
+| B. Create succeeds, crash before post-apply write | Intent; matching row may be present | Present is `OWNERSHIP_UNPROVABLE`, zero deletes, manual handling. Absent may close after full re-proof |
+| C. Post-apply write succeeds while DAD is settling | Exact evidence; row may become Preferred, remain tentative, duplicate, or disappear | Fingerprint ignores DAD. Exact present row can reconcile; contradiction blocks; absence follows strict absence path |
+| D. DAD reaches Preferred, crash before assurance | Exact evidence and settled row | Exact row can reconcile; surrounding baseline is verified after delete |
+| E. Assurance succeeds, crash before normal delete | Exact evidence and row | Same as D: at most one exact delete |
+| F. Delete succeeds, crash before journal close | Record outstanding; row absent | Zero deletes, then strict absence/baseline closure |
+| G. Reservation release or journal-close persistence is interrupted | Atomic old-or-new file at process-death scope | Replay from outstanding state; reservation is released before close so its linkage is not stranded |
+
+No window turns incomplete evidence into permission. Some process crashes are
+therefore intentionally manual rather than automatically recoverable.
+
+### Two-process experiment (prepared, not run)
+
+**The real crash experiment has not run.** Consequently
+`CRASH_OWNERSHIP_RECONCILIATION` remains `NOT_ATTEMPTED / NONE`.
+
+Phase A is a Recovery Lab-only command. It re-proves the disposable environment,
+requires a fresh exact reservation, refuses any target interface carrying a
+default route, captures the baseline, acquires the operation lock, binds the
+reservation, persists intent, creates exactly one RFC 5737 row, persists its
+post-apply identity, waits for real DAD to reach Preferred, flushes its report,
+and calls `os._exit(89)`. That bypasses `finally`, `atexit`, destructors, normal
+rollback, reservation release and journal closure. A subprocess test verifies
+those Python cleanup paths do not run.
+
+Use placeholders resolved from the live environment; never paste host-specific
+GUIDs, indices, LUIDs, leases, or environment IDs into source:
+
+```powershell
+$LabInterface = "<current disposable DHCP adapter alias>"
+$Candidate = "192.0.2.250"
+$RunId = "crash-process-death-<unique-id>"
+
+python -m backend.recovery_lab reserve `
+    --interface $LabInterface --address $Candidate --prefix-length 24 `
+    --attested-by "recovery lab operator" `
+    --evidence-reference $RunId
+
+python -m backend.recovery_lab reservations
+
+# FUTURE ELEVATED PHASE A. Expected process exit code: 89.
+python -m backend.recovery_lab crash-create `
+    --interface $LabInterface --address $Candidate --prefix-length 24 `
+    --run-id $RunId
+$LASTEXITCODE
+```
+
+Between processes, these commands are read-only:
+
+```powershell
+python -m backend.recovery_lab crash-status
+python -m backend.recovery_lab reservations
+python -m backend.recovery_lab inspect
+Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $LabInterface |
+    Where-Object IPAddress -eq $Candidate |
+    Format-List IPAddress,PrefixLength,InterfaceIndex,PrefixOrigin,SuffixOrigin,AddressState
+```
+
+`crash-status` reports whether the kernel operation lock is free, whether the
+exact row is present and matches the post-apply evidence, whether the journal is
+outstanding, and whether the reservation is still bound/unreleased. It never
+creates a missing state directory or lock file and performs no mutation.
+
+Phase B must be a new elevated process:
+
+```powershell
+python -m backend.recovery_lab crash-reconcile --interface $LabInterface
+python -m backend.recovery_lab crash-status
+python -m backend.recovery_lab reservations
+python -m backend.recovery_lab inspect
+```
+
+Successful Phase B reports `RECONCILED`, exactly one delete, zero outstanding
+records, the exact DHCP/network baseline preserved, and the matching reservation
+released. Any incomplete or contradictory proof reports `BLOCKED` and does not
+broaden cleanup.
 
 ## Relationship to the product
 
@@ -137,6 +375,7 @@ permission to act.
 | 2 | Does it coexist with a DHCP-controlled primary on the same interface? | **PROVEN** |
 | 3 | Can SwitchOps require, validate, bind and consume reservation authority before mutation? | **PROVEN** |
 | 3a | Is there an authoritative collision-safe address on the *real* management prefix? | NOT AVAILABLE |
+| Crash ownership prerequisite | Can a new process prove and reconcile a dead process's exact row? | NOT ATTEMPTED; mechanism ready |
 | 4 | Is there an operator-approved elevated production executor? | NOT IMPLEMENTED |
 | 5 | Does physical acceptance have live Catalyst topology? | BLOCKED |
 
@@ -442,10 +681,11 @@ worthless.
 
 The guard was not relaxed to "DHCP interfaces are fine now". An interface may be
 DHCP-controlled *and* eligible only when this harness provisioned it, recorded
-it at the time, and that record still matches the machine -- same alias, same
-interface index, recent enough to still describe reality. Provenance is the
-authority; `--allow` on its own is not. Production Ethernet has no record, and
-would still be refused for carrying a default route even if it had one.
+it at the time, and the live VirtualBox GUID to Windows `InterfaceGuid` chain is
+still unique and current. Alias and ifIndex are observations, not environment
+identity. Provenance is the authority; `--allow` on its own is not. Production
+Ethernet has no record, and would still be refused for carrying a default route
+even if it had one.
 
 ## What DHCP preservation means
 

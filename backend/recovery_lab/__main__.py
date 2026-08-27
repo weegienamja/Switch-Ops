@@ -8,9 +8,10 @@
     python -m backend.recovery_lab reserve --interface "Ethernet 3"         --address 192.0.2.250 --attested-by "recovery lab harness"         --evidence-reference "gate3-isolated-experiment"
     python -m backend.recovery_lab gate3 --interface "Ethernet 3"         --address 192.0.2.250 --run-id gate3-run-0001
 
-``inspect``, ``restart-check`` and ``reservations`` are read-only and need no
-elevation. ``experiment`` and ``gate3`` mutate an isolated adapter and require
-elevation; without it they report why they refused and change nothing.
+``inspect``, ``restart-check``, ``crash-status`` and ``reservations`` are
+read-only and need no elevation. ``experiment``, ``gate3``, ``crash-create``
+and successful ``crash-reconcile`` mutate an isolated adapter and require
+elevation; without it they report why they refused or the Windows API refuses.
 ``gate3`` additionally refuses unless a live, in-scope, unexpired reservation
 names the exact candidate address, and every one of its refusals happens before
 the first create.
@@ -223,7 +224,7 @@ def command_restart_check(journal_path: Path) -> int:
             f"  {record.operation_id} {record.address}/{record.prefix_length} "
             f"on {record.interface_alias} state={record.state}"
         )
-    return 0 if finding.disposition != "OWNED_STATE_DETECTED" else 1
+    return 0 if finding.disposition != "RECORDED_ROW_PRESENT" else 1
 
 
 def command_experiment(args: argparse.Namespace) -> int:
@@ -464,7 +465,8 @@ def gather_hostonly_guids() -> dict[str, str]:
 
 
 def find_adapter(adapters: list[WindowsAdapter], alias: str) -> WindowsAdapter | None:
-    return next((item for item in adapters if item.alias == alias), None)
+    matches = [item for item in adapters if item.alias == alias]
+    return matches[0] if len(matches) == 1 else None
 
 
 DEFAULT_RESERVATIONS = Path(__file__).resolve().parent / "state" / "gate3-reservations.json"
@@ -498,6 +500,7 @@ def _resolve_environment(args, *, interface_alias: str):
         registry=registry,
         now=now,
         hostonly_guids=hostonly,
+        live_adapters=adapters,
     )
     return authority, now
 
@@ -638,6 +641,218 @@ def command_gate3(args: argparse.Namespace) -> int:
     return 0 if result.outcome == "SUCCESS" else 1
 
 
+def _require_disposable(args):
+    """Resolve the disposable environment and the adapter, or refuse.
+
+    Both crash commands go through this. There is no flag that says "trust me"
+    and no path that reaches a mutation without it.
+    """
+    from .environment import normalise_guid
+
+    authority, now = _resolve_environment(args, interface_alias=args.interface)
+    print(f"test authority: {authority.provenance}")
+    for line in authority.evidence:
+        print(f"  {line}")
+    for code in authority.blockers:
+        print(f"  BLOCKER {code}")
+
+    adapters = gather_windows_adapters()
+    adapter = find_adapter(adapters, args.interface)
+    guid = normalise_guid(adapter.interface_guid) if adapter else None
+    facts = gather_interfaces() if win.is_supported() else {}
+    return authority, now, facts.get(args.interface), guid
+
+
+def command_crash_status(args: argparse.Namespace) -> int:
+    """Read-only. What is outstanding, and is its owner still alive?
+
+    This is what the operator runs between the two phases: it proves the first
+    process is gone, the address is still there, and the claim is still open,
+    without touching any of it.
+    """
+    from .ownership_lock import owner_process_is_gone_read_only
+    from .journal import fingerprint_row
+    from .reservation import LabReservationRegistry
+
+    journal = RecoveryJournal(Path(args.journal))
+    outstanding = journal.outstanding()
+    print(f"outstanding: {len(outstanding)}")
+    print("authority  : not adjudicated (diagnostic only)")
+    if not outstanding:
+        print("nothing is claimed; there is nothing to reconcile")
+        return 0
+
+    rows = win.read_unicast_table() if win.is_supported() else []
+    reservations = LabReservationRegistry(Path(args.reservations))
+    for record in outstanding:
+        live_matches = [
+            row
+            for row in rows
+            if row.address == record.address
+            and row.interface_luid == record.interface_luid
+            and row.interface_index == record.interface_index
+            and row.prefix_length == record.prefix_length
+        ]
+        live = live_matches[0] if len(live_matches) == 1 else None
+        gone = owner_process_is_gone_read_only(
+            journal.operation_lock_dir, record.operation_id
+        )
+        print()
+        print(f"operation   : {record.operation_id}")
+        print(f"  address   : {record.address}/{record.prefix_length}")
+        print(f"  state     : {record.state}")
+        print(f"  owner     : {'gone' if gone else 'STILL RUNNING'}")
+        if len(live_matches) > 1:
+            row_state = f"AMBIGUOUS: {len(live_matches)} matching rows"
+        elif live is None:
+            row_state = "absent under the recorded address/interface/prefix"
+        elif not record.has_post_apply_evidence:
+            row_state = f"present {live.dad_state}; intent-only identity"
+        elif (
+            live.creation_timestamp == record.creation_timestamp
+            and fingerprint_row(live) == record.post_apply_fingerprint
+        ):
+            row_state = f"present {live.dad_state}; post-apply evidence matches"
+        else:
+            row_state = f"present {live.dad_state}; POST-APPLY EVIDENCE DIFFERS"
+        print(f"  row       : {row_state}")
+        print(f"  evidence  : {'post-apply recorded' if record.has_post_apply_evidence else 'INTENT ONLY'}")
+        if record.reservation_id:
+            reservation_matches = [
+                item
+                for item in reservations.all()
+                if item.reservation_id == record.reservation_id
+            ]
+            match = (
+                reservation_matches[0]
+                if len(reservation_matches) == 1
+                else None
+            )
+            state = "unknown"
+            if len(reservation_matches) > 1:
+                state = "AMBIGUOUS duplicate reservation ids"
+            elif match is not None:
+                if match.is_released:
+                    state = "released"
+                elif match.operation_binding == record.operation_id:
+                    state = "bound to this operation/unreleased"
+                elif match.operation_binding is None:
+                    state = "unbound/unreleased"
+                else:
+                    state = "BOUND ELSEWHERE/unreleased"
+            print(f"  reservation: {state}")
+    return 0
+
+
+def command_crash_create(args: argparse.Namespace) -> int:
+    """Phase A. Create one temporary row, then terminate abruptly on purpose."""
+    from .crash_experiment import CRASH_EXIT_CODE, run_phase_a
+    from .reservation import LabReservationRegistry
+
+    authority, now, interface, guid = _require_disposable(args)
+    journal = RecoveryJournal(Path(args.journal))
+
+    if interface is None or not win.is_supported() or not win.is_elevated():
+        print("evaluator: CRASH_PHASE_A")
+        print("outcome  : ENVIRONMENT_NOT_AUTHORISED")
+        print("creates  : 0")
+        if interface is None:
+            print("  the named interface was not found on this machine")
+        if not win.is_elevated():
+            print("  creating an address requires elevation")
+        return 1
+
+    network = ipaddress.ip_network(
+        f"{args.address}/{args.prefix_length}", strict=False
+    )
+    result = run_phase_a(
+        interface_index=interface.interface_index,
+        interface_luid=interface.interface_luid,
+        interface_alias=interface.alias,
+        interface_guid=guid or "",
+        candidate_address=args.address,
+        target_prefix=str(network),
+        prefix_length=args.prefix_length,
+        environment_id=authority.environment_id,
+        environment_authority_granted=authority.granted,
+        run_id=args.run_id,
+        registry=LabReservationRegistry(Path(args.reservations)),
+        journal=journal,
+        read_table=win.read_unicast_table,
+        read_snapshot=lambda: gather_network_snapshot(interface.interface_index),
+        create=win.create_temporary_address,
+        delete=win.delete_temporary_address,
+        now=now,
+    )
+    # Only reached when the run refused before the crash point: a successful
+    # Phase A never returns, it exits with CRASH_EXIT_CODE.
+    print("evaluator: CRASH_PHASE_A")
+    print(f"outcome  : {result.outcome}")
+    print(f"creates  : {result.creates_attempted}")
+    print(f"deletes  : {result.deletes_attempted}")
+    print(f"restored : {result.restored}")
+    print("steps:")
+    for status, name, detail in result.steps:
+        print(f"  {status:<8} {name:<22} {detail}")
+    for line in result.evidence:
+        print(f"  {line}")
+    if result.creates_attempted and not result.restored:
+        print()
+        print("A temporary address may still be present. Run crash-status, then")
+        print(f"crash-reconcile --journal {args.journal}")
+    print()
+    print(f"(a successful Phase A does not print this; it exits {CRASH_EXIT_CODE})")
+    return 1
+
+
+def command_crash_reconcile(args: argparse.Namespace) -> int:
+    """Phase B. A new process recovers ownership from durable state."""
+    from .crash_reconcile import reconcile_after_crash
+    from .reservation import LabReservationRegistry
+
+    authority, now, interface, guid = _require_disposable(args)
+    journal = RecoveryJournal(Path(args.journal))
+
+    if not win.is_supported():
+        print("outcome: BLOCKED (not Windows)")
+        return 1
+
+    result = reconcile_after_crash(
+        journal=journal,
+        reservations=LabReservationRegistry(Path(args.reservations)),
+        read_table=win.read_unicast_table,
+        read_snapshot=lambda: gather_network_snapshot(interface.interface_index),
+        delete=win.delete_temporary_address,
+        environment_authority_granted=authority.granted,
+        environment_id=authority.environment_id,
+        live_interface_guid=guid,
+        live_interface_index=(interface.interface_index if interface else None),
+        live_interface_luid=(interface.interface_luid if interface else None),
+        now=now,
+    )
+    print("evaluator: CRASH_PHASE_B")
+    print(f"outcome  : {result.outcome}")
+    print(f"deletes  : {result.deletes_attempted}")
+    print(f"outstanding after: {result.outstanding_after}")
+    print("steps:")
+    for status, name, detail in result.steps:
+        print(f"  {status:<8} {name:<22} {detail}")
+    for item in result.records:
+        print()
+        print(f"operation : {item.operation_id}")
+        print(f"  verdict : {item.verdict}")
+        print(f"  deleted : {item.deleted}")
+        print(f"  closed  : {item.closed}")
+        if item.refusals:
+            print(f"  refusals: {', '.join(item.refusals)}")
+        for line in item.evidence:
+            print(f"    {line}")
+    if not win.is_elevated() and result.deletes_attempted:
+        print()
+        print("note: deletion requires elevation")
+    return 0 if result.outcome in ("RECONCILED", "ALREADY_ABSENT", "NOTHING_OUTSTANDING") else 1
+
+
 def command_reconcile(args: argparse.Namespace) -> int:
     """Establish which Windows adapter each owned environment became."""
     registry = EnvironmentRegistry(Path(args.registry))
@@ -745,7 +960,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("inspect", help="Read-only view of adapters and the address table.")
 
     restart = sub.add_parser(
-        "restart-check", help="Report temporary addresses this harness still owns."
+        "restart-check",
+        help="Compare outstanding journal descriptions with live rows (read-only).",
     )
     restart.add_argument("--journal", default=str(DEFAULT_JOURNAL))
 
@@ -828,6 +1044,44 @@ def main(argv: list[str] | None = None) -> int:
     gate3.add_argument("--registry", default=str(DEFAULT_REGISTRY))
     gate3.add_argument("--reservations", default=str(DEFAULT_RESERVATIONS))
 
+    # --- crash / restart ownership (Gate: CRASH_OWNERSHIP_RECONCILIATION) ---
+    #
+    # Every argument is required and there is no production fallback anywhere:
+    # a missing or mistyped flag makes argparse refuse rather than guess.
+    crash_create = sub.add_parser(
+        "crash-create",
+        help=(
+            "Phase A: create one temporary RFC 5737 row on a disposable adapter, "
+            "then terminate abruptly WITHOUT cleaning up. Leaves an address behind."
+        ),
+    )
+    crash_create.add_argument("--interface", required=True)
+    crash_create.add_argument("--address", required=True)
+    crash_create.add_argument("--prefix-length", type=int, default=24)
+    crash_create.add_argument("--run-id", required=True)
+    crash_create.add_argument("--journal", default=str(DEFAULT_JOURNAL))
+    crash_create.add_argument("--registry", default=str(DEFAULT_REGISTRY))
+    crash_create.add_argument("--reservations", default=str(DEFAULT_RESERVATIONS))
+
+    crash_status = sub.add_parser(
+        "crash-status",
+        help="Read-only: what is outstanding, and is the owning process gone?",
+    )
+    crash_status.add_argument("--journal", default=str(DEFAULT_JOURNAL))
+    crash_status.add_argument("--reservations", default=str(DEFAULT_RESERVATIONS))
+
+    crash_reconcile = sub.add_parser(
+        "crash-reconcile",
+        help=(
+            "Phase B: a new process proves ownership from durable state and "
+            "removes only the exact row it can prove it owns."
+        ),
+    )
+    crash_reconcile.add_argument("--interface", required=True)
+    crash_reconcile.add_argument("--journal", default=str(DEFAULT_JOURNAL))
+    crash_reconcile.add_argument("--registry", default=str(DEFAULT_REGISTRY))
+    crash_reconcile.add_argument("--reservations", default=str(DEFAULT_RESERVATIONS))
+
     args = parser.parse_args(argv)
     if args.command == "inspect":
         return command_inspect()
@@ -847,6 +1101,12 @@ def main(argv: list[str] | None = None) -> int:
         return command_reservations(args)
     if args.command == "gate3":
         return command_gate3(args)
+    if args.command == "crash-create":
+        return command_crash_create(args)
+    if args.command == "crash-status":
+        return command_crash_status(args)
+    if args.command == "crash-reconcile":
+        return command_crash_reconcile(args)
     return command_experiment(args)
 
 

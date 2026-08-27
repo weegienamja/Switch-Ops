@@ -232,6 +232,28 @@ def test_a_reconciled_environment_grants_dhcp_authority(tmp_path):
     assert result.environment_id == "recovery-env-abc123"
 
 
+def test_live_duplicate_guids_cannot_grant_experiment_authority(tmp_path):
+    registry = _registry(tmp_path)
+    registry.record(
+        _environment(
+            interface_guid=GUID,
+            observed_alias="Ethernet 3",
+            interface_index=58,
+        )
+    )
+    adapters = [_adapter(), _adapter(alias="Ethernet 4", interface_index=59)]
+    result = assess_test_authority(
+        experiment_type="DHCP_COEXISTENCE",
+        adapter=adapters[0],
+        registry=registry,
+        now=NOW,
+        hostonly_guids={VBOX_NAME: GUID},
+        live_adapters=adapters,
+    )
+    assert result.granted is False
+    assert "ENVIRONMENT_IDENTITY_AMBIGUOUS" in result.blockers
+
+
 def test_production_ethernet_is_never_owned(tmp_path):
     registry = _registry(tmp_path)
     registry.record(_environment(interface_guid=GUID, observed_alias="Ethernet 3"))

@@ -309,7 +309,9 @@ def _rollback(
 
 @dataclass
 class RestartFinding:
-    disposition: Literal["CLEAN", "OWNED_STATE_DETECTED", "OWNED_STATE_ABSENT"]
+    disposition: Literal[
+        "CLEAN", "RECORDED_ROW_PRESENT", "RECORDED_ROW_ABSENT"
+    ]
     records: list[OwnedAddress] = field(default_factory=list)
     detail: str = ""
 
@@ -318,11 +320,12 @@ def assess_restart(
     journal: RecoveryJournal,
     read_table: Callable[[], list[win.UnicastAddress]],
 ) -> RestartFinding:
-    """Answer, after a crash: is there state of ours still on this machine?
+    """Describe whether journal-shaped rows are present, without adjudicating.
 
-    An outstanding record whose address is absent means Windows already
-    reclaimed it -- a reboot or NIC reset. That is a clean outcome, not a
-    failure, and the record is simply stale.
+    This legacy read-only view deliberately does not call a matching description
+    ownership. In particular, an intent record has no post-apply evidence and
+    can never authorise deletion. Absence also says nothing about why a row went
+    away. ``crash-reconcile`` performs the stronger evidence checks.
     """
     outstanding = journal.outstanding()
     if not outstanding:
@@ -345,18 +348,18 @@ def assess_restart(
     ]
     if live:
         return RestartFinding(
-            disposition="OWNED_STATE_DETECTED",
+            disposition="RECORDED_ROW_PRESENT",
             records=live,
             detail=(
-                f"{len(live)} temporary address(es) recorded by this harness are "
-                "still present and must be removed."
+                f"{len(live)} live row(s) match journal descriptions. This is "
+                "not deletion authority; use crash-reconcile for adjudication."
             ),
         )
     return RestartFinding(
-        disposition="OWNED_STATE_ABSENT",
+        disposition="RECORDED_ROW_ABSENT",
         records=outstanding,
         detail=(
-            "Recorded operations did not complete, but their addresses are gone: "
-            "Windows reclaimed them on reboot or NIC reset."
+            "No live row matches an outstanding journal description. No cause is "
+            "inferred, and this read-only check does not close the journal."
         ),
     )

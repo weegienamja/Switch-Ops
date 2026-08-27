@@ -27,6 +27,9 @@ import ipaddress
 import json
 import os
 import secrets
+import uuid
+
+from .ownership_lock import exclusive
 
 #: Bumped whenever the on-disk shape changes. A record written by a future
 #: version must not be silently reinterpreted by an older one.
@@ -61,6 +64,12 @@ IssueOutcome = Literal[
     "CANDIDATE_ALREADY_RESERVED",
     "ENVIRONMENT_NOT_NAMED",
 ]
+
+_ANY_BINDING = object()
+
+
+class ReservationStateError(RuntimeError):
+    """A reservation changed, vanished, or was replayed across operations."""
 
 
 @dataclass
@@ -120,7 +129,10 @@ class LabReservationRegistry:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def lock_path(self) -> Path:
+        return self.path.with_name(self.path.name + ".lock")
 
     # --- persistence -------------------------------------------------------
 
@@ -155,11 +167,26 @@ class LabReservationRegistry:
         return payload
 
     def _write(self, records: list[dict]) -> None:
-        # Write-then-replace: a crash mid-write must not leave a truncated file
-        # that reads as an empty registry.
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(records, indent=2), encoding="utf-8")
-        os.replace(temporary, self.path)
+        # The reservation binding is part of the crash evidence. Give it the
+        # same process-death semantics as the journal: a unique temporary file,
+        # flush/fsync, then atomic replacement. This deliberately does not claim
+        # power-loss or filesystem-crash durability.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(
+            f"{self.path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+        )
+        try:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(records, handle, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+        except BaseException:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
     # --- reads -------------------------------------------------------------
 
@@ -175,6 +202,7 @@ class LabReservationRegistry:
         authority; they are none, and returning one would leave the caller to
         remember to check.
         """
+        matches = []
         for item in self.all():
             if item.address != address or item.environment_id != environment_id:
                 continue
@@ -182,8 +210,13 @@ class LabReservationRegistry:
                 continue
             if datetime.fromisoformat(item.reserved_until) <= now:
                 continue
-            return item
-        return None
+            matches.append(item)
+        if len(matches) > 1:
+            raise ReservationStateError(
+                "More than one live reservation claims the same address and "
+                "environment; authority is ambiguous."
+            )
+        return matches[0] if matches else None
 
     # --- writes ------------------------------------------------------------
 
@@ -254,16 +287,6 @@ class LabReservationRegistry:
                 [f"{address} is {unsafe} for {target_prefix}."],
             )
 
-        if self.find(address=address, environment_id=environment_id, now=moment):
-            return (
-                "CANDIDATE_ALREADY_RESERVED",
-                None,
-                [
-                    f"{address} is already reserved in {environment_id}. Two live "
-                    "reservations for one address would make ownership ambiguous."
-                ],
-            )
-
         reservation = LabReservation(
             reservation_id=new_reservation_id(),
             schema_version=SCHEMA_VERSION,
@@ -280,9 +303,27 @@ class LabReservationRegistry:
             reserved_until=_now_iso(moment + validity),
             operation_binding=operation_binding,
         )
-        records = self._read()
-        records.append(asdict(reservation))
-        self._write(records)
+        with exclusive(self.lock_path):
+            records = self._read()
+            existing = [LabReservation(**record) for record in records]
+            if any(
+                item.address == address
+                and item.environment_id == environment_id
+                and not item.is_released
+                and datetime.fromisoformat(item.reserved_until) > moment
+                for item in existing
+            ):
+                return (
+                    "CANDIDATE_ALREADY_RESERVED",
+                    None,
+                    [
+                        f"{address} is already reserved in {environment_id}. Two "
+                        "live reservations for one address would make ownership "
+                        "ambiguous."
+                    ],
+                )
+            records.append(asdict(reservation))
+            self._write(records)
         evidence.append(
             f"{address}/{network.prefixlen} reserved in {environment_id} until "
             f"{reservation.reserved_until}."
@@ -295,24 +336,87 @@ class LabReservationRegistry:
         After this, the reservation authorises that operation and no other, so a
         later run cannot inherit it.
         """
-        records = self._read()
-        for record in records:
-            if record.get("reservation_id") == reservation_id:
-                record["operation_binding"] = operation_id
-        self._write(records)
+        with exclusive(self.lock_path):
+            records = self._read()
+            record = _one_reservation(records, reservation_id)
+            current = record.get("operation_binding")
+            if record.get("released_at") is not None:
+                raise ReservationStateError("A released reservation cannot be bound.")
+            if current not in (None, operation_id):
+                raise ReservationStateError(
+                    f"Reservation {reservation_id} is already bound to another "
+                    "operation and cannot be inherited."
+                )
+            record["operation_binding"] = operation_id
+            self._write(records)
 
-    def release(self, reservation_id: str, *, now: datetime | None = None) -> None:
+    def claim(
+        self,
+        reservation_id: str,
+        operation_id: str,
+        *,
+        expected_binding: str | None,
+        now: datetime,
+    ) -> None:
+        """Atomically transfer the observed reservation into one operation.
+
+        The compare-and-set closes the interval in which two Phase A processes
+        could both assess the same unbound record and then overwrite each
+        other's binding. Exactly one can change the value it observed.
+        """
+        with exclusive(self.lock_path):
+            records = self._read()
+            record = _one_reservation(records, reservation_id)
+            if record.get("operation_binding") != expected_binding:
+                raise ReservationStateError(
+                    "The reservation binding changed after authority was assessed."
+                )
+            if record.get("released_at") is not None:
+                raise ReservationStateError("The reservation was already released.")
+            if datetime.fromisoformat(record["reserved_until"]) <= now:
+                raise ReservationStateError("The reservation expired before binding.")
+            record["operation_binding"] = operation_id
+            self._write(records)
+
+    def release(
+        self,
+        reservation_id: str,
+        *,
+        now: datetime | None = None,
+        expected_binding: str | None | object = _ANY_BINDING,
+    ) -> bool:
         """Close a reservation. Released records are kept, not deleted.
 
         The audit trail of what was authorised is more useful than a tidy file,
         and a released record still fails closed everywhere it is read.
         """
         moment = now or datetime.now(timezone.utc)
-        records = self._read()
-        for record in records:
-            if record.get("reservation_id") == reservation_id:
-                record["released_at"] = _now_iso(moment)
-        self._write(records)
+        with exclusive(self.lock_path):
+            records = self._read()
+            record = _one_reservation(records, reservation_id)
+            if (
+                expected_binding is not _ANY_BINDING
+                and record.get("operation_binding") != expected_binding
+            ):
+                return False
+            if record.get("released_at") is not None:
+                return False
+            record["released_at"] = _now_iso(moment)
+            self._write(records)
+            return True
+
+
+def _one_reservation(records: list[dict], reservation_id: str) -> dict:
+    matches = [
+        record
+        for record in records
+        if record.get("reservation_id") == reservation_id
+    ]
+    if len(matches) != 1:
+        raise ReservationStateError(
+            f"Reservation {reservation_id} is not present exactly once."
+        )
+    return matches[0]
 
 
 def to_product_reservation(reservation: LabReservation) -> dict:

@@ -267,7 +267,20 @@ def run_gate3_experiment(
 
     # Bind the reservation to this run before anything exists, so a crash leaves
     # a record that authorises this operation and no future one.
-    registry.bind(found.reservation_id, run_id)
+    try:
+        registry.claim(
+            found.reservation_id,
+            run_id,
+            expected_binding=found.operation_binding,
+            now=now,
+        )
+    except Exception as error:
+        result.step("reservation-binding", "FAIL", str(error))
+        result.evidence.append(
+            "The reservation changed after it was assessed, so no mutation was "
+            "attempted."
+        )
+        return _refusal(result, ["RESERVATION_BINDING_MISMATCH"])
     result.step("reservation-binding", "PASS", run_id)
 
     # --- 10-19. the already-proven mechanism, unchanged ---------------------
@@ -309,8 +322,14 @@ def run_gate3_experiment(
     #
     # The reservation covered one run. Leaving it open would let the next run
     # inherit authority it never established.
-    registry.release(found.reservation_id, now=now)
-    result.step("reservation-release", "PASS", found.reservation_id)
+    released = registry.release(
+        found.reservation_id, now=now, expected_binding=run_id
+    )
+    result.step(
+        "reservation-release",
+        "PASS" if released else "WARN",
+        found.reservation_id if released else "binding changed; not released",
+    )
 
     if coexistence.outcome == "DAD_DUPLICATE":
         # The record said the address was reserved; the wire said somebody has

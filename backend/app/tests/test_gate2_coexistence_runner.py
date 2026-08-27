@@ -36,12 +36,12 @@ PREFIX = "192.0.2.0/24"
 
 
 def _row(address, *, origin=("DHCP", "DHCP"), dad="PREFERRED", lifetime=3600,
-         prefix=24, index=IFINDEX, luid=LUID):
+         prefix=24, index=IFINDEX, luid=LUID, ts=0):
     return UnicastAddress(
         address=address, prefix_length=prefix, interface_index=index,
         interface_luid=luid, prefix_origin=origin[0], suffix_origin=origin[1],
         dad_state=dad, valid_lifetime=lifetime, preferred_lifetime=lifetime,
-        skip_as_source=False,
+        skip_as_source=False, creation_timestamp=ts,
     )
 
 
@@ -67,7 +67,7 @@ class World:
     def __init__(self, *, rows=None, create_code=NO_ERROR, delete_code=NO_ERROR,
                  created_dad="PREFERRED", created_prefix=24,
                  delete_actually_removes=True, after_snapshot=None,
-                 mutate_on_create=None):
+                 mutate_on_create=None, created_ts=0):
         self.rows = list(rows if rows is not None else [_row(PRIMARY)])
         self.create_code = create_code
         self.delete_code = delete_code
@@ -76,6 +76,7 @@ class World:
         self.delete_actually_removes = delete_actually_removes
         self.after_snapshot = after_snapshot
         self.mutate_on_create = mutate_on_create
+        self.created_ts = created_ts
         self.creates = 0
         self.deletes: list[dict] = []
         self._created = False
@@ -95,7 +96,12 @@ class World:
         if self.create_code != NO_ERROR:
             return self.create_code
         self.rows.append(
-            _manual(address, dad=self.created_dad, prefix=self.created_prefix)
+            _manual(
+                address,
+                dad=self.created_dad,
+                prefix=self.created_prefix,
+                ts=self.created_ts,
+            )
         )
         self._created = True
         if self.mutate_on_create:
@@ -117,7 +123,7 @@ class World:
         return NO_ERROR
 
 
-def _run(tmp_path, world, *, authority=True):
+def _run(tmp_path, world, *, authority=True, journal=None):
     return run_dhcp_coexistence_experiment(
         interface_index=IFINDEX,
         interface_luid=LUID,
@@ -126,7 +132,7 @@ def _run(tmp_path, world, *, authority=True):
         prefix_length=24,
         expected_on_link_prefix=PREFIX,
         authority_granted=authority,
-        journal=RecoveryJournal(tmp_path / "journal.json"),
+        journal=journal or RecoveryJournal(tmp_path / "journal.json"),
         read_table=world.read_table,
         read_snapshot=world.read_snapshot,
         create=world.create,
@@ -219,7 +225,10 @@ def test_a_clean_run_measures_and_restores(tmp_path):
 
     names = [name for _status, name, _detail in result.steps]
     assert names == [
-        "authority", "dhcp-baseline", "journal-intent", "create", "dad",
+        "authority", "dhcp-baseline", "journal-intent", "create",
+        # Post-apply ownership evidence is written before DAD is even polled,
+        # so a crash from here on is reconcilable by a new process.
+        "journal-created", "dad",
         "on-link-prefix", "coexistence", "delete", "rollback-verify",
         "baseline-restored",
     ]
@@ -261,6 +270,21 @@ def test_a_create_failure_is_reported_and_nothing_lingers(tmp_path):
     assert result.outcome == "ADDRESS_CREATE_FAILURE"
     assert result.restored is True
     assert world.deletes == []
+
+
+def test_post_apply_journal_failure_still_rolls_back_the_created_row(tmp_path):
+    class FailedCreatedJournal(RecoveryJournal):
+        def record_created(self, *args, **kwargs):
+            raise OSError("synthetic post-apply persistence failure")
+
+    journal = FailedCreatedJournal(tmp_path / "journal.json")
+    world = World(created_ts=134322627952300878)
+    result = _run(tmp_path, world, journal=journal)
+    assert result.outcome == "JOURNAL_PERSISTENCE_FAILURE"
+    assert result.restored is True
+    assert len(world.deletes) == 1
+    assert [row.address for row in world.rows] == [PRIMARY]
+    assert journal.outstanding() == []
 
 
 def test_a_duplicate_address_rolls_back(tmp_path):

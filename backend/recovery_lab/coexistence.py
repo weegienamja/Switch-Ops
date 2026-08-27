@@ -261,6 +261,7 @@ CoexistenceOutcome = Literal[
     "SUCCESS",
     "NOT_AUTHORISED",
     "BASELINE_INCOMPLETE",
+    "JOURNAL_PERSISTENCE_FAILURE",
     "ADDRESS_CREATE_FAILURE",
     "DAD_DUPLICATE",
     "DAD_TIMEOUT",
@@ -503,15 +504,18 @@ def run_dhcp_coexistence_experiment(
         interface_luid=interface_luid,
     )
     if code != NO_ERROR:
-        journal.update_state(operation_id, "COMPLETED", describe_error(code))
-        journal.clear(operation_id)
+        try:
+            journal.update_state(operation_id, "COMPLETED", describe_error(code))
+            journal.clear(operation_id)
+        except Exception as error:
+            result.step("journal-close", "FAIL", str(error))
+            result.outcome = "JOURNAL_PERSISTENCE_FAILURE"
+            result.restored = True
+            return result
         result.step("create", "FAIL", describe_error(code))
         result.outcome = "ADDRESS_CREATE_FAILURE"
         result.restored = True
         return result
-    journal.update_state(operation_id, "ADDRESS_CREATED")
-    result.step("create", "PASS")
-
     def _observe():
         return next(
             (
@@ -522,6 +526,54 @@ def run_dhcp_coexistence_experiment(
                 and row.interface_luid == interface_luid
             ),
             None,
+        )
+
+    # --- post-apply evidence, before anything else --------------------------
+    #
+    # This write is what makes a crash from here on reconcilable. Until it
+    # lands, the journal knows an address was intended but not which row object
+    # resulted, and a later process must refuse to delete on that basis. It
+    # therefore happens immediately -- before DAD, before verification -- so the
+    # window in which a crash leaves unprovable ownership is one table read and
+    # one atomic file write wide.
+    from .journal import fingerprint_row
+
+    result.step("create", "PASS")
+    just_created = _observe()
+    try:
+        if just_created is not None and just_created.creation_timestamp > 0:
+            journal.record_created(
+                operation_id,
+                creation_timestamp=just_created.creation_timestamp,
+                post_apply_fingerprint=fingerprint_row(just_created),
+            )
+            result.step("journal-created", "PASS", "post-apply evidence recorded")
+        else:
+            # Either the row vanished immediately or the platform did not report
+            # a creation timestamp. Ownership stays unprovable rather than being
+            # asserted, while this still-live process performs normal rollback.
+            journal.update_state(
+                operation_id,
+                "ADDRESS_CREATED",
+                "post-apply evidence unavailable; ownership not provable after a crash",
+            )
+            result.step(
+                "journal-created", "WARN", "no post-apply evidence available"
+            )
+    except Exception as error:
+        result.step("journal-created", "FAIL", str(error))
+        result.evidence.append(
+            "Creation succeeded but post-apply journal persistence failed. The "
+            "still-live process proceeds directly to normal exact rollback."
+        )
+        return _finish(
+            result,
+            "JOURNAL_PERSISTENCE_FAILURE",
+            owned,
+            journal,
+            delete,
+            read_table,
+            baseline,
         )
 
     # --- DAD ---------------------------------------------------------------
@@ -586,7 +638,14 @@ def _finish(result, outcome, owned, journal, delete, read_table, baseline):
     """Remove exactly the owned row, then prove the baseline is back."""
     from .windows_unicast import NO_ERROR, describe_error
 
-    journal.update_state(owned.operation_id, "ROLLBACK_STARTED")
+    journal_error = None
+    try:
+        journal.update_state(owned.operation_id, "ROLLBACK_STARTED")
+    except Exception as error:
+        # Journal failure must not strand a row while the creating process is
+        # still alive and can perform its normal rollback.
+        journal_error = error
+        result.step("journal-rollback", "FAIL", str(error))
     code = delete(
         address=owned.address,
         prefix_length=owned.prefix_length,
@@ -631,8 +690,14 @@ def _finish(result, outcome, owned, journal, delete, read_table, baseline):
         return result
     result.step("baseline-restored", "PASS", f"{primary.address} still DHCP/DHCP")
 
-    journal.update_state(owned.operation_id, "COMPLETED")
-    journal.clear(owned.operation_id)
-    result.outcome = outcome
+    try:
+        journal.update_state(owned.operation_id, "COMPLETED")
+        journal.clear(owned.operation_id)
+    except Exception as error:
+        journal_error = journal_error or error
+        result.step("journal-close", "FAIL", str(error))
+    result.outcome = (
+        "JOURNAL_PERSISTENCE_FAILURE" if journal_error is not None else outcome
+    )
     result.restored = True
     return result

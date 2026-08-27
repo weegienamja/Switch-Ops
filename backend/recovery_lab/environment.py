@@ -398,6 +398,7 @@ def assess_test_authority(
     registry: EnvironmentRegistry,
     now: datetime,
     hostonly_guids: Mapping[str, str] | None = None,
+    live_adapters: Sequence[WindowsAdapter] | None = None,
 ) -> ExperimentAuthority:
     """Decide whether a live adapter belongs to a disposable environment.
 
@@ -433,6 +434,25 @@ def assess_test_authority(
         return ExperimentAuthority(
             granted=False, provenance="PREEXISTING", blockers=blockers, evidence=evidence
         )
+
+    if live_adapters is not None:
+        live_guid_matches = [
+            item
+            for item in live_adapters
+            if normalise_guid(item.interface_guid) == guid
+        ]
+        if len(live_guid_matches) != 1:
+            blockers.append("ENVIRONMENT_IDENTITY_AMBIGUOUS")
+            evidence.append(
+                f"{len(live_guid_matches)} live Windows adapters report GUID "
+                f"{guid}; exact interface identity is ambiguous."
+            )
+            return ExperimentAuthority(
+                granted=False,
+                provenance="PREEXISTING",
+                blockers=blockers,
+                evidence=evidence,
+            )
 
     matches = registry.find_all_by_guid(guid)
     if len(matches) > 1:

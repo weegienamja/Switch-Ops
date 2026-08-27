@@ -315,7 +315,7 @@ def test_an_address_another_operation_owns_means_zero_creates(tmp_path, registry
             operation_id="a-previous-operation", plan_id="previous",
             interface_alias=ALIAS, interface_index=IFINDEX, interface_luid=LUID,
             address=CANDIDATE, prefix_length=24, created_at=now_iso(),
-            state="ADDRESS_CREATED", previous_state_fingerprint="",
+            state="INTENT_RECORDED", previous_state_fingerprint="",
         )
     )
     world = World()

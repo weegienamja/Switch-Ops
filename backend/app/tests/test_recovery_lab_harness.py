@@ -343,29 +343,30 @@ def _owned(**overrides) -> OwnedAddress:
         "address": ADDRESS,
         "prefix_length": 24,
         "created_at": now_iso(),
-        "state": "ADDRESS_CREATED",
+        "state": "INTENT_RECORDED",
     }
     payload.update(overrides)
     return OwnedAddress(**payload)
 
 
-def test_a_crash_after_create_leaves_a_claim_that_restart_detects(tmp_path):
-    # Windows keeps the address after the creating process dies, so the
-    # journal is the only thing that can identify it as ours.
+def test_restart_check_reports_a_matching_description_without_claiming_ownership(
+    tmp_path,
+):
     journal = _journal(tmp_path)
     journal.record_intent(_owned())
     finding = assess_restart(journal, lambda: [_row(ADDRESS)])
-    assert finding.disposition == "OWNED_STATE_DETECTED"
+    assert finding.disposition == "RECORDED_ROW_PRESENT"
     assert finding.records[0].address == ADDRESS
+    assert "not deletion authority" in finding.detail
 
 
-def test_an_address_windows_already_reclaimed_is_reported_as_clean(tmp_path):
-    # Reboot or NIC reset destroys the address; the record is merely stale.
+def test_restart_check_does_not_infer_why_a_recorded_row_is_absent(tmp_path):
     journal = _journal(tmp_path)
     journal.record_intent(_owned())
     finding = assess_restart(journal, lambda: [])
-    assert finding.disposition == "OWNED_STATE_ABSENT"
-    assert "reclaimed" in finding.detail
+    assert finding.disposition == "RECORDED_ROW_ABSENT"
+    assert "No cause is inferred" in finding.detail
+    assert "reboot" not in finding.detail
 
 
 def test_a_journal_with_nothing_outstanding_is_clean(tmp_path):
@@ -377,7 +378,7 @@ def test_restart_never_claims_an_address_it_did_not_record(tmp_path):
     journal.record_intent(_owned())
     # A different address on the same interface is somebody else's.
     finding = assess_restart(journal, lambda: [_row("192.0.2.99")])
-    assert finding.disposition == "OWNED_STATE_ABSENT"
+    assert finding.disposition == "RECORDED_ROW_ABSENT"
 
 
 def test_ownership_matching_is_exact_on_every_identity_field():

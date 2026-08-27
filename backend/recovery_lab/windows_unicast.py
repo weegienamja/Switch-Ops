@@ -134,6 +134,13 @@ class UnicastAddress:
     valid_lifetime: int
     preferred_lifetime: int
     skip_as_source: bool
+    #: Timestamp Windows reports for when this address was created. Values on
+    #: the measured host had FILETIME form, and a later-created row had a
+    #: different value. Microsoft does not document uniqueness, immutability,
+    #: or cryptographic integrity, so this is an additional same-boot
+    #: discriminator rather than a universal object id. Defaults to 0 for tests
+    #: and fakes; 0 means "not observed" and cannot support deletion authority.
+    creation_timestamp: int = 0
 
     @property
     def is_dhcp(self) -> bool:
@@ -210,6 +217,7 @@ def _decode(row: MibUnicastIpAddressRow) -> UnicastAddress:
         valid_lifetime=int(row.ValidLifetime) & 0xFFFFFFFF,
         preferred_lifetime=int(row.PreferredLifetime) & 0xFFFFFFFF,
         skip_as_source=bool(row.SkipAsSource),
+        creation_timestamp=int(row.CreationTimeStamp),
     )
 
 
@@ -289,11 +297,12 @@ def create_temporary_address(
 def delete_temporary_address(
     *, address: str, prefix_length: int, interface_index: int, interface_luid: int
 ) -> int:
-    """Delete exactly one address on exactly one interface.
+    """Ask Windows to delete one address from one interface.
 
-    Targeting a single row is the point. There is no "remove everything in this
-    prefix" path here, because that would eventually remove somebody else's
-    address during a rollback.
+    The IP Helper API's effective key is address plus InterfaceLuid (or ifIndex
+    as fallback); it does not atomically compare our prefix/timestamp evidence.
+    Crash reconciliation therefore rechecks the full observed identity just
+    before calling this narrow primitive. There is no subnet or origin sweep.
     """
     row = _build_row(
         address=address,
