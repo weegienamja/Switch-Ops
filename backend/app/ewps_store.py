@@ -23,6 +23,7 @@ from .ewps_models import (
 from .ewps_v2_models import (
     DistributionSummary,
     EWPS_V2_RELEASE_ID,
+    SCHEMA_V4_RELEASE_IDS,
     EWPSV2Config,
     V2CandidateSnapshot,
     V2DecisionPoint,
@@ -286,7 +287,7 @@ class EWPSResearchStore:
         session = self.get(experiment_id)
         if session.status != "RUNNING":
             raise ValueError("EWPS observations can only be appended to a running experiment.")
-        if isinstance(session, V2ExperimentSession) and session.release_id == EWPS_V2_RELEASE_ID:
+        if isinstance(session, V2ExperimentSession) and session.release_id in SCHEMA_V4_RELEASE_IDS:
             phase = point.scenario_phase if isinstance(point, V2DecisionPoint) else None
             if session.source_mode == "CONTROLLED_DUAL_PATH":
                 if phase is None:
@@ -921,7 +922,7 @@ class EWPSResearchStore:
         timeline = self.timeline(experiment_id)
         if not isinstance(timeline, V2ExperimentTimeline):
             raise ValueError("A v0.2 export requires a v0.2 timeline.")
-        if timeline.session.release_id == EWPS_V2_RELEASE_ID:
+        if timeline.session.release_id in SCHEMA_V4_RELEASE_IDS:
             return self._privacy_safe_jsonl_v4(timeline)
         config = timeline.session.config
         snapshots = {item.path_id: item for item in timeline.session.candidate_snapshot}
@@ -1109,7 +1110,7 @@ class EWPSResearchStore:
         timeline = self.timeline(experiment_id)
         if not isinstance(timeline, V2ExperimentTimeline):
             raise ValueError("A v0.2 export requires a v0.2 timeline.")
-        if timeline.session.release_id == EWPS_V2_RELEASE_ID:
+        if timeline.session.release_id in SCHEMA_V4_RELEASE_IDS:
             return self._privacy_safe_csv_v4(timeline)
         output = io.StringIO(newline="")
         fields = [

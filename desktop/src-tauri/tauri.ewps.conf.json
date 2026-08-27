@@ -1,6 +1,6 @@
 {
   "productName": "SwitchOps EWPS Observatory",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "identifier": "app.switchops.desktop.ewps",
   "app": {
     "windows": [

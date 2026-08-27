@@ -53,7 +53,7 @@ export interface EWPSConfig {
 
 export interface EWPSMeta {
   modelVersion: "0.2.0";
-  releaseId: "ewps-v0.2.0-alpha" | "ewps-v0.2.1-alpha" | "ewps-v0.2.2-alpha" | "ewps-v0.2.3-alpha";
+  releaseId: "ewps-v0.2.0-alpha" | "ewps-v0.2.1-alpha" | "ewps-v0.2.2-alpha" | "ewps-v0.2.3-alpha" | "ewps-v0.2.4-alpha";
   mode: "SHADOW";
   modeLabel: string;
   changesNetworkState: false;

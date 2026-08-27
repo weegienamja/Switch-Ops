@@ -182,10 +182,12 @@ operator-started controlled WSL2 dual-path lab and v0.2 calibration changes.
 It remains **SHADOW MODE — RECOMMENDATIONS ONLY**, does not steer normal
 traffic, is not SwitchOps v0.9, and is not merged into `main`.
 
-The current `ewps-v0.2.3-alpha` instrumentation release adds authoritative,
-immutable scenario-phase provenance to every new controlled measurement and
-retains the start-to-start cadence correction from v0.2.2. The published older
-releases remain unchanged as historical records.
+The current `ewps-v0.2.4-alpha` release changes nothing in EWPS itself. Its
+scope is the separate recovery work described below; the Observatory keeps model
+version `0.2.0`, the `0.2.3` authoritative scenario-phase provenance, and the
+start-to-start cadence correction from `0.2.2`. Experiments recorded under
+`0.2.3` remain schema-v4 and export unchanged, and the published older releases
+remain unchanged as historical records.
 
 - Performance evidence confidence is separated from topology confidence;
   weak/unknown structure stays visible without normally invalidating good
@@ -208,7 +210,47 @@ releases remain unchanged as historical records.
   semantics.
 
 See [docs/EWPS-V0.2-RESEARCH.md](docs/EWPS-V0.2-RESEARCH.md) and
-[docs/EWPS-V0.2.3-RELEASE-NOTES.md](docs/EWPS-V0.2.3-RELEASE-NOTES.md).
+[docs/EWPS-V0.2.4-RELEASE-NOTES.md](docs/EWPS-V0.2.4-RELEASE-NOTES.md).
+
+## Management-path recovery (research, planning-only)
+
+Every remote switch change carries the same risk: the change succeeds, and the
+operator loses the path they made it over. SwitchOps will not ship an automatic
+recovery it cannot prove, so this work runs in the opposite order — build the
+primitive, try hard to break it, and record only what survived.
+
+**There is no executor.** The shipped product contains no address-mutation
+primitive and cannot change an address. Recovery is planning-only, and the live
+production recovery plan is `BLOCKED` on `COLLISION_SAFE_ADDRESS_UNAVAILABLE`.
+
+The measurements are taken by a development-only Recovery Lab that performs
+real, elevated Windows address operations on a disposable adapter it created
+itself. Experimentally validated on that adapter:
+
+- a temporary address is created through the IP Helper unicast API and settles
+  real (non-optimistic) duplicate address detection to Preferred;
+- it coexists with a DHCP-controlled primary on the same interface as an
+  independent `MANUAL/MANUAL` row, leaving the lease counting down;
+- nothing is created without a live, scoped, time-bounded reservation bound to
+  that exact candidate, prefix, environment and operation;
+- a process that dies holding a temporary address leaves durable evidence of
+  exactly what it owned;
+- a new, unrelated process rebuilds that ownership from durable state alone,
+  deletes exactly the row it can prove it owns, and confirms the original DHCP
+  primary, addressing, routes and DNS intact;
+- where ownership cannot be proven the result is zero deletes and a record left
+  open for a human. Incomplete evidence never becomes permission.
+
+The measured crash scope is Windows, **same boot**, a harness-owned disposable
+DHCP adapter, deliberate process death, and reconciliation by a new process. It
+is **not** evidence about a reboot, an OS or machine crash, a power loss, a NIC
+reset, a driver restart, an adapter recreated underneath the record, or any
+production adapter. `production_recovery_validated` is false:
+`PRODUCTION_ADAPTER_CLASS` remains unattempted, and only evidence from a real
+production adapter can retire it.
+
+See [backend/recovery_lab/README.md](backend/recovery_lab/README.md) for the
+architecture, the gate status, and the crash-window analysis.
 
 ## Interface write policy
 

@@ -36,7 +36,7 @@ def test_meta_declares_non_probability_shadow_boundary_and_versioned_mapping():
     assert body["mode"] == "SHADOW"
     assert body["changesNetworkState"] is False
     assert body["modelVersion"] == "0.2.0"
-    assert body["releaseId"] == "ewps-v0.2.3-alpha"
+    assert body["releaseId"] == "ewps-v0.2.4-alpha"
     assert "calibrated probability" in body["confidenceSemantics"]
     assert body["topologyMappingVersion"]
     assert body["compatibility"]["v01SemanticsPreserved"] is True

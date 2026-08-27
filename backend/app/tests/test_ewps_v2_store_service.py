@@ -640,6 +640,54 @@ def test_schema_three_cadence_export_remains_readable(tmp_path, monkeypatch):
     assert V2ExperimentTimeline.model_validate(store.timeline(experiment_id)).decisions[0].scenario_phase is None
 
 
+def test_a_previous_release_that_wrote_schema_v4_still_exports_as_schema_v4(
+    tmp_path, monkeypatch
+):
+    """Releasing must not reclassify experiments an earlier build recorded.
+
+    Sessions store the release that wrote them and no schema field, so the
+    export path once asked "is this the newest release?" to mean "is this
+    schema v4?". Those answers diverge the moment a release ships without a
+    schema change, and the older release's v4 records would have silently
+    dropped their phase events and summaries.
+    """
+    service, store, experiment_id = lifecycle_service(tmp_path, monkeypatch)
+    monkeypatch.setattr(service, "_measure", lambda item, count: successful_probe(item.public.path_id))
+    service._monotonic = lambda: 4.0
+    service._utcnow = lambda: datetime(2026, 1, 1, 0, 0, 4, tzinfo=timezone.utc)
+    service.sample_once(
+        cycle_started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        cycle_started_monotonic=0.0,
+    )
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE ewps_experiments SET release_id = 'ewps-v0.2.3-alpha' WHERE experiment_id = ?",
+            (experiment_id,),
+        )
+    record = json.loads(store.privacy_safe_jsonl(experiment_id).splitlines()[0])
+    assert record["schema_version"] == 4
+    assert "record_type" in record
+    assert "schema_version,record_type" in store.privacy_safe_csv(experiment_id)
+
+
+def test_every_schema_v4_release_is_a_declared_release_id():
+    # Keeps the set from drifting into naming a release the record model would
+    # refuse to load.
+    import typing
+
+    from app.ewps_v2_models import (
+        EWPS_V2_RELEASE_ID,
+        SCHEMA_V4_RELEASE_IDS,
+        V2ExperimentSession,
+    )
+
+    declared = set(
+        typing.get_args(V2ExperimentSession.model_fields["release_id"].annotation)
+    )
+    assert SCHEMA_V4_RELEASE_IDS <= declared
+    assert EWPS_V2_RELEASE_ID in SCHEMA_V4_RELEASE_IDS
+
+
 def test_phase_provenance_is_not_an_ewps_model_input():
     engine_without = EWPSV2DecisionEngine(config())
     engine_with = EWPSV2DecisionEngine(config())

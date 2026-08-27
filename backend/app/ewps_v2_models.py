@@ -21,7 +21,24 @@ from .ewps_models import (
 
 
 EWPS_V2_MODEL_VERSION = "0.2.0"
-EWPS_V2_RELEASE_ID = "ewps-v0.2.3-alpha"
+EWPS_V2_RELEASE_ID = "ewps-v0.2.4-alpha"
+
+#: Releases whose experiments were recorded with authoritative scenario-phase
+#: snapshots, and therefore export as schema v4.
+#:
+#: This is deliberately a set rather than an equality against
+#: ``EWPS_V2_RELEASE_ID``. Sessions carry the release that wrote them and no
+#: separate schema field, so "was this recorded by the newest build?" was being
+#: used to mean "is this schema v4?". Those coincided only while every release
+#: also introduced a new schema: the first release that did not would have
+#: silently re-exported existing v4 records through the older path and dropped
+#: their phase events and summaries.
+SCHEMA_V4_RELEASE_IDS = frozenset(
+    {
+        "ewps-v0.2.3-alpha",
+        "ewps-v0.2.4-alpha",
+    }
+)
 
 CandidateLifecycle = Literal[
     "VIABLE",
@@ -317,6 +334,7 @@ class V2ExperimentSession(EWPSBaseModel):
         "ewps-v0.2.1-alpha",
         "ewps-v0.2.2-alpha",
         "ewps-v0.2.3-alpha",
+        "ewps-v0.2.4-alpha",
     ] = EWPS_V2_RELEASE_ID
     config: EWPSV2Config
     source_mode: ExperimentSourceMode = "LEGACY_UNBOUND"
